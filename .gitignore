@@ -1,0 +1,10 @@
+.DS_Store
+xcuserdata/
+*.xcuserstate
+DerivedData/
+.build/
+.swiftpm/
+Packages/VelaKit/.build/
+Packages/VelaKit/.swiftpm/
+*.ipa
+*.dSYM.zip

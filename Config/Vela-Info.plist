@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 与 GENERATE_INFOPLIST_FILE 生成的键合并；这里只放 build setting 无法表达的数组 / 字典键。 -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<!-- 后台音频与画中画持续播放。 -->
+		<string>audio</string>
+	</array>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<!-- 自建媒体服务器常见为 HTTP（局域网或公网 DDNS），地址由用户输入，无法预先列入例外域名。
+		     注意：不要再加 NSAllowsLocalNetworking / NSAllowsArbitraryLoadsForMedia /
+		     NSAllowsArbitraryLoadsInWebContent，任一出现都会使 NSAllowsArbitraryLoads 被系统忽略。 -->
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+</dict>
+</plist>
