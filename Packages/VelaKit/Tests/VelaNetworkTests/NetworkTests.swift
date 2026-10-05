@@ -134,3 +134,33 @@ struct DetailsDecodingTests {
         #expect(details.people.first?.role == "Conan")
     }
 }
+
+struct MediaSelectionTests {
+    private func source(_ id: String, width: Int, height: Int, bitrate: Int, audio: [String] = []) throws -> MediaSourceInfo {
+        let audioJSON = audio.enumerated().map { #"{"Type":"Audio","Index":\#($0.offset + 1),"Language":"\#($0.element)"}"# }
+        let json = #"{"Id":"\#(id)","Bitrate":\#(bitrate),"MediaStreams":[{"Type":"Video","Index":0,"Width":\#(width),"Height":\#(height)}\#(audioJSON.isEmpty ? "" : "," + audioJSON.joined(separator: ","))]}"#
+        return try JSONDecoder().decode(MediaSourceInfo.self, from: Data(json.utf8))
+    }
+
+    @Test func languageCodesAreNormalized() {
+        #expect(MediaSelection.normalizedLanguage("zho") == "chi")
+        #expect(MediaSelection.normalizedLanguage("zh-Hans") == "chi")
+        #expect(MediaSelection.normalizedLanguage("en") == "eng")
+        #expect(MediaSelection.normalizedLanguage("") == nil)
+    }
+
+    @Test func matchesFirstStreamInPreferredLanguage() throws {
+        let streams = try source("a", width: 1920, height: 1080, bitrate: 1, audio: ["eng", "zho", "chi"]).audioStreams
+        #expect(MediaSelection.firstStream(matching: "chi", in: streams)?.index == 2)
+        #expect(MediaSelection.firstStream(matching: "", in: streams) == nil)
+        #expect(MediaSelection.firstStream(matching: "jpn", in: streams) == nil)
+    }
+
+    @Test func versionPreference() throws {
+        let hd = try source("hd", width: 1920, height: 1080, bitrate: 8_000_000)
+        let uhd = try source("uhd", width: 3840, height: 2160, bitrate: 40_000_000)
+        #expect(MediaSelection.preferredSource([hd, uhd], by: .serverDefault)?.id == "hd")
+        #expect(MediaSelection.preferredSource([hd, uhd], by: .highestQuality)?.id == "uhd")
+        #expect(MediaSelection.preferredSource([uhd, hd], by: .lowestBitrate)?.id == "hd")
+    }
+}

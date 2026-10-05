@@ -3,13 +3,12 @@ import Foundation
 
 /// 播放器手势的纯判定逻辑，与 UIKit / AppKit 解耦以便单测和跨平台复用。
 ///
-/// 交互约定（参考 Infuse / SenPlayer 与 Vela Android）：
-/// - 单击：显隐控制层；两侧区域等待双击超时后再响应。
-/// - 双击：左侧快退、右侧快进、中间播放 / 暂停。
+/// 交互约定（参考 Infuse / SenPlayer 与 Vela Android），具体动作可在「播放手势」设置中调整：
+/// - 单击 / 双击：按点击区域（两侧 / 中间）执行设置的动作。
 /// - 水平拖动：调整进度（松手后才真正跳转，过程中只预览）。
-/// - 左侧竖直拖动：亮度；右侧竖直拖动：音量（仅 iOS / iPadOS）。
-/// - 长按：临时倍速，松手恢复。
-/// - 双指捏合：适应 / 填充画面切换。
+/// - 竖直拖动：左侧亮度、右侧音量；开启「中间切换媒体」时中间区域上滑下一集、下滑上一集。
+/// - 长按：按左 / 右半屏的倍速临时加速，松手恢复。
+/// - 双指：捏合缩放画面、拖动移动画面、单击重置。
 public enum PlayerGestureModel {
     public enum TapZone: Equatable, Sendable {
         case leading, center, trailing
@@ -19,6 +18,8 @@ public enum PlayerGestureModel {
         case seek
         case brightness
         case volume
+        /// 中间区域竖直滑动切换上一集 / 下一集。
+        case switchMedia
     }
 
     /// 横屏两侧各占 22%，竖屏画面窄，两侧放宽到 40% 便于单手操作（与 Android 版一致，约 2:1:2）。
@@ -35,17 +36,20 @@ public enum PlayerGestureModel {
     /// - Parameters:
     ///   - translation: 自手势开始的累计位移（pt）。
     ///   - startX: 手势起点横坐标。
+    ///   - switchMediaZone: 开启「中间切换媒体」时，中间三分之一的竖直滑动判为切换媒体；否则左右各半。
     ///   - threshold: 判定方向所需的最小位移（pt），低于时返回 nil 继续等待。
     public static func panKind(
         translation: CGSize,
         startX: CGFloat,
         width: CGFloat,
+        switchMediaZone: Bool = false,
         threshold: CGFloat = 12
     ) -> PanKind? {
         let dx = abs(translation.width)
         let dy = abs(translation.height)
         guard max(dx, dy) >= threshold else { return nil }
         if dx > dy { return .seek }
+        if switchMediaZone, startX >= width / 3, startX < width * 2 / 3 { return .switchMedia }
         return startX < width / 2 ? .brightness : .volume
     }
 
@@ -62,18 +66,12 @@ public enum PlayerGestureModel {
         return Double(-translationY / height)
     }
 
-    /// 捏合缩放超过该比例时切换适应 / 填充。
+    /// 切换媒体需要的最小竖直位移（pt），避免轻微滑动误触。
+    public static let switchMediaDistance: CGFloat = 80
+
+    /// 关闭「双指缩放画面」时，捏合超过该比例切换适应 / 填充。
     public static let pinchToggleThreshold: CGFloat = 0.12
-}
 
-/// 用户可调的手势参数。
-public struct PlayerGestureSettings: Sendable, Hashable {
-    public var seekBackwardSeconds: TimeInterval = 10
-    public var seekForwardSeconds: TimeInterval = 10
-    /// 长按临时倍速。
-    public var holdSpeed: Float = 2
-    public var enableBrightnessVolume = true
-    public var enableSwipeSeek = true
-
-    public init() {}
+    /// 画面缩放范围。
+    public static let zoomRange: ClosedRange<CGFloat> = 1...4
 }

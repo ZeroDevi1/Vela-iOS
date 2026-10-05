@@ -16,6 +16,10 @@ public protocol PlaybackEngine: AnyObject {
     /// 已缓冲到的位置（秒）。
     var bufferedTime: TimeInterval { get }
     var rate: Float { get }
+    /// 最近测得的下载速度（bit/s）；未知时为 nil。用于「播放信息」判断卡顿是否因网络带宽不足。
+    var networkThroughput: Double? { get }
+    /// 是否静音。静音只关闭输出，不切换或禁用音轨；在 `load` 之前设置也会在起播后生效。
+    var isMuted: Bool { get }
     /// 视频画面的显示尺寸（已应用像素宽高比）；未知或纯音频时为 `.zero`。界面据此计算画面在屏幕上的位置。
     var videoSize: CGSize { get }
     /// 直接从内核读取的当前位置（秒），不经过 0.25 秒的观察刷新；用于字幕等需要帧级同步的场景。
@@ -23,11 +27,18 @@ public protocol PlaybackEngine: AnyObject {
     /// 视频画面渲染目标；不同内核提供不同的表面类型。
     var surface: PlaybackSurface { get }
 
+    /// 精准定位：跳到确切的帧（需从关键帧解码，较慢）；false 时跳到附近关键帧。
+    var preciseSeeking: Bool { get set }
+
+    /// 当前实际渲染帧率；未知时为 nil。按需读取（OSD 每秒一次），不做观察。
+    func currentFrameRate() -> Double?
+
     func load(_ source: PlaybackSource)
     func play()
     func pause()
     func seek(to seconds: TimeInterval) async
     func setRate(_ rate: Float)
+    func setMuted(_ muted: Bool)
     /// 在当前媒体内切换音轨（按音轨出现顺序，从 0 开始）。媒体内没有可切换的音轨时返回 false，
     /// 调用方应改为请求服务器重新选流。
     func selectAudioTrack(ordinal: Int) async -> Bool
@@ -71,6 +82,8 @@ public struct PlaybackSource: Sendable, Hashable {
     public var httpHeaders: [String: String]
     /// 识别出的 VR 排布；非 nil 时播放器提供「VR 转平面」。
     public var vrLayout: VRLayout?
+    /// 前向缓冲时长（秒）；0 表示交给内核按网络情况决定。
+    public var forwardBufferDuration: TimeInterval
 
     public init(
         url: URL,
@@ -78,7 +91,8 @@ public struct PlaybackSource: Sendable, Hashable {
         subtitle: String? = nil,
         startTime: TimeInterval = 0,
         httpHeaders: [String: String] = [:],
-        vrLayout: VRLayout? = nil
+        vrLayout: VRLayout? = nil,
+        forwardBufferDuration: TimeInterval = 0
     ) {
         self.url = url
         self.title = title
@@ -86,5 +100,6 @@ public struct PlaybackSource: Sendable, Hashable {
         self.startTime = startTime
         self.httpHeaders = httpHeaders
         self.vrLayout = vrLayout
+        self.forwardBufferDuration = forwardBufferDuration
     }
 }

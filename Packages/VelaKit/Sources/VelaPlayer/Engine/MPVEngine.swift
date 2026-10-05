@@ -18,6 +18,22 @@ public final class MPVEngine: PlaybackEngine {
     public private(set) var duration: TimeInterval = 0
     public private(set) var bufferedTime: TimeInterval = 0
     public private(set) var rate: Float = 1
+    public private(set) var isMuted = false
+    public private(set) var networkThroughput: Double?
+    @ObservationIgnored public var preciseSeeking = false
+    /// 解码与缓存参数；须在首次 `load` 前设置（句柄创建时读取），之后修改下次起播生效。
+    @ObservationIgnored public var configuration = Configuration()
+
+    public struct Configuration: Sendable {
+        /// 硬解（VideoToolbox）；false 为 FFmpeg 软解。
+        public var hardwareDecoding = true
+        /// 软解线程数，0 为自动。
+        public var decodeThreads = 0
+        /// 磁盘预缓存上限（MB），0 只用内存缓存。
+        public var diskCacheMB = 0
+
+        public init() {}
+    }
     public private(set) var videoSize: CGSize = .zero
 
     /// 渲染目标；由 `PlayerSurface` 放进视图层级。
@@ -64,7 +80,8 @@ public final class MPVEngine: PlaybackEngine {
         let options: [(String, String)] = [
             ("vo", "gpu-next"),
             ("gpu-api", "vulkan"),
-            ("hwdec", "videotoolbox"),
+            ("hwdec", configuration.hardwareDecoding ? "videotoolbox" : "no"),
+            ("vd-lavc-threads", String(configuration.decodeThreads)),
             ("keep-open", "yes"),
             ("idle", "yes"),
             // 字幕由 libass 渲染（含 ASS 特效）；按系统语言自动选择。
@@ -86,11 +103,7 @@ public final class MPVEngine: PlaybackEngine {
         for (name, format) in Self.observed { mpv_observe_property(mpv, 0, name, format) }
         let handle = Handle(mpv)
         let context = Unmanaged.passUnretained(handle).toOpaque()
-        mpv_set_wakeup_callback(mpv, { context in
-            guard let context else { return }
-            let handle = Unmanaged<Handle>.fromOpaque(context).takeUnretainedValue()
-            handle.queue.async { MPVEngine.drainEvents(handle) }
-        }, context)
+        mpv_set_wakeup_callback(mpv, mpvWakeup, context)
         self.handle = handle
         Self.engines[ObjectIdentifier(handle)] = WeakEngine(engine: self)
         return handle
@@ -104,6 +117,7 @@ public final class MPVEngine: PlaybackEngine {
         ("eof-reached", MPV_FORMAT_FLAG),
         ("speed", MPV_FORMAT_DOUBLE),
         ("demuxer-cache-time", MPV_FORMAT_DOUBLE),
+        ("cache-speed", MPV_FORMAT_INT64),
         ("dwidth", MPV_FORMAT_INT64),
         ("dheight", MPV_FORMAT_INT64)
     ]
@@ -131,6 +145,9 @@ public final class MPVEngine: PlaybackEngine {
             let fields = source.httpHeaders.map { "\($0.key): \($0.value)" }.joined(separator: ",")
             mpv_set_property_string(handle.mpv, "http-header-fields", fields)
         }
+        applyCache(seconds: source.forwardBufferDuration)
+        // 句柄在首次 load 时才创建，之前设置的静音在这里补上。
+        setFlag("mute", isMuted)
         var options = "start=\(source.startTime)"
         if source.startTime <= 0 { options = "" }
         command(["loadfile", source.url.absoluteString, "replace", "-1", options].filter { !$0.isEmpty })
@@ -151,7 +168,13 @@ public final class MPVEngine: PlaybackEngine {
         currentTime = target
         reachedEnd = false
         if status == .ended { status = .paused }
-        command(["seek", String(target), "absolute+exact"])
+        command(["seek", String(target), preciseSeeking ? "absolute+exact" : "absolute+keyframes"])
+    }
+
+    public func currentFrameRate() -> Double? {
+        guard let handle else { return nil }
+        var value = 0.0
+        return mpv_get_property(handle.mpv, "estimated-vf-fps", MPV_FORMAT_DOUBLE, &value) >= 0 && value > 0 ? value : nil
     }
 
     public func setRate(_ rate: Float) {
@@ -159,6 +182,33 @@ public final class MPVEngine: PlaybackEngine {
         guard let handle else { return }
         var value = Double(rate)
         mpv_set_property(handle.mpv, "speed", MPV_FORMAT_DOUBLE, &value)
+    }
+
+    /// 前向缓冲：自动时沿用默认（`cache-secs` 由 mpv 决定，内存上限 150 MiB）；指定时长时按秒缓冲，
+    /// 内存上限放宽到 400 MiB——高码率片源会先触到内存上限，避免 iPhone 上缓存占用过多内存。
+    private func applyCache(seconds: TimeInterval) {
+        guard let handle else { return }
+        // 磁盘预缓存：缓存写到临时目录的文件中，可容纳远大于内存上限的前向数据。
+        if configuration.diskCacheMB > 0 {
+            mpv_set_property_string(handle.mpv, "cache-on-disk", "yes")
+            mpv_set_property_string(handle.mpv, "demuxer-cache-dir", FileManager.default.temporaryDirectory.appending(path: "mpv-cache").path)
+            mpv_set_property_string(handle.mpv, "demuxer-max-bytes", "\(configuration.diskCacheMB)MiB")
+            mpv_set_property_string(handle.mpv, "cache-secs", seconds > 0 ? String(Int(seconds)) : "1000")
+            return
+        }
+        mpv_set_property_string(handle.mpv, "cache-on-disk", "no")
+        if seconds > 0 {
+            mpv_set_property_string(handle.mpv, "cache-secs", String(Int(seconds)))
+            mpv_set_property_string(handle.mpv, "demuxer-max-bytes", "400MiB")
+        } else {
+            mpv_set_property_string(handle.mpv, "cache-secs", "1000")
+            mpv_set_property_string(handle.mpv, "demuxer-max-bytes", "150MiB")
+        }
+    }
+
+    public func setMuted(_ muted: Bool) {
+        isMuted = muted
+        setFlag("mute", muted)
     }
 
     public func selectAudioTrack(ordinal: Int) async -> Bool {
@@ -261,7 +311,7 @@ public final class MPVEngine: PlaybackEngine {
     }
 
     /// 在事件队列上读取全部待处理事件，再一次性回到主 actor 应用。
-    nonisolated private static func drainEvents(_ handle: Handle) {
+    nonisolated fileprivate static func drainEvents(_ handle: Handle) {
         var changes: [Change] = []
         while true {
             guard let event = mpv_wait_event(handle.mpv, 0)?.pointee, event.event_id != MPV_EVENT_NONE else { break }
@@ -306,6 +356,8 @@ public final class MPVEngine: PlaybackEngine {
             case .double("duration", let value): duration = value
             case .double("speed", let value): rate = Float(value)
             case .double("demuxer-cache-time", let value): bufferedTime = value
+            // cache-speed 单位为字节 / 秒。
+            case .int("cache-speed", let value): networkThroughput = value > 0 ? Double(value) * 8 : nil
             case .flag("pause", let value): isPaused = value
             case .flag("paused-for-cache", let value): isBuffering = value
             case .flag("eof-reached", let value): reachedEnd = value
@@ -335,4 +387,12 @@ public final class MPVEngine: PlaybackEngine {
             status = isPaused ? .paused : .playing
         }
     }
+}
+
+/// libmpv 的唤醒回调，在 mpv 核心线程上调用。必须是不属于任何 actor 的顶层函数：
+/// 写成 `@MainActor` 方法内的闭包会被推断为主 actor 隔离，Swift 6 运行时检查到在非主线程执行即崩溃（EXC_BREAKPOINT）。
+private func mpvWakeup(_ context: UnsafeMutableRawPointer?) {
+    guard let context else { return }
+    let handle = Unmanaged<MPVEngine.Handle>.fromOpaque(context).takeUnretainedValue()
+    handle.queue.async { MPVEngine.drainEvents(handle) }
 }

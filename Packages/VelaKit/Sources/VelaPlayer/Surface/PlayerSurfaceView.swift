@@ -90,7 +90,86 @@ public final class PlayerLayerView: PlayerPlatformView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 }
 
-/// SwiftUI 包装：渲染画面、同步填充模式、响应画中画请求。
+/// 渲染视图与画中画控制器的持有者。挂在 `PlayerController` 上，生命周期跟随播放会话而不是 SwiftUI 视图：
+/// 画中画期间播放页被收起、视图离开窗口，`AVPlayerLayer` 与 `AVPictureInPictureController` 仍需存活，
+/// 恢复时把同一个视图放回新的播放页。
+@MainActor
+final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureControllerDelegate {
+    let view = PlayerLayerView()
+    /// 创建时的内核；内核替换后需要新建（AVPlayerLayer ↔ CAMetalLayer）。
+    let engineID: ObjectIdentifier
+    private var pip: AVPictureInPictureController?
+    private var lastToggleRequest: Int
+    private weak var controller: PlayerController?
+    private weak var player: AVPlayer?
+
+    init(controller: PlayerController) {
+        self.controller = controller
+        engineID = ObjectIdentifier(controller.engine)
+        lastToggleRequest = controller.pictureInPictureToggleRequest
+        super.init()
+        switch controller.engine.surface {
+        case .avPlayer(let player):
+            view.player = player
+            self.player = player
+            // 画中画依赖 AVPlayerLayer，只有系统内核支持。
+            guard AVPictureInPictureController.isPictureInPictureSupported() else { break }
+            let pip = AVPictureInPictureController(playerLayer: view.activeLayer)
+            pip?.delegate = self
+            #if os(iOS)
+            // 退到后台时自动进入画中画（需要 Audio 后台模式），可在播放设置中关闭。
+            pip?.canStartPictureInPictureAutomaticallyFromInline = controller.preferences.autoPictureInPicture
+            #endif
+            self.pip = pip
+        case .metalLayer(let layer):
+            view.host(layer)
+        }
+    }
+
+    func handleToggle(_ request: Int) {
+        guard request != lastToggleRequest else { return }
+        lastToggleRequest = request
+        guard let pip else { return }
+        pip.isPictureInPictureActive ? pip.stopPictureInPicture() : pip.startPictureInPicture()
+    }
+
+    /// 后台继续播放声音：系统会暂停仍挂在可见图层上的视频播放器，切后台时先把播放器从图层上摘下，回前台再挂回。
+    func setVideoDetached(_ detached: Bool) {
+        guard let player, pip?.isPictureInPictureActive != true else { return }
+        view.player = detached ? nil : player
+    }
+
+    func stopPictureInPicture() {
+        if pip?.isPictureInPictureActive == true { pip?.stopPictureInPicture() }
+    }
+
+    func pictureInPictureControllerDidStartPictureInPicture(_ pip: AVPictureInPictureController) {
+        controller?.isPictureInPictureActive = true
+        controller?.onPictureInPictureStart?()
+    }
+
+    func pictureInPictureController(
+        _ pip: AVPictureInPictureController,
+        restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void
+    ) {
+        guard let controller, let restore = controller.onPictureInPictureRestore else {
+            completionHandler(true)
+            return
+        }
+        controller.isRestoringPictureInPicture = true
+        restore(completionHandler)
+    }
+
+    func pictureInPictureControllerDidStopPictureInPicture(_ pip: AVPictureInPictureController) {
+        guard let controller else { return }
+        let restored = controller.isRestoringPictureInPicture
+        controller.isPictureInPictureActive = false
+        controller.isRestoringPictureInPicture = false
+        controller.onPictureInPictureStop?(restored)
+    }
+}
+
+/// SwiftUI 包装：把会话持有的渲染视图放进当前界面，同步填充模式、响应画中画请求。
 public struct PlayerSurface: PlayerPlatformViewRepresentable {
     let controller: PlayerController
 
@@ -98,74 +177,27 @@ public struct PlayerSurface: PlayerPlatformViewRepresentable {
         self.controller = controller
     }
 
-    /// 画中画回调在主线程触发，按主 actor 隔离处理。
     @MainActor
-    public final class Coordinator: NSObject, @preconcurrency AVPictureInPictureControllerDelegate {
-        var pip: AVPictureInPictureController?
-        var lastToggleRequest = 0
-        weak var controller: PlayerController?
-
-        func attach(to layer: AVPlayerLayer, controller: PlayerController) {
-            self.controller = controller
-            guard pip == nil, AVPictureInPictureController.isPictureInPictureSupported() else { return }
-            let pip = AVPictureInPictureController(playerLayer: layer)
-            pip?.delegate = self
-            #if os(iOS)
-            // 退到后台时自动进入画中画（需要 Audio 后台模式）。
-            pip?.canStartPictureInPictureAutomaticallyFromInline = true
-            #endif
-            self.pip = pip
-        }
-
-        func handleToggle(_ request: Int) {
-            guard request != lastToggleRequest else { return }
-            lastToggleRequest = request
-            guard let pip else { return }
-            pip.isPictureInPictureActive ? pip.stopPictureInPicture() : pip.startPictureInPicture()
-        }
-
-        public func pictureInPictureControllerDidStartPictureInPicture(_ pip: AVPictureInPictureController) {
-            controller?.isPictureInPictureActive = true
-        }
-
-        public func pictureInPictureControllerDidStopPictureInPicture(_ pip: AVPictureInPictureController) {
-            controller?.isPictureInPictureActive = false
-        }
-    }
-
-    public func makeCoordinator() -> Coordinator { Coordinator() }
-
-    @MainActor
-    private func makeView(context: Context) -> PlayerLayerView {
-        let view = PlayerLayerView()
-        switch controller.engine.surface {
-        case .avPlayer(let player):
-            view.player = player
-            // 画中画依赖 AVPlayerLayer，只有系统内核支持。
-            context.coordinator.lastToggleRequest = controller.pictureInPictureToggleRequest
-            context.coordinator.attach(to: view.activeLayer, controller: controller)
-        case .metalLayer(let layer):
-            view.host(layer)
-        }
-        return view
+    private func makeView() -> PlayerLayerView {
+        controller.surfaceHost().view
     }
 
     @MainActor
-    private func updateView(_ view: PlayerLayerView, context: Context) {
+    private func updateView(_ view: PlayerLayerView) {
         view.activeLayer.videoGravity = switch controller.videoGravity {
         case .fit: .resizeAspect
         case .fill: .resizeAspectFill
         case .stretch: .resize
         }
         (controller.engine as? MPVEngine)?.setGravity(fill: controller.videoGravity == .fill, stretch: controller.videoGravity == .stretch)
-        context.coordinator.handleToggle(controller.pictureInPictureToggleRequest)
+        controller.surfaceHost().handleToggle(controller.pictureInPictureToggleRequest)
     }
 
     #if os(iOS)
-    public func makeUIView(context: Context) -> PlayerLayerView { makeView(context: context) }
-    public func updateUIView(_ view: PlayerLayerView, context: Context) { updateView(view, context: context) }
+    public func makeUIView(context: Context) -> PlayerLayerView { makeView() }
+    public func updateUIView(_ view: PlayerLayerView, context: Context) { updateView(view) }
     #else
-    public func makeNSView(context: Context) -> PlayerLayerView { makeView(context: context) }
-    public func updateNSView(_ view: PlayerLayerView, context: Context) { updateView(view, context: context) }
+    public func makeNSView(context: Context) -> PlayerLayerView { makeView() }
+    public func updateNSView(_ view: PlayerLayerView, context: Context) { updateView(view) }
     #endif
 }

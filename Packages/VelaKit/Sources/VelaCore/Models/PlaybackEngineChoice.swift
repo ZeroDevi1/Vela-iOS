@@ -2,7 +2,8 @@ import Foundation
 
 /// 播放内核偏好（设置项）。
 public enum PlaybackEngineMode: String, CaseIterable, Sendable {
-    /// 系统内核能直放或服务器只需转封装时用系统内核；需要因格式 / 字幕转码时改用 MPV 直放原文件。
+    /// 始终优先系统内核：硬件解码、系统级功耗优化，能效最高。系统内核不能直接打开的格式（MKV 等）
+    /// 由服务器用 FFmpeg 转封装 / 转码为 HLS；系统内核播放失败时可手动「用 MPV 内核重试」。
     case auto
     /// 始终使用系统内核（AVPlayer）。
     case system
@@ -20,23 +21,17 @@ public enum PlaybackEngineMode: String, CaseIterable, Sendable {
 
 /// 内核选择规则。
 public enum PlaybackEngineChoice {
-    /// 是否改用 MPV 直放原文件。
-    ///
-    /// 自动模式下只在「服务器因格式 / 编码 / 字幕需要转码」时切换；因码率超限（远程带宽不足）转码时保持系统内核，
-    /// 否则 MPV 直放原文件会绕过码率限制。
-    /// - Parameters:
-    ///   - isTranscode: 系统内核选流结果是否为服务器转码。
-    ///   - reasons: 服务器给出的 `TranscodeReasons`。
-    ///   - canDirectStream: 原文件可由服务器静态串流（`SupportsDirectStream` 或 `SupportsDirectPlay`）。
-    public static func prefersMPV(mode: PlaybackEngineMode, isTranscode: Bool, reasons: [String], canDirectStream: Bool) -> Bool {
-        guard canDirectStream else { return false }
-        switch mode {
-        case .system: return false
-        case .mpv: return true
-        case .auto:
-            guard isTranscode else { return false }
-            let bitrateLimited = reasons.contains { $0.contains("Bitrate") }
-            return !bitrateLimited
+    /// 是否改用 MPV 直放原文件。只有设置为 MPV 时才使用；自动模式优先能效最高的系统内核（见 `PlaybackEngineMode.auto`）。
+    /// - Parameter canDirectStream: 原文件可由服务器静态串流（`SupportsDirectStream` 或 `SupportsDirectPlay`）；否则 MPV 也无从播放。
+    public static func prefersMPV(mode: PlaybackEngineMode, canDirectStream: Bool) -> Bool {
+        canDirectStream && mode == .mpv
+    }
+
+    /// 服务器给出的 `TranscodeReasons` 是否意味着重新编码视频；只涉及容器 / 音频时视频流为复制，画质无损。
+    public static func reencodesVideo(reasons: [String]) -> Bool {
+        reasons.contains {
+            $0.hasPrefix("Video") || $0.contains("Bitrate") || $0.hasPrefix("Subtitle") || $0.hasPrefix("Interlaced")
+                || $0.hasPrefix("RefFrames") || $0.hasPrefix("AnamorphicVideo")
         }
     }
 }

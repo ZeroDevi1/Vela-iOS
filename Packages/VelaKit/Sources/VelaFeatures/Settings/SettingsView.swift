@@ -9,6 +9,7 @@ public struct SettingsView: View {
     @Environment(\.playMedia) private var playMedia
     @State private var isAdding = false
     @State private var imageCacheSize: Int64?
+    @State private var imageCacheLimit = ImagePipeline.diskLimit
 
     public init() {}
 
@@ -33,7 +34,8 @@ public struct SettingsView: View {
                 #endif
 
                 Section("播放") {
-                    NavigationLink("播放设置") { PlayerSettingsView() }
+                    PlaybackSettingsLinks()
+                    NavigationLink("媒体库配置") { LibrarySettingsView() }
                     LabeledContent("播放内核", value: app.playerPreferences.engineMode.title)
                     LabeledContent("杜比视界", value: app.capabilities.supportsDolbyVision ? "支持" : "不支持")
                     LabeledContent("HDR10", value: app.capabilities.supportsHDR10 ? "支持" : "不支持")
@@ -72,6 +74,18 @@ public struct SettingsView: View {
                     }
                     LabeledContent("图片缓存") {
                         Text(imageCacheSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "计算中…")
+                    }
+                    Picker("图片缓存上限", selection: $imageCacheLimit) {
+                        ForEach(ImagePipeline.diskLimitOptions, id: \.self) { limit in
+                            Text(ByteCountFormatter.string(fromByteCount: limit, countStyle: .file)).tag(limit)
+                        }
+                    }
+                    .onChange(of: imageCacheLimit) { _, limit in
+                        ImagePipeline.diskLimit = limit
+                        Task {
+                            await ImagePipeline.shared.trimDiskCache()
+                            imageCacheSize = await ImagePipeline.shared.diskUsage()
+                        }
                     }
                     Button("清除图片缓存", systemImage: "trash") {
                         Task {

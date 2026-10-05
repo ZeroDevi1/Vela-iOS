@@ -166,7 +166,10 @@ public final class ScrubPreviewer {
 
     private func decodeStream(url: URL, at time: TimeInterval) async -> CGImage? {
         let player = streamPlayer ?? {
-            let player = AVPlayer(playerItem: AVPlayerItem(url: url))
+            let item = AVPlayerItem(url: url)
+            // 预览播放器始终暂停，只需 seek 点附近的分片；默认前向缓冲会持续下载并让服务器继续转码，与主播放抢带宽。
+            item.preferredForwardBufferDuration = 1
+            let player = AVPlayer(playerItem: item)
             player.isMuted = true
             player.automaticallyWaitsToMinimizeStalling = false
             return player

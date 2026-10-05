@@ -84,8 +84,28 @@ public struct PosterBadges: Equatable, Sendable {
     }
 }
 
-/// 竖版海报卡（2:3），标题居中。
+/// 海报卡的显示偏好（「媒体库配置 → 海报偏好」），由应用根视图通过环境注入。
+public struct PosterDisplayOptions: Equatable, Sendable {
+    public var titleAlignment: HorizontalAlignment = .center
+    public var showRating = true
+    public var showPlayedMark = true
+    public var showUnplayedCount = true
+
+    public init(titleAlignment: HorizontalAlignment = .center, showRating: Bool = true, showPlayedMark: Bool = true, showUnplayedCount: Bool = true) {
+        self.titleAlignment = titleAlignment
+        self.showRating = showRating
+        self.showPlayedMark = showPlayedMark
+        self.showUnplayedCount = showUnplayedCount
+    }
+}
+
+extension EnvironmentValues {
+    @Entry public var posterDisplay = PosterDisplayOptions()
+}
+
+/// 竖版海报卡（2:3），标题对齐方式与角标按 `posterDisplay` 环境值显示。
 public struct PosterCard: View {
+    @Environment(\.posterDisplay) private var display
     let title: String
     let subtitle: String?
     let imageURL: URL?
@@ -103,8 +123,8 @@ public struct PosterCard: View {
     }
 
     public var body: some View {
-        // 与 Android 版一致：标题、副标题居中显示在海报下方。
-        VStack(spacing: 2) {
+        // 标题、副标题显示在海报下方，默认居中（与 Android 版一致），可设置为左对齐。
+        VStack(alignment: display.titleAlignment, spacing: 2) {
             RemoteArtwork(url: imageURL)
                 .frame(width: width, height: width * 1.5)
                 .overlay(alignment: .bottom) { ProgressStrip(progress: progress) }
@@ -123,14 +143,14 @@ public struct PosterCard: View {
                     .lineLimit(1)
             }
         }
-        .multilineTextAlignment(.center)
-        .frame(width: width)
+        .multilineTextAlignment(display.titleAlignment == .leading ? .leading : .center)
+        .frame(width: width, alignment: display.titleAlignment == .leading ? .leading : .center)
         .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder
     private var topBadge: some View {
-        if let count = badges.unplayedCount, count > 0 {
+        if display.showUnplayedCount, let count = badges.unplayedCount, count > 0 {
             // 未看集数：深色半透明圆角标，超过 99 显示「99+」。
             Text(count > 99 ? "99+" : "\(count)")
                 .font(.caption2.weight(.bold).monospacedDigit())
@@ -140,7 +160,7 @@ public struct PosterCard: View {
                 .background(.black.opacity(0.6), in: .capsule)
                 .padding(6)
                 .accessibilityLabel("\(count) 集未看")
-        } else if badges.isPlayed {
+        } else if display.showPlayedMark, badges.isPlayed {
             Image(systemName: "checkmark.circle.fill")
                 .font(.title3)
                 .symbolRenderingMode(.palette)
@@ -165,7 +185,7 @@ public struct PosterCard: View {
 
     @ViewBuilder
     private var ratingBadge: some View {
-        if let rating = badges.rating, rating > 0 {
+        if display.showRating, let rating = badges.rating, rating > 0 {
             Text(rating.formatted(.number.precision(.fractionLength(1))))
                 .font(.caption.weight(.semibold).monospacedDigit())
                 .foregroundStyle(.white)

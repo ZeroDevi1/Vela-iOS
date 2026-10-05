@@ -16,20 +16,26 @@ struct PlayerControlsView: View {
     let onClose: () -> Void
 
     private var controller: PlayerController { session.controller }
+    /// 「自定义播放器按钮」。
+    private var buttons: PlayerButtons { controller.preferences.buttons }
 
     private static let speeds: [Float] = [0.5, 0.75, 1, 1.25, 1.5, 2, 3]
 
     var body: some View {
         let visible = controller.controlsVisible && panel == nil
+        // 隐藏时移出视图树而不是只设透明度：否则进度与时间仍按 4 Hz 刷新，整层阴影也随之重新离屏渲染。
         ZStack {
-            if controller.isLocked {
-                lockedOverlay
-            } else {
-                fullControls
+            if visible {
+                Group {
+                    if controller.isLocked {
+                        lockedOverlay
+                    } else {
+                        fullControls
+                    }
+                }
+                .transition(.opacity)
             }
         }
-        .opacity(visible ? 1 : 0)
-        .allowsHitTesting(visible)
         .animation(.easeInOut(duration: 0.25), value: visible)
     }
 
@@ -62,15 +68,19 @@ struct PlayerControlsView: View {
             HStack(spacing: 4) {
                 iconButton("xmark", label: "关闭播放器", action: onClose)
                     .keyboardShortcut(.cancelAction)
-                AirPlayButton()
-                    .frame(width: 44, height: 44)
-                    .accessibilityLabel("AirPlay")
-                iconButton(controller.videoGravity.symbol, label: "画面比例：\(controller.videoGravity.title)") {
-                    controller.cycleVideoGravity()
-                    controller.touchControls()
+                if buttons.cast {
+                    AirPlayButton()
+                        .frame(width: 44, height: 44)
+                        .accessibilityLabel("AirPlay")
+                }
+                if buttons.zoom {
+                    iconButton(controller.videoGravity.symbol, label: "画面比例：\(controller.videoGravity.title)") {
+                        controller.cycleVideoGravity()
+                        controller.touchControls()
+                    }
                 }
                 #if os(iOS)
-                if OrientationController.isSupported {
+                if buttons.rotate, OrientationController.isSupported {
                     iconButton("arrow.trianglehead.2.clockwise.rotate.90", label: "横竖屏切换") {
                         OrientationController.toggle()
                         controller.touchControls()
@@ -81,16 +91,20 @@ struct PlayerControlsView: View {
                 Spacer(minLength: 0)
 
                 // 画中画依赖系统内核的 AVPlayerLayer。
-                if controller.engine.kind == .avFoundation {
+                if buttons.pictureInPicture, controller.engine.kind == .avFoundation {
                     iconButton(controller.isPictureInPictureActive ? "pip.exit" : "pip.enter", label: "画中画") {
                         controller.requestPictureInPictureToggle()
                     }
                 }
-                if session.chapters.count > 1 {
+                if buttons.chapters, session.chapters.count > 1 {
                     iconButton("book", label: "章节") { open(.chapters) }
                 }
-                iconButton("camera", label: "截图") { session.captureScreenshot() }
-                speedMenu
+                if buttons.screenshot {
+                    iconButton("camera", label: "截图") { session.captureScreenshot() }
+                }
+                if buttons.speed {
+                    speedMenu
+                }
             }
         }
         .padding(.horizontal, 12)
@@ -152,7 +166,8 @@ struct PlayerControlsView: View {
             iconButton("info.circle", label: "播放信息") { open(.info) }
             Spacer(minLength: 0)
             if !session.audioOptions.isEmpty {
-                iconButton("waveform.circle", label: "音轨") { open(.audio) }
+                let isMuted = controller.engine.isMuted
+                iconButton(isMuted ? "speaker.slash.circle" : "waveform.circle", label: isMuted ? "音轨（已静音）" : "音轨") { open(.audio) }
                     .disabled(session.isSwitchingStream)
             }
             iconButton(session.selectedSubtitleIndex == nil ? "captions.bubble" : "captions.bubble.fill", label: "字幕") {
@@ -199,6 +214,9 @@ struct PlayerControlsView: View {
                 } label: {
                     Label("VR 转平面", systemImage: "visionpro")
                 }
+            } else {
+                // MPV 没有可供反投影的画面输出：提供切回系统内核（从当前位置继续）。
+                Button("VR 转平面（切换到系统内核）", systemImage: "visionpro") { session.switchToSystemEngineForVR() }
             }
             pinWhileOpen
         } label: {
@@ -231,32 +249,36 @@ struct PlayerControlsView: View {
             .frame(maxWidth: .infinity)
 
             HStack(spacing: 28) {
-                if isEpisode {
+                if isEpisode, buttons.switchMedia {
                     iconButton("backward.end.fill", label: session.partPosition == nil ? "上一集" : "上一段", size: 24) { session.playPreviousEpisode() }
                         .disabled(session.previousEpisode == nil)
-                } else {
-                    iconButton("gobackward.\(Int(controller.gestureSettings.seekBackwardSeconds))", label: "快退", size: 24) {
+                }
+                if buttons.seek {
+                    iconButton("gobackward.\(controller.preferences.seekBackwardSeconds)", label: "快退", size: 24) {
                         controller.skipBackward()
                     }
                 }
-                Button {
-                    controller.togglePlayPause()
-                } label: {
-                    Image(systemName: controller.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 34, weight: .semibold))
-                        .contentTransition(.symbolEffect(.replace))
-                        .frame(width: 56, height: 56)
-                        .contentShape(.rect)
+                if buttons.playPause {
+                    playPauseButton
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(controller.isPlaying ? "暂停" : "播放")
-                if isEpisode {
-                    iconButton("forward.end.fill", label: session.partPosition == nil ? "下一集" : "下一段", size: 24) { controller.playNextNow() }
-                        .disabled(session.nextEpisode == nil)
-                } else {
-                    iconButton("goforward.\(Int(controller.gestureSettings.seekForwardSeconds))", label: "快进", size: 24) {
+                if buttons.seek {
+                    iconButton("goforward.\(controller.preferences.seekForwardSeconds)", label: "快进", size: 24) {
                         controller.skipForward()
                     }
+                }
+                if isEpisode, buttons.switchMedia {
+                    iconButton("forward.end.fill", label: session.partPosition == nil ? "下一集" : "下一段", size: 24) { controller.playNextNow() }
+                        .disabled(session.nextEpisode == nil)
+                        // 下一集已预加载：服务器已开始准备，切换会更快。
+                        .overlay(alignment: .topTrailing) {
+                            if session.isNextPreloaded {
+                                Image(systemName: "bolt.fill")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(.yellow)
+                                    .offset(x: -4, y: 6)
+                                    .accessibilityLabel("已预加载")
+                            }
+                        }
                 }
             }
             .fixedSize()
@@ -269,6 +291,23 @@ struct PlayerControlsView: View {
             }
             .frame(maxWidth: .infinity)
         }
+    }
+
+    /// 播放 / 暂停；开启「长按播放暂停键退出播放器」时长按关闭播放器。
+    private var playPauseButton: some View {
+        Image(systemName: controller.isPlaying ? "pause.fill" : "play.fill")
+            .font(.system(size: 34, weight: .semibold))
+            .contentTransition(.symbolEffect(.replace))
+            .frame(width: 56, height: 56)
+            .contentShape(.rect)
+            .onTapGesture { controller.togglePlayPause() }
+            .onLongPressGesture(minimumDuration: 0.6) {
+                if controller.preferences.longPressPlayPauseExits { onClose() }
+            }
+            .accessibilityElement()
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel(controller.isPlaying ? "暂停" : "播放")
+            .accessibilityAction { controller.togglePlayPause() }
     }
 
     /// 无底色的图标按钮，点击区域固定 44pt。
@@ -328,10 +367,23 @@ private struct ScrubberRow: View {
             Text(PlayerTime.format(position))
                 .frame(minWidth: 44, alignment: .leading)
             PlayerScrubber(controller: controller)
-            Text(PlayerTime.format(controller.engine.duration))
+            // 「进度条时间模式」：总时长或剩余时长；点按切换。
+            Text(trailingTime(position: position))
                 .frame(minWidth: 44, alignment: .trailing)
+                .contentShape(.rect)
+                .onTapGesture {
+                    let preferences = controller.preferences
+                    preferences.progressTimeMode = preferences.progressTimeMode == .total ? .remaining : .total
+                    controller.touchControls()
+                }
         }
         .font(.footnote.monospacedDigit())
+    }
+
+    private func trailingTime(position: TimeInterval) -> String {
+        let duration = controller.engine.duration
+        guard controller.preferences.progressTimeMode == .remaining, duration > 0 else { return PlayerTime.format(duration) }
+        return "-" + PlayerTime.format(max(0, duration - position))
     }
 }
 
@@ -368,7 +420,7 @@ private struct PlayerScrubber: View {
             .frame(maxHeight: .infinity)
             .contentShape(.rect)
             .overlay(alignment: .bottomLeading) {
-                if isScrubbing, controller.scrubPreview.isEnabled {
+                if isScrubbing, controller.scrubPreview.isEnabled, controller.preferences.scrubPreview == .window {
                     let size = previewSize(trackWidth: width)
                     ScrubPreviewFrame(previewer: controller.scrubPreview, size: size)
                         .offset(
@@ -391,6 +443,9 @@ private struct PlayerScrubber: View {
                     }
             )
             .animation(.easeOut(duration: 0.15), value: isScrubbing)
+            .sensoryFeedback(trigger: isScrubbing) { _, _ in
+                controller.preferences.hapticScrubBar ? .impact(weight: .light) : nil
+            }
         }
         .frame(height: Self.height)
         .disabled(controller.engine.duration <= 0)

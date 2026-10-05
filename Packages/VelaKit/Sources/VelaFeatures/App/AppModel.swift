@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import VelaCore
 import VelaData
+import VelaDesignSystem
 import VelaNetwork
 import VelaPlayer
 
@@ -15,6 +16,7 @@ public final class AppModel {
     public let searchService = FederatedSearchService()
     public let playbackResolver = PlaybackResolver()
     public let playerPreferences = PlayerPreferences()
+    public let libraryPreferences = LibraryPreferences()
     /// 多线路自动路由。
     public let lineRouter: LineRouter
     /// TMDB 发现 / 目录。
@@ -30,6 +32,16 @@ public final class AppModel {
 
     /// iPhone / iPad 上全屏呈现的播放请求；macOS 使用独立窗口，不经过此属性。
     public var presentedPlayback: PlaybackRequest?
+    /// 画中画中的播放会话：播放页收起后由这里持有，使播放继续；从小窗恢复时交还给重新呈现的播放页。
+    @ObservationIgnored var pictureInPictureSession: PlayerSession?
+
+    /// 发起新的播放：若画中画正在播放其他条目，先结束它（小窗关闭回调会结束会话并上报进度）。
+    public func present(_ request: PlaybackRequest) {
+        if let session = pictureInPictureSession, session.request.id != request.id {
+            session.controller.stopPictureInPicture()
+        }
+        presentedPlayback = request
+    }
 
     /// 服务器 id → (线路地址, client)。线路切换后地址变化，缓存随之失效。
     @ObservationIgnored private var clientCache: [String: (baseURL: URL, client: MediaServerClient)] = [:]
@@ -49,6 +61,8 @@ public final class AppModel {
         self.capabilities = PlaybackCapabilityProbe.current()
         router.start()
         downloads.clientProvider = { [weak self] serverID in self?.client(forServerID: serverID) }
+        // 统计图片磁盘缓存并按上限淘汰；之后写入时累计维护，不再反复枚举目录。
+        Task.detached(priority: .background) { await ImagePipeline.shared.trimDiskCache() }
     }
 
     /// 返回服务器对应的 client，并按「服务器 + 当前线路」缓存，避免每次取图片地址都读 Keychain。
@@ -73,6 +87,14 @@ public final class AppModel {
 
     public func refreshCapabilities() {
         capabilities = PlaybackCapabilityProbe.current()
+    }
+
+    /// 发给服务器的能力：设备实测能力叠加音频设置（「原生音频」关闭时下混为立体声，「杜比全景声」关闭时不直通 E-AC3）。
+    public var effectivePlaybackCapabilities: PlaybackCapabilities {
+        var caps = capabilities
+        if !playerPreferences.nativeAudio { caps.maxAudioChannels = 2 }
+        caps.supportsEAC3 = playerPreferences.enableAtmos
+        return caps
     }
 
     /// 跨服务器聚合（搜索、目录匹配、聚合继续观看）的数据源。

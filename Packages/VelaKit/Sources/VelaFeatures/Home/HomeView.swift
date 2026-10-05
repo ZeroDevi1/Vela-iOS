@@ -12,6 +12,7 @@ import AVKit
 struct HomeView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.isCompactLayout) private var isCompact
+    @Environment(\.playMedia) private var playMedia
     @State private var model = HomeModel()
     @SceneStorage("home.category") private var category: HomeModel.Category = .home
 
@@ -22,8 +23,8 @@ struct HomeView: View {
                     // 与 Android 版一致：顶部栏属于轮播区，随内容滚走，不遮挡下方分区。
                     HomeTopBar(category: $category)
                     let featured = featuredItems
-                    if !featured.isEmpty {
-                        HomeCarousel(items: featured, compact: isCompact)
+                    if prefs.showHero, !featured.isEmpty {
+                        HomeCarousel(items: featured, compact: isCompact, style: prefs.heroStyle)
                     }
                     if category == .home {
                         homeContent
@@ -40,7 +41,7 @@ struct HomeView: View {
             .navigationDestination(for: HomeListRoute.self) { route in
                 if route == .downloads { DownloadsView() } else { HomeListView(route: route) }
             }
-            .navigationDestination(for: LibraryRoute.self) { LibraryItemsView(library: $0.library) }
+            .navigationDestination(for: LibraryRoute.self) { LibraryItemsView(library: $0.library, initialSort: $0.initialSort, mixedContentView: app.libraryPreferences.mixedContentView) }
             .navigationDestination(for: GenreRoute.self) { GenreItemsView(route: $0) }
             .detailDestinations()
             .refreshable { await load() }
@@ -57,6 +58,8 @@ struct HomeView: View {
         var server: URL?
     }
 
+    private var prefs: LibraryPreferences { app.libraryPreferences }
+
     /// 分类下轮播只显示对应类型；没有对应类型时退回全部，避免轮播消失。
     private var featuredItems: [MediaItem] {
         let kind: MediaItem.Kind? = switch category {
@@ -64,9 +67,15 @@ struct HomeView: View {
         case .movies: .movie
         case .tvShows: .series
         }
-        guard let kind else { return model.featured }
-        let filtered = model.featured.filter { $0.kind == kind }
-        return filtered.isEmpty ? model.featured : filtered
+        let featured = unwatched(model.featured)
+        guard let kind else { return featured }
+        let filtered = featured.filter { $0.kind == kind }
+        return filtered.isEmpty ? featured : filtered
+    }
+
+    /// 「隐藏已观看项目」：首页的轮播与最近添加 / 风格分区去掉已看完的条目（剧集看完全部才算）。
+    private func unwatched(_ items: [MediaItem]) -> [MediaItem] {
+        prefs.hideWatched ? items.filter { !$0.isPlayed } : items
     }
 
     // MARK: - 首页分类
@@ -77,7 +86,7 @@ struct HomeView: View {
             ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
         }
 
-        if !model.libraries.isEmpty {
+        if prefs.showMyMedia, !model.libraries.isEmpty {
             MediaShelf("媒体库", items: model.libraries) { library in
                 NavigationLink(value: LibraryRoute(library: library)) {
                     LandscapeCard(
@@ -91,7 +100,7 @@ struct HomeView: View {
             }
         }
 
-        if !model.resume.isEmpty {
+        if prefs.showResume, !model.resume.isEmpty {
             MediaShelf("继续观看", items: model.resume) { item in
                 NavigationLink(value: item) { resumeCard(item) }.buttonStyle(.plain)
             } accessory: {
@@ -100,7 +109,7 @@ struct HomeView: View {
             }
         }
 
-        if !model.nextUp.isEmpty {
+        if prefs.showNextUp, !model.nextUp.isEmpty {
             MediaShelf("接下来", items: model.nextUp) { item in
                 NavigationLink(value: item) { resumeCard(item) }.buttonStyle(.plain)
             } accessory: {
@@ -110,10 +119,13 @@ struct HomeView: View {
         }
 
         ForEach(model.shelves) { shelf in
-            MediaShelf("最近添加-\(shelf.library.name)", items: shelf.items) { item in
+            MediaShelf("最近添加-\(shelf.library.name)", items: unwatched(shelf.items)) { item in
                 NavigationLink(value: item) { posterCard(item) }.buttonStyle(.plain)
             } accessory: {
-                NavigationLink(value: LibraryRoute(library: shelf.library)) { ShelfViewAllArrow() }
+                // 从「最近添加」进入时临时按添加日期倒序，与分区含义一致。
+                NavigationLink(value: LibraryRoute(library: shelf.library, initialSort: LibrarySort(field: .dateCreated, descending: true))) {
+                    ShelfViewAllArrow()
+                }
                     .buttonStyle(.plain)
             }
         }
@@ -148,7 +160,7 @@ struct HomeView: View {
             ContentUnavailableView("暂无\(category.title)", systemImage: "film.stack")
         case .loaded(let shelves):
             ForEach(shelves) { shelf in
-                MediaShelf(shelf.genre.name, items: shelf.items) { item in
+                MediaShelf(shelf.genre.name, items: unwatched(shelf.items)) { item in
                     NavigationLink(value: item) { posterCard(item) }.buttonStyle(.plain)
                 } accessory: {
                     if let type = category.itemType {
@@ -179,19 +191,41 @@ struct HomeView: View {
         )
     }
 
-    /// 继续观看 / 接下来卡片：优先剧集的横版图（Thumb → Backdrop），单集退回单集截图；右上角显示剩余时长。
+    /// 继续观看 / 接下来卡片；右上角显示剩余时长。
+    /// 图片：「使用“集”图片」开启时单集用自己的截图，否则用剧集横版图（Thumb → Backdrop）。
     private func resumeCard(_ item: MediaItem) -> some View {
-        let image = app.imageURL(for: item, kind: .thumb, maxWidth: 640)
+        let episodeImage = prefs.useEpisodeImages && item.kind == .episode
+            ? app.imageURL(for: item, kind: .primary, maxWidth: 640) : nil
+        let image = episodeImage
+            ?? app.imageURL(for: item, kind: .thumb, maxWidth: 640)
             ?? app.imageURL(for: item, kind: .backdrop, maxWidth: 640)
             ?? app.imageURL(for: item, kind: .primary, maxWidth: 640)
+        let width = Self.landscapeWidth(compact: isCompact)
         return LandscapeCard(
             title: item.seriesName ?? item.name,
             subtitle: Self.episodeSubtitle(item),
             imageURL: image,
             progress: item.playedFraction,
-            width: Self.landscapeWidth(compact: isCompact),
+            width: width,
             caption: Self.remainingCaption(item)
         )
+        // 「显示播放按钮」：点按直接续播，不进入详情页。
+        .overlay(alignment: .top) {
+            if prefs.showPlayButton {
+                Button {
+                    playMedia(.item(item))
+                } label: {
+                    Image(systemName: "play.fill")
+                        .font(.title3)
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .glassEffect(.regular.interactive(), in: .circle)
+                }
+                .buttonStyle(.plain)
+                .frame(height: width * 9 / 16)
+                .accessibilityLabel("播放 \(item.seriesName ?? item.name)")
+            }
+        }
     }
 
     /// 首页横版卡宽度：iPhone 一屏约两张（与 Android 版 200dp 卡片比例一致）。
@@ -221,11 +255,12 @@ struct HomeView: View {
 }
 
 extension PosterBadges {
-    /// 剧集显示未看集数，电影显示已看勾（与 Android 版一致，海报上不叠评分）。
+    /// 剧集显示未看集数，电影显示已看勾，右下角社区评分；各角标可在「媒体库配置 → 海报偏好」中关闭。
     init(_ item: MediaItem) {
         self.init(
             unplayedCount: item.kind == .series ? item.unplayedItemCount : nil,
             isPlayed: item.kind != .series && item.isPlayed,
+            rating: item.communityRating,
             versionCount: item.versionCount
         )
     }
@@ -258,18 +293,22 @@ private struct GenreItemsView: View {
 private struct HomeCarousel: View {
     let items: [MediaItem]
     let compact: Bool
+    /// 海报（竖版，露出更多相邻卡片）或背景图（横版）。
+    let style: LibraryPreferences.ArtworkStyle
     @State private var current: String?
 
     private static let interval: Duration = .seconds(8)
 
     var body: some View {
         GeometryReader { proxy in
-            let cardWidth = proxy.size.width * (compact ? 0.8 : 0.62)
+            let cardWidth = style == .poster
+                ? min(proxy.size.width * 0.8, proxy.size.height * 2 / 3)
+                : proxy.size.width * (compact ? 0.8 : 0.62)
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 10) {
                     ForEach(items) { item in
                         NavigationLink(value: item) {
-                            CarouselCard(item: item)
+                            CarouselCard(item: item, style: style)
                                 .frame(width: cardWidth, height: proxy.size.height)
                         }
                         .buttonStyle(.plain)
@@ -283,7 +322,7 @@ private struct HomeCarousel: View {
             .scrollIndicators(.hidden)
             .scrollPosition(id: $current, anchor: .center)
         }
-        .frame(height: compact ? 260 : 380)
+        .frame(height: style == .poster ? (compact ? 360 : 460) : (compact ? 260 : 380))
         .task(id: current) {
             try? await Task.sleep(for: Self.interval)
             guard !Task.isCancelled, items.count > 1 else { return }
@@ -296,12 +335,18 @@ private struct HomeCarousel: View {
 
 private struct CarouselCard: View {
     let item: MediaItem
+    let style: LibraryPreferences.ArtworkStyle
     @Environment(AppModel.self) private var app
 
     var body: some View {
         Color.clear
             .overlay {
-                RemoteArtwork(url: app.imageURL(for: item, kind: .backdrop, maxWidth: 1280), placeholderSymbol: "film")
+                RemoteArtwork(
+                    url: style == .poster
+                        ? app.imageURL(for: item, kind: .primary, maxWidth: 800)
+                        : app.imageURL(for: item, kind: .backdrop, maxWidth: 1280),
+                    placeholderSymbol: "film"
+                )
             }
             .overlay {
                 LinearGradient(

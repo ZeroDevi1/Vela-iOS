@@ -55,6 +55,7 @@ public struct PlaybackResolver: Sendable {
         client: MediaServerClient,
         capabilities: PlaybackCapabilities,
         mediaSourceID: String? = nil,
+        versionPreference: MediaVersionPreference = .serverDefault,
         startTime: TimeInterval = 0,
         audioStreamIndex: Int? = nil,
         burnSubtitleIndex: Int? = nil
@@ -67,7 +68,7 @@ public struct PlaybackResolver: Sendable {
             subtitleStreamIndex: burnSubtitleIndex,
             capabilities: capabilities
         )
-        let source = info.mediaSources.first { $0.id == mediaSourceID } ?? info.mediaSources.first
+        let source = info.mediaSources.first { $0.id == mediaSourceID } ?? MediaSelection.preferredSource(info.mediaSources, by: versionPreference)
         guard let source else { throw PlaybackResolveError.noMediaSource }
 
         // STRM：Path 是 http(s) 时按用户偏好直接播放原始地址，不经服务器中转。

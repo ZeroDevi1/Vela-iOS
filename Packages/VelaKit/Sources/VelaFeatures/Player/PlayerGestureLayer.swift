@@ -59,50 +59,72 @@ struct PlayerGestureLayer: UIViewRepresentable {
             let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
             longPress.minimumPressDuration = 0.45
             let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+            pinch.delegate = self
+            let twoFingerPan = UIPanGestureRecognizer(target: self, action: #selector(handleTwoFingerPan(_:)))
+            twoFingerPan.minimumNumberOfTouches = 2
+            twoFingerPan.maximumNumberOfTouches = 2
+            twoFingerPan.delegate = self
+            let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleTwoFingerTap(_:)))
+            twoFingerTap.numberOfTouchesRequired = 2
 
-            for recognizer in [doubleTap, singleTap, pan, longPress, pinch] {
+            for recognizer in [doubleTap, singleTap, pan, longPress, pinch, twoFingerPan, twoFingerTap] {
                 view.addGestureRecognizer(recognizer)
             }
         }
+
+        private var preferences: PlayerPreferences { controller.preferences }
 
         private var isLandscape: Bool {
             guard let view else { return true }
             return view.bounds.width > view.bounds.height
         }
 
+        private func zone(of recognizer: UIGestureRecognizer) -> PlayerGestureModel.TapZone {
+            guard let view else { return .center }
+            return PlayerGestureModel.tapZone(x: recognizer.location(in: view).x, width: view.bounds.width, isLandscape: isLandscape)
+        }
+
         // MARK: - 点击
 
         @objc private func handleSingleTap(_ recognizer: UITapGestureRecognizer) {
-            controller.toggleControls()
+            // 锁定时单击只唤出解锁按钮。
+            guard !controller.isLocked else {
+                controller.toggleControls()
+                return
+            }
+            let zone = zone(of: recognizer)
+            controller.perform(zone == .center ? preferences.singleTapCenter : preferences.singleTapSides, zone: zone)
         }
 
         @objc private func handleDoubleTap(_ recognizer: UITapGestureRecognizer) {
-            guard !controller.isLocked, let view else { return }
-            let zone = PlayerGestureModel.tapZone(
-                x: recognizer.location(in: view).x,
-                width: view.bounds.width,
-                isLandscape: isLandscape
-            )
-            switch zone {
-            case .leading: controller.skipBackward()
-            case .trailing: controller.skipForward()
-            case .center: controller.togglePlayPause()
-            }
+            guard !controller.isLocked else { return }
+            let zone = zone(of: recognizer)
+            let action = zone == .center ? preferences.doubleTapCenter : preferences.doubleTapSides
+            guard action != .none else { return }
+            controller.perform(action, zone: zone)
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         }
 
         // MARK: - 拖动
 
         func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
-            guard !controller.isLocked, !holdActive, let view, recognizer is UIPanGestureRecognizer else {
-                return !(recognizer is UIPanGestureRecognizer)
-            }
+            guard let pan = recognizer as? UIPanGestureRecognizer else { return true }
+            guard !controller.isLocked, !holdActive, let view else { return false }
+            // 双指拖动只在画面放大后用于移动画面。
+            if pan.minimumNumberOfTouches == 2 { return preferences.twoFingerPan && controller.zoomScale > 1 }
             let point = recognizer.location(in: view)
             let bounds = view.bounds
             return point.y > Self.verticalEdgeExclusion
                 && point.y < bounds.height - Self.verticalEdgeExclusion
                 && point.x > Self.horizontalEdgeExclusion
                 && point.x < bounds.width - Self.horizontalEdgeExclusion
+        }
+
+        /// 捏合与双指拖动可同时进行（边放大边移动）。
+        func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            let pair = [recognizer, other]
+            return pair.contains { $0 is UIPinchGestureRecognizer }
+                && pair.contains { ($0 as? UIPanGestureRecognizer)?.minimumNumberOfTouches == 2 }
         }
 
         @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
@@ -118,7 +140,6 @@ struct PlayerGestureLayer: UIViewRepresentable {
             }
             let translation = recognizer.translation(in: view)
             let size = view.bounds.size
-            let settings = controller.gestureSettings
 
             switch recognizer.state {
             case .began:
@@ -129,15 +150,19 @@ struct PlayerGestureLayer: UIViewRepresentable {
                     guard let kind = PlayerGestureModel.panKind(
                         translation: CGSize(width: translation.x, height: translation.y),
                         startX: panStart.x,
-                        width: size.width
+                        width: size.width,
+                        switchMediaZone: preferences.enableSwipeSwitchMedia
                     ) else { return }
                     switch kind {
-                    case .seek where settings.enableSwipeSeek:
+                    case .seek where preferences.enableSwipeSeek:
                         controller.beginScrub()
-                    case .brightness where settings.enableBrightnessVolume:
+                        if preferences.hapticSwipeSeek { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+                    case .brightness where preferences.enableBrightnessSwipe:
                         levelAtPanStart = Double(view.window?.windowScene?.screen.brightness ?? 0.5)
-                    case .volume where settings.enableBrightnessVolume:
+                    case .volume where preferences.enableVolumeSwipe:
                         levelAtPanStart = Double(volume.current)
+                    case .switchMedia:
+                        break
                     default:
                         recognizer.state = .cancelled
                         return
@@ -154,18 +179,30 @@ struct PlayerGestureLayer: UIViewRepresentable {
                 case .brightness:
                     let value = clamp(levelAtPanStart + PlayerGestureModel.levelDelta(translationY: translation.y, height: size.height))
                     view.window?.windowScene?.screen.brightness = CGFloat(value)
+                    PlayerBrightness.didAdjust(value, preferences: preferences)
                     controller.showLevel(.brightness(value))
                 case .volume:
                     let value = clamp(levelAtPanStart + PlayerGestureModel.levelDelta(translationY: translation.y, height: size.height))
                     volume.set(Float(value))
                     controller.showLevel(.volume(value))
-                case nil:
+                case .switchMedia, nil:
                     break
                 }
             case .ended, .cancelled, .failed:
-                if panKind == .seek {
+                switch panKind {
+                case .seek:
                     controller.endScrub(commit: recognizer.state == .ended)
-                } else if panKind != nil {
+                    if preferences.hapticSwipeSeek, recognizer.state == .ended { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+                case .switchMedia where recognizer.state == .ended:
+                    // 上滑下一集、下滑上一集。
+                    if translation.y < -PlayerGestureModel.switchMediaDistance {
+                        controller.playNextNow()
+                    } else if translation.y > PlayerGestureModel.switchMediaDistance {
+                        controller.onPlayPrevious?()
+                    }
+                case nil, .switchMedia:
+                    break
+                default:
                     controller.clearHUD()
                 }
                 panKind = nil
@@ -177,13 +214,13 @@ struct PlayerGestureLayer: UIViewRepresentable {
         // MARK: - 长按倍速
 
         @objc private func handleLongPress(_ recognizer: UILongPressGestureRecognizer) {
-            guard !controller.isLocked else { return }
+            guard !controller.isLocked, let view else { return }
             switch recognizer.state {
             case .began:
                 guard panKind == nil, controller.isPlaying else { return }
                 holdActive = true
-                controller.beginHoldSpeed()
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                controller.beginHoldSpeed(leading: recognizer.location(in: view).x < view.bounds.width / 2)
+                if preferences.hapticLongPress { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
             case .ended, .cancelled, .failed:
                 if holdActive {
                     holdActive = false
@@ -194,7 +231,7 @@ struct PlayerGestureLayer: UIViewRepresentable {
             }
         }
 
-        // MARK: - 捏合
+        // MARK: - 双指
 
         @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
             guard !controller.isLocked else { return }
@@ -204,12 +241,29 @@ struct PlayerGestureLayer: UIViewRepresentable {
                 recognizer.scale = 1
                 return
             }
+            if preferences.pinchToZoom {
+                controller.zoom(by: recognizer.scale)
+                recognizer.scale = 1
+                return
+            }
             guard recognizer.state == .ended else { return }
             if recognizer.scale > 1 + PlayerGestureModel.pinchToggleThreshold {
                 controller.videoGravity = .fill
             } else if recognizer.scale < 1 - PlayerGestureModel.pinchToggleThreshold {
                 controller.videoGravity = .fit
             }
+        }
+
+        @objc private func handleTwoFingerPan(_ recognizer: UIPanGestureRecognizer) {
+            guard let view, !controller.vrEnabled else { return }
+            let translation = recognizer.translation(in: view)
+            controller.pan(by: CGSize(width: translation.x, height: translation.y))
+            recognizer.setTranslation(.zero, in: view)
+        }
+
+        @objc private func handleTwoFingerTap(_ recognizer: UITapGestureRecognizer) {
+            guard !controller.isLocked, !controller.vrEnabled, preferences.twoFingerTapReset else { return }
+            controller.resetZoom()
         }
 
         private func clamp(_ value: Double) -> Double { min(1, max(0, value)) }

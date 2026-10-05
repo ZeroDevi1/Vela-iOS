@@ -12,6 +12,8 @@ public struct PlaybackCapabilities: Sendable, Hashable {
     public var supportsHDR10: Bool
     /// 音频最大声道数（直通或解码后下混前）。
     public var maxAudioChannels: Int
+    /// E-AC3（含杜比全景声 JOC）直通；false 时服务器把 E-AC3 转为 AC3 / AAC。
+    public var supportsEAC3: Bool
     /// 直放与转码的码率上限，单位 bit/s。
     public var maxStreamingBitrate: Int
 
@@ -21,8 +23,10 @@ public struct PlaybackCapabilities: Sendable, Hashable {
         supportsDolbyVision: Bool,
         supportsHDR10: Bool,
         maxAudioChannels: Int = 8,
+        supportsEAC3: Bool = true,
         maxStreamingBitrate: Int = 160_000_000
     ) {
+        self.supportsEAC3 = supportsEAC3
         self.supportsAV1 = supportsAV1
         self.supportsHEVC = supportsHEVC
         self.supportsDolbyVision = supportsDolbyVision

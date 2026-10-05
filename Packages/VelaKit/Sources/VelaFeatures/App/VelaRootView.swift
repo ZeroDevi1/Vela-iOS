@@ -11,6 +11,16 @@ public struct VelaRootView: View {
 
     public init() {}
 
+    private var posterDisplay: PosterDisplayOptions {
+        let prefs = app.libraryPreferences
+        return PosterDisplayOptions(
+            titleAlignment: prefs.titleAlignment == .leading ? .leading : .center,
+            showRating: prefs.showRating,
+            showPlayedMark: prefs.showPlayedMark,
+            showUnplayedCount: prefs.showUnplayedCount
+        )
+    }
+
     public var body: some View {
         @Bindable var app = app
         Group {
@@ -22,10 +32,13 @@ public struct VelaRootView: View {
         }
         .tint(VelaTheme.accent)
         .velaPlaybackEnvironment()
+        .environment(\.posterDisplay, posterDisplay)
         #if os(iOS)
         .environment(\.isCompactLayout, sizeClass == .compact)
         .fullScreenCover(item: $app.presentedPlayback) { request in
-            PlayerScreen(request: request)
+            // 从画中画恢复（或再次播放画中画中的同一条目）时复用原会话。
+            let resuming = app.pictureInPictureSession.flatMap { $0.request.id == request.id ? $0 : nil }
+            PlayerScreen(request: request, resuming: resuming)
         }
         #endif
         .overlay(alignment: .top) {
@@ -67,7 +80,7 @@ private struct PlaybackEnvironmentModifier: ViewModifier {
         return PlayMediaAction { request in openWindow(id: PlayerScreen.windowID, value: request) }
         #else
         let app = app
-        return PlayMediaAction { request in app.presentedPlayback = request }
+        return PlayMediaAction { request in app.present(request) }
         #endif
     }
 }

@@ -17,11 +17,13 @@ struct ItemDetailView: View {
 
     private var client: MediaServerClient? { app.client(forServerID: model.seed.serverID) }
     private var item: MediaItem { model.item }
+    /// 「媒体库配置 → 详情页」的显示开关。
+    private var prefs: LibraryPreferences { app.libraryPreferences }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: VelaTheme.Spacing.xl) {
-                DetailHero(item: item, client: client, isCompact: isCompact, details: model.details)
+                DetailHero(item: item, client: client, isCompact: isCompact, details: model.details, style: prefs.detailHeaderStyle)
 
                 VStack(alignment: .leading, spacing: VelaTheme.Spacing.l) {
                     actions
@@ -151,7 +153,7 @@ struct ItemDetailView: View {
 
     @ViewBuilder
     private var sections: some View {
-        if item.kind == .series, !model.seasons.isEmpty {
+        if prefs.showEpisodeIndicator, item.kind == .series, !model.seasons.isEmpty {
             MediaShelf("季", items: model.seasons) { season in
                 NavigationLink(value: SeasonRoute(series: item, season: season)) {
                     PosterCard(
@@ -171,19 +173,21 @@ struct ItemDetailView: View {
             PartsShelf(parts: model.parts)
         }
 
-        if item.kind == .episode, model.siblingEpisodes.count > 1 {
+        if prefs.showEpisodeIndicator, item.kind == .episode, model.siblingEpisodes.count > 1 {
             EpisodeShelf(title: "更多来自 \(model.siblingEpisodes.first.flatMap { _ in item.parentIndexNumber.map { "第 \($0) 季" } } ?? "本季")",
                          episodes: model.siblingEpisodes, currentID: item.id)
         }
 
         if let details = model.details {
             ChapterShelf(item: item, client: client)
-            CastShelf(people: details.people, client: client, serverID: item.serverID)
+            if prefs.showCast {
+                CastShelf(people: details.people, client: client, serverID: item.serverID)
+            }
         }
 
         ExtrasShelf(trailers: model.trailers, remoteTrailers: model.details?.remoteTrailers ?? [], features: model.specialFeatures)
 
-        if !model.similar.isEmpty {
+        if prefs.showSimilar, !model.similar.isEmpty {
             MediaShelf("类似作品", items: model.similar) { other in
                 NavigationLink(value: other) {
                     PosterCard(
@@ -197,7 +201,7 @@ struct ItemDetailView: View {
             }
         }
 
-        let links = ExternalLink.links(for: item)
+        let links = ExternalLink.links(for: item).filter { prefs.showDoubanLink || $0.name != "豆瓣" }
         if !links.isEmpty {
             VStack(alignment: .leading, spacing: VelaTheme.Spacing.s) {
                 Text("链接").font(.title3.weight(.semibold)).padding(.horizontal, VelaTheme.Spacing.l)
@@ -214,7 +218,7 @@ struct ItemDetailView: View {
             }
         }
 
-        if let details = model.details, let source = model.selectedSource {
+        if prefs.showMediaInfo, let details = model.details, let source = model.selectedSource {
             MediaInfoSection(details: details, source: source)
         }
     }
@@ -249,6 +253,8 @@ private struct DetailHero: View {
     let client: MediaServerClient?
     let isCompact: Bool
     let details: ItemDetails?
+    /// 「详情页展示」：背景图（横版）或海报（竖版）。
+    let style: LibraryPreferences.ArtworkStyle
 
     var body: some View {
         // 固定尺寸占位决定布局，图片作为 overlay 填充，避免 scaledToFill 撑宽页面。
@@ -257,8 +263,10 @@ private struct DetailHero: View {
             .frame(maxWidth: .infinity)
             .overlay {
                 RemoteArtwork(
-                    url: client?.imageURL(for: item, kind: .backdrop, maxWidth: 1920)
-                        ?? client?.imageURL(for: item, kind: .primary, maxWidth: 1200),
+                    url: style == .poster
+                        ? client?.imageURL(for: item, kind: .primary, maxWidth: 1200)
+                        : client?.imageURL(for: item, kind: .backdrop, maxWidth: 1920)
+                            ?? client?.imageURL(for: item, kind: .primary, maxWidth: 1200),
                     placeholderSymbol: "film"
                 )
             }

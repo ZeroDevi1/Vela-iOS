@@ -19,9 +19,25 @@ struct LibraryItemsView: View {
     @State private var shuffleError: String?
     @AppStorage("library.imageStyle") private var imageStyle: LibraryImageStyle = .poster
 
-    init(library: MediaItem) {
+    /// - Parameter initialSort: 本次进入临时使用的排序（如首页「最近添加 →」按添加日期），不会写回该库记住的排序；
+    ///   为 nil 时使用该库记住的排序。
+    init(library: MediaItem, initialSort: LibrarySort? = nil, mixedContentView: LibraryPreferences.MixedContentView = .folders) {
         self.library = library
-        _sort = State(initialValue: LibrarySort.load(libraryID: library.id, collectionType: library.collectionType))
+        // 「混合内容优先展示视图」：未指定类型的媒体库默认打开文件夹或全部。
+        if library.collectionType == nil || library.collectionType?.isEmpty == true {
+            _tab = State(initialValue: mixedContentView == .folders ? .folders : .all)
+        }
+        _sort = State(initialValue: initialSort ?? LibrarySort.load(libraryID: library.id, collectionType: library.collectionType))
+    }
+
+    /// 「列表中显示合集」开启时，电影库把同一合集的电影折叠为合集条目。
+    private var allItemsQuery: ItemQuery {
+        var query = ItemQuery(parentID: library.id, includeItemTypes: LibraryItemsView.itemTypes(for: library), recursive: true)
+        if app.libraryPreferences.showCollections, library.collectionType?.lowercased() == "movies" {
+            query.collapseBoxSets = true
+            query.includeItemTypes += ["BoxSet"]
+        }
+        return query
     }
 
     /// 合集库没有推荐 / 类型维度。
@@ -41,7 +57,7 @@ struct LibraryItemsView: View {
             case .all:
                 PagedItemGrid(
                     serverID: library.serverID,
-                    template: ItemQuery(parentID: library.id, includeItemTypes: LibraryItemsView.itemTypes(for: library), recursive: true),
+                    template: allItemsQuery,
                     sort: sort,
                     played: played,
                     style: imageStyle,
@@ -67,7 +83,6 @@ struct LibraryItemsView: View {
             FolderContentsView(parentID: route.folder.id, serverID: route.folder.serverID)
                 .navigationTitle(route.folder.name)
         }
-        .onChange(of: sort) { sort.save(libraryID: library.id) }
         .alert("随机播放失败", isPresented: Binding(get: { shuffleError != nil }, set: { if !$0 { shuffleError = nil } })) {
             Button("好") {}
         } message: {
@@ -125,6 +140,8 @@ struct LibraryItemsView: View {
                     } else {
                         sort = LibrarySort(field: option.field, descending: option.field != .name)
                     }
+                    // 只在用户手动改排序时记住，临时传入的 initialSort 不覆盖已保存的偏好。
+                    sort.save(libraryID: library.id)
                 } label: {
                     if sort.field == option.field {
                         Label(option.title, systemImage: sort.descending ? "arrow.down" : "arrow.up")

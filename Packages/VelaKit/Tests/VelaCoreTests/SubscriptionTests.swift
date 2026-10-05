@@ -44,16 +44,19 @@ struct CalendarRulesTests {
 }
 
 struct EngineChoiceTests {
-    @Test func autoSwitchesOnlyForFormatTranscodes() {
-        #expect(PlaybackEngineChoice.prefersMPV(mode: .auto, isTranscode: true, reasons: ["ContainerNotSupported"], canDirectStream: true))
-        #expect(!PlaybackEngineChoice.prefersMPV(mode: .auto, isTranscode: false, reasons: [], canDirectStream: true))
-        #expect(!PlaybackEngineChoice.prefersMPV(mode: .auto, isTranscode: true, reasons: ["ContainerBitrateExceedsLimit"], canDirectStream: true))
-        #expect(!PlaybackEngineChoice.prefersMPV(mode: .auto, isTranscode: true, reasons: ["VideoCodecNotSupported"], canDirectStream: false))
+    @Test func autoAlwaysPrefersSystemEngine() {
+        #expect(!PlaybackEngineChoice.prefersMPV(mode: .auto, canDirectStream: true))
+        #expect(!PlaybackEngineChoice.prefersMPV(mode: .system, canDirectStream: true))
     }
 
-    @Test func explicitModes() {
-        #expect(PlaybackEngineChoice.prefersMPV(mode: .mpv, isTranscode: false, reasons: [], canDirectStream: true))
-        #expect(!PlaybackEngineChoice.prefersMPV(mode: .system, isTranscode: true, reasons: ["ContainerNotSupported"], canDirectStream: true))
+    @Test func mpvOnlyWhenChosenAndOriginalFileAvailable() {
+        #expect(PlaybackEngineChoice.prefersMPV(mode: .mpv, canDirectStream: true))
+        #expect(!PlaybackEngineChoice.prefersMPV(mode: .mpv, canDirectStream: false))
+    }
+
+    @Test func remuxKeepsVideoLossless() {
+        #expect(!PlaybackEngineChoice.reencodesVideo(reasons: ["ContainerNotSupported", "AudioCodecNotSupported"]))
+        #expect(PlaybackEngineChoice.reencodesVideo(reasons: ["VideoCodecNotSupported"]))
     }
 }
 

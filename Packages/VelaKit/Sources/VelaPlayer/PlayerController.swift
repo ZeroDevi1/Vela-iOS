@@ -40,7 +40,8 @@ public final class PlayerController {
     /// 当前内核。会话可在起播前或失败重试时替换（系统 ↔ MPV），渲染表面按实例重建。
     public private(set) var engine: any PlaybackEngine
     public private(set) var source: PlaybackSource?
-    public var gestureSettings = PlayerGestureSettings()
+    /// 播放偏好；会话起播时换成应用共享的实例，设置页的修改即时生效。
+    public var preferences = PlayerPreferences()
 
     public private(set) var controlsVisible = true
     public private(set) var hud: HUD?
@@ -52,6 +53,8 @@ public final class PlayerController {
     public private(set) var vrEnabled = false
     /// VR 视角；拖动 / 捏合时更新。
     public var vrState = VRViewState()
+    /// VR 转平面拿不到画面时的原因（由渲染器诊断），界面据此提示而不是只显示黑屏；正常出画面时为 nil。
+    public var vrIssue: String?
     /// 用户手动选择的排布（自动识别失败或识别有误时）；nil 使用自动识别结果。
     public private(set) var vrLayoutOverride: VRLayout?
 
@@ -61,6 +64,16 @@ public final class PlayerController {
     public var isPictureInPictureActive = false
     /// 画中画按钮触发器：值变化即请求切换，由渲染表面响应。
     public private(set) var pictureInPictureToggleRequest = 0
+    /// 正在从画中画恢复界面（系统已调用恢复回调、尚未结束画中画）。
+    public internal(set) var isRestoringPictureInPicture = false
+
+    /// 画中画事件，由上层决定播放页的去留：开始时可收起播放页（会话继续由上层持有）；
+    /// 恢复时重新呈现播放页，完成后调用传入的回调；结束时参数表示是否经由「恢复」结束（否则为用户关闭小窗）。
+    @ObservationIgnored public var onPictureInPictureStart: (() -> Void)?
+    @ObservationIgnored public var onPictureInPictureRestore: ((@escaping (Bool) -> Void) -> Void)?
+    @ObservationIgnored public var onPictureInPictureStop: ((_ restored: Bool) -> Void)?
+    /// 渲染视图与画中画控制器；随会话存活，播放页收起再呈现时复用。
+    @ObservationIgnored private var host: PlayerSurfaceHost?
 
     /// 片头 / 片尾区段（按起点排序）。
     public var segments: [PlaybackSegment] = []
@@ -70,6 +83,14 @@ public final class PlayerController {
     public private(set) var upNext: UpNext?
     /// 用户点击「下一集」或倒计时结束时调用，由播放会话负责切换。
     @ObservationIgnored public var onPlayNext: (() -> Void)?
+    /// 中间竖直下滑切换到上一集时调用。
+    @ObservationIgnored public var onPlayPrevious: (() -> Void)?
+    /// 长按播放 / 暂停按钮退出播放器时调用。
+    @ObservationIgnored public var onRequestClose: (() -> Void)?
+
+    /// 画面缩放倍率（1 为原始大小）与缩放后的平移量（pt）；双指手势调整。
+    public var zoomScale: CGFloat = 1
+    public var zoomOffset: CGSize = .zero
     @ObservationIgnored private var upNextTask: Task<Void, Never>?
     /// 用户关闭过的「下一集」提示不再自动弹出，直到切换条目。
     @ObservationIgnored private var upNextDismissed = false
@@ -86,9 +107,6 @@ public final class PlayerController {
     @ObservationIgnored private var pinCount = 0
     @ObservationIgnored private var hudTask: Task<Void, Never>?
 
-    /// 控制层无操作后自动隐藏的延迟（秒）。
-    public static let controlsAutoHideDelay: Duration = .seconds(3)
-
     public init(engine: any PlaybackEngine = AVPlayerEngine()) {
         self.engine = engine
     }
@@ -100,7 +118,10 @@ public final class PlayerController {
             // 新条目：识别为 VR 时默认转平面（与 Android 版一致），可在菜单中关闭或改选排布。
             vrLayoutOverride = nil
             vrState = VRViewState()
+            vrIssue = nil
             vrEnabled = source.vrLayout != nil && engine.kind == .avFoundation
+            zoomScale = preferences.rememberZoom ? CGFloat(preferences.savedZoomScale) : 1
+            zoomOffset = .zero
         }
         if resetMetadata {
             segments = []
@@ -108,6 +129,7 @@ public final class PlayerController {
             cancelUpNext()
             upNextDismissed = false
         }
+        engine.preciseSeeking = preferences.preciseSeek
         engine.load(source)
         scheduleAutoHide()
     }
@@ -116,9 +138,11 @@ public final class PlayerController {
     public func replaceEngine(_ newEngine: any PlaybackEngine) {
         guard ObjectIdentifier(newEngine) != ObjectIdentifier(engine) else { return }
         let rate = engine.rate
+        let isMuted = engine.isMuted
         engine.stop()
         engine = newEngine
         newEngine.setRate(rate)
+        newEngine.setMuted(isMuted)
         // VR 与画中画依赖系统内核的画面输出。
         if newEngine.kind != .avFoundation {
             vrEnabled = false
@@ -126,7 +150,30 @@ public final class PlayerController {
         }
     }
 
+    /// 当前内核的渲染宿主；内核替换后重建。
+    func surfaceHost() -> PlayerSurfaceHost {
+        if let host, host.engineID == ObjectIdentifier(engine) { return host }
+        host?.stopPictureInPicture()
+        let host = PlayerSurfaceHost(controller: self)
+        self.host = host
+        return host
+    }
+
+    public func stopPictureInPicture() {
+        host?.stopPictureInPicture()
+    }
+
+    /// 切后台继续播放声音时摘下画面（见 `PlayerSurfaceHost.setVideoDetached`）。
+    public func setVideoDetached(_ detached: Bool) {
+        host?.setVideoDetached(detached)
+    }
+
     public func shutdown() {
+        host?.stopPictureInPicture()
+        host = nil
+        onPictureInPictureStart = nil
+        onPictureInPictureRestore = nil
+        onPictureInPictureStop = nil
         hideTask?.cancel()
         hudTask?.cancel()
         upNextTask?.cancel()
@@ -232,8 +279,10 @@ public final class PlayerController {
 
     private func scheduleAutoHide() {
         hideTask?.cancel()
+        let seconds = preferences.autoHideSeconds
+        guard seconds > 0 else { return }
         hideTask = Task { [weak self] in
-            try? await Task.sleep(for: Self.controlsAutoHideDelay)
+            try? await Task.sleep(for: .seconds(seconds))
             guard !Task.isCancelled, let self else { return }
             // 暂停或拖动时保持显示，方便用户继续操作。
             if self.engine.status == .playing && self.scrubTime == nil && self.pinCount == 0 {
@@ -259,8 +308,64 @@ public final class PlayerController {
         flashHUD(.skip(seconds: seconds))
     }
 
-    public func skipBackward() { skip(by: -gestureSettings.seekBackwardSeconds) }
-    public func skipForward() { skip(by: gestureSettings.seekForwardSeconds) }
+    public func skipBackward() { skip(by: -TimeInterval(preferences.seekBackwardSeconds)) }
+    public func skipForward() { skip(by: TimeInterval(preferences.seekForwardSeconds)) }
+
+    /// 执行单击 / 双击动作；`zone` 决定快退快进的方向与倍速使用左 / 右半屏的设置。
+    public func perform(_ action: PlayerTapAction, zone: PlayerGestureModel.TapZone) {
+        switch action {
+        case .toggleControls:
+            toggleControls()
+        case .playPause:
+            togglePlayPause()
+        case .seek:
+            switch zone {
+            case .leading: skipBackward()
+            case .trailing: skipForward()
+            case .center: togglePlayPause()
+            }
+        case .speed:
+            toggleSpeedBoost(leading: zone == .leading)
+        case .none:
+            break
+        }
+    }
+
+    /// 双击倍速：再次双击恢复原速。
+    public func toggleSpeedBoost(leading: Bool) {
+        let boost = leading ? preferences.leadingSpeed : preferences.trailingSpeed
+        if engine.rate == boost {
+            engine.setRate(rateBeforeHold == boost ? 1 : rateBeforeHold)
+            flashHUD(.speed(engine.rate))
+        } else {
+            rateBeforeHold = engine.rate
+            engine.setRate(boost)
+            flashHUD(.speed(boost))
+        }
+    }
+
+    // MARK: - 画面缩放
+
+    /// 双指捏合：按增量缩放，限制在 `PlayerGestureModel.zoomRange`。
+    public func zoom(by factor: CGFloat) {
+        let range = PlayerGestureModel.zoomRange
+        zoomScale = min(max(zoomScale * factor, range.lowerBound), range.upperBound)
+        if zoomScale == 1 { zoomOffset = .zero }
+        if preferences.rememberZoom { preferences.savedZoomScale = Double(zoomScale) }
+    }
+
+    /// 双指拖动：缩放后移动画面。
+    public func pan(by delta: CGSize) {
+        guard zoomScale > 1 else { return }
+        zoomOffset = CGSize(width: zoomOffset.width + delta.width, height: zoomOffset.height + delta.height)
+    }
+
+    public func resetZoom() {
+        zoomScale = 1
+        zoomOffset = .zero
+        if preferences.rememberZoom { preferences.savedZoomScale = 1 }
+        flashHUD(.message("画面已重置", symbol: "arrow.up.left.and.down.right.magnifyingglass"))
+    }
 
     /// 依次切换适应 → 填充 → 拉伸。
     public func cycleVideoGravity() {
@@ -317,14 +422,14 @@ public final class PlayerController {
         let upper = engine.duration > 0 ? engine.duration : .greatestFiniteMagnitude
         let target = min(max(0, scrubOrigin + offset), upper)
         scrubTime = target
-        scrubPreview.request(time: target)
+        if preferences.scrubPreview != .off { scrubPreview.request(time: target) }
     }
 
     /// 进度条直接拖动到绝对位置。
     public func updateScrub(to time: TimeInterval) {
         if scrubTime == nil { beginScrub() }
         scrubTime = time
-        scrubPreview.request(time: time)
+        if preferences.scrubPreview != .off { scrubPreview.request(time: time) }
     }
 
     public func endScrub(commit: Bool = true) {
@@ -339,10 +444,12 @@ public final class PlayerController {
 
     // MARK: - 长按倍速
 
-    public func beginHoldSpeed() {
+    /// - Parameter leading: 长按位置在左半屏时用左侧倍速设置，否则用右侧。
+    public func beginHoldSpeed(leading: Bool) {
+        let speed = leading ? preferences.leadingSpeed : preferences.trailingSpeed
         rateBeforeHold = engine.rate
-        engine.setRate(gestureSettings.holdSpeed)
-        hud = .speed(gestureSettings.holdSpeed)
+        engine.setRate(speed)
+        hud = .speed(speed)
     }
 
     public func endHoldSpeed() {
@@ -359,6 +466,11 @@ public final class PlayerController {
 
     public func clearHUD(after delay: Duration = .milliseconds(600)) {
         flashHUD(nil, delay: delay)
+    }
+
+    /// 短暂显示一条提示（如内核切换原因）。
+    public func showMessage(_ text: String, symbol: String, duration: Duration = .seconds(2.5)) {
+        flashHUD(.message(text, symbol: symbol), delay: duration)
     }
 
     private func flashHUD(_ value: HUD?, delay: Duration = .milliseconds(700)) {

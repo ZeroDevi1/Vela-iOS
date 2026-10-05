@@ -41,7 +41,7 @@ struct MyMediaView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) { ServerSwitcherMenu() }
             }
-            .navigationDestination(for: LibraryRoute.self) { LibraryItemsView(library: $0.library) }
+            .navigationDestination(for: LibraryRoute.self) { LibraryItemsView(library: $0.library, initialSort: $0.initialSort, mixedContentView: app.libraryPreferences.mixedContentView) }
             .detailDestinations()
             .refreshable { await load() }
             .task(id: app.servers.activeServer?.baseURL) { await load() }
@@ -72,6 +72,8 @@ struct MyMediaView: View {
 
 struct LibraryRoute: Hashable {
     var library: MediaItem
+    /// 本次进入临时使用的排序；nil 表示使用该库记住的排序。
+    var initialSort: LibrarySort?
 }
 
 /// 媒体库卡片：服务器生成的库封面（通常是海报拼图），没有封面时显示类型图标。

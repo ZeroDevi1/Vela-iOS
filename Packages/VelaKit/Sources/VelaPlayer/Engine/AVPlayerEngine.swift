@@ -16,6 +16,13 @@ public final class AVPlayerEngine: PlaybackEngine {
     public private(set) var duration: TimeInterval = 0
     public private(set) var bufferedTime: TimeInterval = 0
     public private(set) var rate: Float = 1
+    public private(set) var isMuted = false
+    public private(set) var networkThroughput: Double?
+    @ObservationIgnored public var preciseSeeking = false
+    /// 多声道音频交给系统空间音频处理；false 时只允许单声道 / 立体声空间化（下次加载生效）。
+    @ObservationIgnored public var allowsMultichannelSpatialization = true
+    /// 访问日志读取有开销：每 4 次进度回调（约 1 秒）读一次。
+    @ObservationIgnored private var throughputTick = 0
     public private(set) var videoSize: CGSize = .zero
 
     @ObservationIgnored public let player = AVPlayer()
@@ -35,7 +42,7 @@ public final class AVPlayerEngine: PlaybackEngine {
     }
 
     public init() {
-        // 起播更快：网络足够时不等待缓冲满再播放。
+        // 由系统预估缓冲是否跟得上再起播 / 恢复，避免高码率片源在带宽不足时播一下卡一下。
         player.automaticallyWaitsToMinimizeStalling = true
         player.appliesMediaSelectionCriteriaAutomatically = true
         #if os(iOS)
@@ -53,8 +60,9 @@ public final class AVPlayerEngine: PlaybackEngine {
         }
         let asset = AVURLAsset(url: source.url, options: options)
         let item = AVPlayerItem(asset: asset)
-        // 预缓冲时长（秒）；0 表示由系统按网络情况决定。
-        item.preferredForwardBufferDuration = 0
+        item.allowedAudioSpatializationFormats = allowsMultichannelSpatialization ? .monoStereoAndMultichannel : .monoAndStereo
+        // 预缓冲时长（秒）；0 表示由系统按网络情况决定。高码率片源（如 8K VR）可在设置中调大以减少卡顿。
+        item.preferredForwardBufferDuration = source.forwardBufferDuration
         observeItem(item)
         player.replaceCurrentItem(with: item)
         if source.startTime > 0 {
@@ -67,7 +75,9 @@ public final class AVPlayerEngine: PlaybackEngine {
         if status == .ended {
             player.seek(to: .zero)
         }
-        player.playImmediately(atRate: preferredRate)
+        // 不用 playImmediately：它忽略缓冲是否足够，带宽不足时会频繁卡顿。
+        player.defaultRate = preferredRate
+        player.play()
     }
 
     public func pause() {
@@ -81,7 +91,14 @@ public final class AVPlayerEngine: PlaybackEngine {
         if status == .ended && (duration <= 0 || target < duration - 0.5) {
             status = .paused
         }
-        await player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        let tolerance: CMTime = preciseSeeking ? .zero : .positiveInfinity
+        await player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: tolerance, toleranceAfter: tolerance)
+    }
+
+    public func currentFrameRate() -> Double? {
+        guard let track = player.currentItem?.tracks.first(where: { $0.assetTrack?.mediaType == .video }) else { return nil }
+        let rate = Double(track.currentVideoFrameRate)
+        return rate > 0 ? rate : nil
     }
 
     public func setRate(_ rate: Float) {
@@ -90,6 +107,11 @@ public final class AVPlayerEngine: PlaybackEngine {
         if player.timeControlStatus != .paused {
             player.rate = rate
         }
+    }
+
+    public func setMuted(_ muted: Bool) {
+        isMuted = muted
+        player.isMuted = muted
     }
 
     public func selectAudioTrack(ordinal: Int) async -> Bool {
@@ -148,6 +170,12 @@ public final class AVPlayerEngine: PlaybackEngine {
                 self.currentTime = time.seconds.isFinite ? time.seconds : 0
                 if let range = self.player.currentItem?.loadedTimeRanges.last?.timeRangeValue {
                     self.bufferedTime = range.end.seconds.isFinite ? range.end.seconds : 0
+                }
+                self.throughputTick += 1
+                if self.throughputTick % 4 == 0,
+                   let observed = self.player.currentItem?.accessLog()?.events.last?.observedBitrate,
+                   observed > 0 {
+                    self.networkThroughput = observed
                 }
             }
         }

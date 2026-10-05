@@ -3,8 +3,8 @@ import VelaCore
 import VelaDesignSystem
 import VelaPlayer
 
-/// 字幕层。用 `TimelineView` 按 20 Hz 直接读取内核时间，避免依赖 0.25 秒的进度刷新导致字幕迟滞，
-/// 也不会让整个播放界面随之重绘。
+/// 字幕层。播放中用 `TimelineView` 按 20 Hz 直接读取内核时间，避免依赖 0.25 秒的进度刷新导致字幕迟滞，
+/// 也不会让整个播放界面随之重绘；非播放状态停止定时刷新，改按进度（含拖动后的 seek）更新。
 ///
 /// 位置：竖屏且画面按比例适应时，字幕紧贴在画面下边缘之下（黑边内），观感接近横屏；
 /// 其余情况（横屏、填充 / 拉伸、旋转、画面尺寸未知、下方黑边不够）贴近屏幕底部，控制层出现时上移让出进度条。
@@ -21,8 +21,11 @@ struct SubtitleOverlay: View {
         if let track = controller.subtitleTrack {
             GeometryReader { proxy in
                 let anchor = belowVideoAnchor(in: proxy)
-                TimelineView(.periodic(from: .now, by: 0.05)) { _ in
-                    if let text = track.text(at: controller.engine.preciseCurrentTime) {
+                let isPlaying = controller.engine.status == .playing
+                // 只在暂停时订阅进度，播放中由时间线驱动，避免两路同时刷新。
+                let pausedTime = isPlaying ? nil : controller.engine.currentTime
+                TimelineView(.animation(minimumInterval: 0.05, paused: !isPlaying)) { _ in
+                    if let text = track.text(at: pausedTime ?? controller.engine.preciseCurrentTime) {
                         Text(text)
                             .font(.system(size: 20 * preferences.subtitleScale, weight: .semibold))
                             .multilineTextAlignment(.center)

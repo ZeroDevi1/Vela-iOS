@@ -78,7 +78,7 @@ public struct DeviceProfile: Encodable, Sendable {
         if caps.supportsHEVC { videoCodecs.append("hevc") }
         if caps.supportsAV1 { videoCodecs.append("av1") }
         let video = videoCodecs.joined(separator: ",")
-        let audio = "aac,ac3,eac3,alac,flac,mp3,opus"
+        let audio = caps.supportsEAC3 ? "aac,ac3,eac3,alac,flac,mp3,opus" : "aac,ac3,alac,flac,mp3,opus"
 
         return DeviceProfile(
             name: "Vela AVFoundation",
@@ -93,7 +93,7 @@ public struct DeviceProfile: Encodable, Sendable {
                     container: "mp4",
                     type: "Video",
                     videoCodec: caps.supportsHEVC ? "hevc,h264" : "h264",
-                    audioCodec: "aac,ac3,eac3,alac,flac",
+                    audioCodec: caps.supportsEAC3 ? "aac,ac3,eac3,alac,flac" : "aac,ac3,alac,flac",
                     context: "Streaming",
                     protocol: "hls",
                     maxAudioChannels: String(caps.maxAudioChannels),

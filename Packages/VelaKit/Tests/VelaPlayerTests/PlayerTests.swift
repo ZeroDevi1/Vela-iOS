@@ -58,6 +58,10 @@ struct GestureModelTests {
         #expect(PlayerGestureModel.panKind(translation: CGSize(width: 40, height: 3), startX: 10, width: 400) == .seek)
         #expect(PlayerGestureModel.panKind(translation: CGSize(width: 2, height: -30), startX: 10, width: 400) == .brightness)
         #expect(PlayerGestureModel.panKind(translation: CGSize(width: 2, height: -30), startX: 300, width: 400) == .volume)
+        // 开启「中间切换媒体」：中间三分之一判为切换媒体，两侧仍为亮度 / 音量。
+        #expect(PlayerGestureModel.panKind(translation: CGSize(width: 2, height: -30), startX: 200, width: 400, switchMediaZone: true) == .switchMedia)
+        #expect(PlayerGestureModel.panKind(translation: CGSize(width: 2, height: -30), startX: 50, width: 400, switchMediaZone: true) == .brightness)
+        #expect(PlayerGestureModel.panKind(translation: CGSize(width: 2, height: -30), startX: 350, width: 400, switchMediaZone: true) == .volume)
     }
 
     @Test func seekOffsetIsClamped() {
@@ -166,11 +170,13 @@ struct VRTextureTests {
         var cache: CVMetalTextureCache?
         CVMetalTextureCacheCreate(nil, nil, device, nil, &cache)
         var buffer: CVPixelBuffer?
-        let created = CVPixelBufferCreate(nil, 64, 32, kCVPixelFormatType_32BGRA, VRRenderer.pixelBufferAttributes as CFDictionary, &buffer)
+        let created = CVPixelBufferCreate(nil, 64, 32, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, VRRenderer.pixelBufferAttributes as CFDictionary, &buffer)
         #expect(created == kCVReturnSuccess)
-        var texture: CVMetalTexture?
-        let status = VRRenderer.makeTexture(from: try #require(buffer), cache: try #require(cache), into: &texture)
+        var luma: CVMetalTexture?
+        var chroma: CVMetalTexture?
+        let status = VRRenderer.makeTextures(from: try #require(buffer), cache: try #require(cache), luma: &luma, chroma: &chroma)
         #expect(status == kCVReturnSuccess)
-        #expect(texture != nil)
+        #expect(luma.flatMap(CVMetalTextureGetTexture)?.width == 64)
+        #expect(chroma.flatMap(CVMetalTextureGetTexture)?.width == 32)
     }
 }

@@ -5,6 +5,10 @@ import VelaCore
 import VelaData
 import VelaNetwork
 import VelaPlayer
+#if os(iOS)
+import AVKit
+import UIKit
+#endif
 
 /// 播放会话：把服务器相关的流程（选流、上报、字幕、音轨、片段、下一集、正在播放）编排到与服务器无关的 `PlayerController` 上。
 ///
@@ -72,6 +76,18 @@ final class PlayerSession {
     private(set) var mpvSubtitleDelay: TimeInterval = 0
     /// 拖动预览独立转码会话的 PlaySessionId；切换条目或关闭时需要通知服务器结束转码。
     @ObservationIgnored private var previewPlaySessionID: String?
+    /// 预加载的下一集码流（「预加载下一集」）；切到该集时直接使用，未使用则在关闭时结束其转码会话。
+    @ObservationIgnored private var preloaded: (itemID: String, stream: ResolvedStream)?
+    @ObservationIgnored private var preloadTask: Task<Void, Never>?
+    /// 下一集已预加载完成，界面在「下一集」按钮旁显示闪电标记。
+    private(set) var isNextPreloaded = false
+    /// 「即将跳过片头」提示中的片段与计划跳过的时刻。
+    @ObservationIgnored private var pendingSkip: (segment: PlaybackSegment, at: Date)?
+    /// 等画面尺寸确定后再应用的屏幕方向（「跟随视频」）。
+    @ObservationIgnored private var pendingOrientation: PlayerOrientation?
+    /// 因切到后台而暂停（回到前台时可自动继续）。
+    @ObservationIgnored private var pausedForBackground = false
+    @ObservationIgnored private var lifecycleObservers: [any NSObjectProtocol] = []
 
     /// 片段数据缺失时，离结尾多少秒提示下一集。
     private static let upNextFallbackLead: TimeInterval = 30
@@ -84,19 +100,37 @@ final class PlayerSession {
 
     // MARK: - 生命周期
 
+    /// 是否已开始过准备；从画中画恢复时播放页复用会话，不能重新起播。
+    @ObservationIgnored private var didPrepare = false
+
+    /// 播放页出现时调用：只在首次准备，恢复呈现时跳过。
+    func prepareIfNeeded(app: AppModel) async {
+        guard !didPrepare else { return }
+        await prepare(app: app)
+    }
+
     func prepare(app: AppModel) async {
+        didPrepare = true
         self.app = app
-        controller.gestureSettings = app.playerPreferences.gestureSettings
+        let preferences = app.playerPreferences
+        controller.preferences = preferences
         controller.onPlayNext = { [weak self] in self?.playNextEpisode() }
+        controller.onPlayPrevious = { [weak self] in self?.playPreviousEpisode() }
+        #if os(iOS)
+        OrientationController.landscapeSide = preferences.landscapeSide
+        observeLifecycle()
+        #endif
         phase = .preparing
         do {
             switch request.target {
             case .url(let url):
                 // 离线文件中系统框架打不开的容器（MKV 等）交给 MPV。
                 if url.isFileURL, !OfflinePlayback.prefersSystemEngine(for: url) {
-                    controller.replaceEngine(MPVEngine())
+                    controller.replaceEngine(makeMPVEngine())
                 }
-                controller.load(PlaybackSource(url: url, title: request.title))
+                // 离线 / 外部地址没有服务器元数据，只按路径（文件名）识别 VR 排布。
+                let vrLayout = VRLayoutParser.parse(mediaSourcePath: url.path)
+                controller.load(PlaybackSource(url: url, title: request.title, vrLayout: vrLayout))
                 // 外部地址不涉及服务器转码会话，预览可以直接用同一地址。
                 controller.scrubPreview.configure(url.pathExtension.lowercased() == "m3u8" ? .stream(url) : .file(url))
             case .item(let serverID, let itemID):
@@ -112,6 +146,11 @@ final class PlayerSession {
             phase = .ready
             nowPlaying.activate(controller: controller)
             startLoop()
+            if preferences.hintTitleOnStart {
+                let title = [controller.source?.title, controller.source?.subtitle].compactMap { $0 }.joined(separator: " · ")
+                controller.showMessage(title, symbol: "play.rectangle", duration: .seconds(2.5))
+            }
+            scheduleOrientation(preferences.orientationOnEnter)
         } catch {
             Log.player.error("播放准备失败：\(error.localizedDescription, privacy: .public)")
             phase = .failed(error.localizedDescription)
@@ -123,6 +162,10 @@ final class PlayerSession {
         closed = true
         loopTask?.cancel()
         subtitleTask?.cancel()
+        preloadTask?.cancel()
+        discardPreloaded()
+        for observer in lifecycleObservers { NotificationCenter.default.removeObserver(observer) }
+        lifecycleObservers.removeAll()
         reporter?.stop(position: controller.engine.currentTime)
         traktStop()
         stopPreviewEncoding()
@@ -147,24 +190,33 @@ final class PlayerSession {
         app.refreshCapabilities()
 
         let startTime = explicitStart ?? (options.startFromBeginning ? 0 : resumePosition(for: item))
-        var stream = try await app.playbackResolver.resolve(
-            item: item, server: server, client: client,
-            capabilities: app.capabilities,
-            mediaSourceID: options.mediaSourceID,
-            startTime: startTime,
-            audioStreamIndex: options.audioStreamIndex
-        )
-        // 内核选择：需要因格式 / 字幕转码时改用 MPV 直放原文件（画质无损、保留 ASS 特效）。
+        isNextPreloaded = false
+        var stream: ResolvedStream
+        // 预加载过的下一集：服务器已开始准备，直接使用（仅默认选项、从续播点起播时）。
+        if let preloaded, preloaded.itemID == item.id, options == .init(), explicitStart == nil {
+            stream = preloaded.stream
+            self.preloaded = nil
+        } else {
+            discardPreloaded()
+            stream = try await app.playbackResolver.resolve(
+                item: item, server: server, client: client,
+                capabilities: app.effectivePlaybackCapabilities,
+                mediaSourceID: options.mediaSourceID,
+                versionPreference: app.libraryPreferences.preferredVersion,
+                startTime: startTime,
+                audioStreamIndex: options.audioStreamIndex
+            )
+        }
+        // 内核选择：默认系统内核（能效最高）；设置为 MPV 或用户选择「用 MPV 重试」时直放原文件。
         let source = stream.mediaSource
+        let isVR = Self.vrLayout(stream: stream, item: item) != nil
         let useMPV = PlaybackEngineChoice.prefersMPV(
             mode: engineOverride ?? app.playerPreferences.engineMode,
-            isTranscode: stream.method == .transcode,
-            reasons: stream.transcodeReasons,
             canDirectStream: source.supportsDirectStream || source.supportsDirectPlay
         )
         if useMPV {
             stream = try app.playbackResolver.originalFileStream(for: stream, item: item, client: client)
-            if controller.engine.kind != .mpv { controller.replaceEngine(MPVEngine()) }
+            if controller.engine.kind != .mpv { controller.replaceEngine(makeMPVEngine()) }
         } else if controller.engine.kind != .avFoundation {
             controller.replaceEngine(AVPlayerEngine())
         }
@@ -172,6 +224,10 @@ final class PlayerSession {
         apply(stream: stream, item: item, startTime: startTime, resetMetadata: true)
         configurePreview(for: stream, item: item)
         configureTracks(for: stream, preferredSubtitle: options.subtitleStreamIndex)
+        if options.audioStreamIndex == nil { applyPreferredAudio(for: item, stream: stream) }
+        if isVR, useMPV {
+            controller.showMessage("当前使用 MPV 内核，VR 转平面需切换到系统内核（更多 → VR 转平面）", symbol: "visionpro", duration: .seconds(4))
+        }
         nowPlaying.loadArtwork(from: app.imageURL(for: item, kind: .primary, maxWidth: 600))
 
         // 片段与下一集不阻塞起播。
@@ -224,8 +280,9 @@ final class PlayerSession {
         return (index + 1, partIDs.count)
     }
 
-    /// 已看完（≥ 95%）的条目从头播放，其余从上次位置继续。
+    /// 已看完（≥ 95%）的条目从头播放，其余从上次位置继续；关闭「从上次进度播放」时总是从头。
     private func resumePosition(for item: MediaItem) -> TimeInterval {
+        guard app?.playerPreferences.resumePlayback != false else { return 0 }
         guard let ticks = item.playbackPositionTicks, ticks > 0 else { return 0 }
         if let fraction = item.playedFraction, fraction >= 0.95 { return 0 }
         return Ticks.seconds(ticks)
@@ -233,27 +290,19 @@ final class PlayerSession {
 
     private func apply(stream: ResolvedStream, item: MediaItem, startTime: TimeInterval, resetMetadata: Bool) {
         self.stream = stream
+        (controller.engine as? AVPlayerEngine)?.allowsMultichannelSpatialization = app?.playerPreferences.nativeAudio ?? true
         Log.player.info("播放方式：\(stream.method.rawValue, privacy: .public) \(Self.redacted(stream.url), privacy: .public)")
         let video = stream.mediaSource.videoStream
         Log.player.info("视频流：\(video?.codec ?? "-", privacy: .public) tag=\(video?.codecTag ?? "-", privacy: .public) range=\(video?.videoRangeType ?? "-", privacy: .public) depth=\(video?.bitDepth ?? 0) container=\(stream.mediaSource.container ?? "-", privacy: .public)")
-        // 与 Android 版一致：路径、名称、标签、3D 格式与画面尺寸都参与识别。
-        let vrLayout = VRLayoutParser.parse(
-            mediaSourcePath: stream.mediaSource.path,
-            itemPath: item.path,
-            itemName: item.name,
-            mediaSourceName: stream.mediaSource.name,
-            tags: item.tags,
-            video3DFormat: item.video3DFormat,
-            videoWidth: video?.width,
-            videoHeight: video?.height
-        )
+        let vrLayout = Self.vrLayout(stream: stream, item: item)
         controller.load(
             PlaybackSource(
                 url: stream.url,
                 title: item.seriesName ?? item.name,
                 subtitle: item.episodeLabel.map { "\($0) · \(item.name)" },
                 startTime: startTime,
-                vrLayout: vrLayout
+                vrLayout: vrLayout,
+                forwardBufferDuration: TimeInterval(app?.playerPreferences.forwardBufferSeconds ?? 0)
             ),
             resetMetadata: resetMetadata
         )
@@ -311,23 +360,64 @@ final class PlayerSession {
 
         if let preferredSubtitle {
             // 用户显式选择：图形字幕也照办（会触发烧录转码）。
-            selectSubtitle(preferredSubtitle >= 0 ? preferredSubtitle : nil)
+            selectSubtitle(preferredSubtitle >= 0 ? preferredSubtitle : nil, remember: false)
             return
         }
-        // 默认字幕遵循服务器按用户语言偏好给出的结果；图形字幕默认不开启，避免一起播就触发转码。
+        // 优先级：本作品记住的字幕语言 > 首选字幕语言 > 服务器按用户语言偏好给出的默认。
+        // 图形字幕不自动开启，避免一起播就触发转码。
+        let preferences = app?.playerPreferences
+        let textual = source.subtitleStreams.filter { stream in
+            subtitleOptions.first { $0.index == stream.index }?.requiresBurnIn == false
+        }
+        if preferences?.rememberSubtitle == true, let item, let remembered = TrackMemory.subtitleLanguage(for: item) {
+            if remembered == TrackMemory.subtitleOff {
+                selectedSubtitleIndex = nil
+                return
+            }
+            if let match = TrackMemory.match(remembered, in: textual) {
+                selectSubtitle(match.index, remember: false)
+                return
+            }
+        }
+        if let match = TrackMemory.match(preferences?.preferredSubtitleLanguage, in: textual) {
+            selectSubtitle(match.index, remember: false)
+            return
+        }
         if let index = source.defaultSubtitleStreamIndex, index >= 0,
            let option = subtitleOptions.first(where: { $0.index == index }), !option.requiresBurnIn {
-            selectSubtitle(index)
+            selectSubtitle(index, remember: false)
         } else {
             selectedSubtitleIndex = nil
         }
+    }
+
+    /// 起播后按「记住所选音轨」与「音频首选语言」切换音轨（与服务器默认相同时不做任何事）。
+    private func applyPreferredAudio(for item: MediaItem, stream: ResolvedStream) {
+        guard let preferences = app?.playerPreferences else { return }
+        let streams = stream.mediaSource.audioStreams
+        let remembered = preferences.rememberAudioTrack ? TrackMemory.audioLanguage(for: item) : nil
+        guard let match = TrackMemory.match(remembered, in: streams) ?? TrackMemory.match(preferences.preferredAudioLanguage, in: streams),
+              match.index != selectedAudioIndex else { return }
+        selectAudio(match.index, remember: false)
     }
 
     private static func label(for stream: MediaStreamInfo) -> TrackLabel {
         stream.trackLabel ?? TrackLabel(title: "轨道 \(stream.index)", details: [], flags: [])
     }
 
-    func selectAudio(_ index: Int) {
+    /// 音轨面板的「静音」：只关闭输出，保留当前音轨。
+    func muteAudio() {
+        controller.engine.setMuted(true)
+    }
+
+    /// 选择任一音轨（包括当前音轨）都会取消静音。
+    /// - Parameter remember: 用户手动选择时为 true，按设置记住该作品的音轨语言。
+    func selectAudio(_ index: Int, remember: Bool = true) {
+        controller.engine.setMuted(false)
+        if remember, app?.playerPreferences.rememberAudioTrack == true, let item,
+           let language = stream?.mediaSource.audioStreams.first(where: { $0.index == index })?.language {
+            TrackMemory.rememberAudio(language, for: item)
+        }
         guard index != selectedAudioIndex, let stream, !isSwitchingStream else { return }
         trackError = nil
         Task {
@@ -345,8 +435,13 @@ final class PlayerSession {
     }
 
     /// - Parameter index: nil 关闭字幕。
-    func selectSubtitle(_ index: Int?) {
+    /// - Parameter remember: 用户手动选择时为 true，按设置记住该作品的字幕语言（含「关闭」）。
+    func selectSubtitle(_ index: Int?, remember: Bool = true) {
         guard let stream, let client, let item else { return }
+        if remember, app?.playerPreferences.rememberSubtitle == true {
+            let language = index.flatMap { i in stream.mediaSource.subtitleStreams.first { $0.index == i }?.language }
+            TrackMemory.rememberSubtitle(index == nil ? TrackMemory.subtitleOff : language, for: item)
+        }
         trackError = nil
         subtitleTask?.cancel()
         selectedSubtitleIndex = index
@@ -427,11 +522,37 @@ final class PlayerSession {
         controller.engine.kind == .mpv ? selectedSubtitleIndex != nil : controller.subtitleTrack != nil
     }
 
+    /// 与 Android 版一致：路径、名称、标签、3D 格式与画面尺寸都参与识别。
+    private static func vrLayout(stream: ResolvedStream, item: MediaItem) -> VRLayout? {
+        let video = stream.mediaSource.videoStream
+        return VRLayoutParser.parse(
+            mediaSourcePath: stream.mediaSource.path,
+            itemPath: item.path,
+            itemName: item.name,
+            mediaSourceName: stream.mediaSource.name,
+            tags: item.tags,
+            video3DFormat: item.video3DFormat,
+            videoWidth: video?.width,
+            videoHeight: video?.height
+        )
+    }
+
     /// 系统内核播放失败时改用 MPV 从当前位置重试。
     func retryWithMPV() {
-        guard let item, controller.engine.kind == .avFoundation else { return }
+        guard controller.engine.kind == .avFoundation else { return }
+        restart(with: .mpv)
+    }
+
+    /// MPV 内核下开启 VR 转平面：改用系统内核从当前位置重新起播（服务器转封装，视频不重编码）。
+    func switchToSystemEngineForVR() {
+        guard controller.engine.kind == .mpv else { return }
+        restart(with: .system)
+    }
+
+    private func restart(with mode: PlaybackEngineMode) {
+        guard let item else { return }
         let position = controller.engine.currentTime
-        engineOverride = .mpv
+        engineOverride = mode
         reporter?.stop(position: position)
         reporter = nil
         Task {
@@ -454,7 +575,7 @@ final class PlayerSession {
         do {
             let newStream = try await app.playbackResolver.resolve(
                 item: item, server: server, client: client,
-                capabilities: app.capabilities,
+                capabilities: app.effectivePlaybackCapabilities,
                 mediaSourceID: stream.mediaSource.id,
                 startTime: position,
                 audioStreamIndex: audioStreamIndex,
@@ -493,6 +614,7 @@ final class PlayerSession {
                 let full = (try? await client?.item(id: episode.id)) ?? episode
                 try await start(item: full)
                 phase = .ready
+                scheduleOrientation(app?.playerPreferences.orientationOnSwitch ?? .unchanged)
             } catch {
                 phase = .failed(error.localizedDescription)
             }
@@ -569,10 +691,28 @@ final class PlayerSession {
                 controller.flash("截图失败", symbol: "exclamationmark.triangle")
                 return
             }
+            if let preferences = app?.playerPreferences, preferences.screenshotSavesToPhotos {
+                guard let data = ScreenshotSaver.encode(image, format: preferences.screenshotFormat, quality: preferences.screenshotQuality) else {
+                    controller.flash("截图编码失败", symbol: "exclamationmark.triangle")
+                    return
+                }
+                let saved = await ScreenshotSaver.saveToPhotos(data)
+                controller.flash(saved ? "已保存到相册" : "无法保存到相册，请在系统设置中允许添加照片",
+                                 symbol: saved ? "checkmark.circle" : "exclamationmark.triangle")
+                return
+            }
             screenshot = image
             controller.touchControls()
         }
     }
+
+    /// 分享截图时按设置的格式与质量编码。
+    func encodedScreenshot() -> Data? {
+        guard let screenshot, let preferences = app?.playerPreferences else { return nil }
+        return ScreenshotSaver.encode(screenshot, format: preferences.screenshotFormat, quality: preferences.screenshotQuality)
+    }
+
+    var screenshotFileExtension: String { app?.playerPreferences.screenshotFormat.fileExtension ?? "jpg" }
 
     // MARK: - 播放循环
 
@@ -611,11 +751,11 @@ final class PlayerSession {
             }
         }
 
-        if let app, app.playerPreferences.autoSkipIntro,
-           let segment = controller.activeSkippableSegment, segment.kind == .intro,
-           !autoSkipped.contains(segment) {
-            autoSkipped.insert(segment)
-            controller.skip(segment)
+        autoSkipIfNeeded()
+        preloadNextIfNeeded(position: position, duration: engine.duration)
+        if let pendingOrientation, engine.videoSize != .zero {
+            self.pendingOrientation = nil
+            applyOrientation(pendingOrientation)
         }
 
         if let next = nextEpisode, shouldPresentUpNext(position: position, duration: engine.duration, ended: engine.status == .ended) {
@@ -675,6 +815,135 @@ final class PlayerSession {
         )
         reporter.start()
         self.reporter = reporter
+    }
+
+    // MARK: - 自动跳过 / 预加载 / 方向
+
+    /// 自动跳过片头：开启「即将跳过」提示时先提示 3 秒（期间拖走即取消），否则立即跳过。
+    private func autoSkipIfNeeded() {
+        guard let preferences = app?.playerPreferences, preferences.autoSkipIntro else { return }
+        if let pending = pendingSkip {
+            guard controller.activeSkippableSegment == pending.segment else {
+                pendingSkip = nil
+                return
+            }
+            if Date.now >= pending.at {
+                pendingSkip = nil
+                controller.skip(pending.segment)
+            }
+            return
+        }
+        guard let segment = controller.activeSkippableSegment, segment.kind == .intro, !autoSkipped.contains(segment) else { return }
+        autoSkipped.insert(segment)
+        if preferences.hintBeforeSkip {
+            pendingSkip = (segment, Date.now.addingTimeInterval(3))
+            controller.showMessage("即将跳过片头", symbol: "forward.end", duration: .seconds(3))
+        } else {
+            controller.skip(segment)
+        }
+    }
+
+    /// 「预加载下一集」：进度超过阈值后请求下一集的播放信息，并预先请求一次码流地址，
+    /// 让服务器提前打开文件 / 启动转码；切到下一集时直接使用。
+    private func preloadNextIfNeeded(position: TimeInterval, duration: TimeInterval) {
+        guard let app, let server, let client, let next = nextEpisode, partPosition == nil,
+              preloadTask == nil, preloaded?.itemID != next.id, duration > 0 else { return }
+        let threshold = app.playerPreferences.preloadNextPercent
+        guard threshold > 0, position / duration * 100 >= Double(threshold) else { return }
+        let capabilities = app.effectivePlaybackCapabilities
+        let resolver = app.playbackResolver
+        let startTime = resumePosition(for: next)
+        let versionPreference = app.libraryPreferences.preferredVersion
+        preloadTask = Task { [weak self] in
+            defer { self?.preloadTask = nil }
+            guard let stream = try? await resolver.resolve(
+                item: next, server: server, client: client, capabilities: capabilities,
+                versionPreference: versionPreference, startTime: startTime
+            ), !Task.isCancelled else { return }
+            // 只取开头一小段：HLS 取主播放列表即触发转码，直放文件取前 1 KB 预热连接与服务器文件句柄。
+            var request = URLRequest(url: stream.url)
+            if stream.method == .directPlay { request.setValue("bytes=0-1023", forHTTPHeaderField: "Range") }
+            _ = try? await URLSession.shared.data(for: request)
+            guard let self, !Task.isCancelled, self.nextEpisode?.id == next.id else { return }
+            self.preloaded = (next.id, stream)
+            self.isNextPreloaded = true
+        }
+    }
+
+    /// 未使用的预加载码流：通知服务器结束其转码。
+    private func discardPreloaded() {
+        guard let preloaded else { return }
+        self.preloaded = nil
+        isNextPreloaded = false
+        if preloaded.stream.method == .transcode, let session = preloaded.stream.playSessionID, let client {
+            Task { try? await client.stopActiveEncodings(playSessionID: session) }
+        }
+    }
+
+    private func scheduleOrientation(_ orientation: PlayerOrientation) {
+        if orientation == .followVideo, controller.engine.videoSize == .zero {
+            pendingOrientation = orientation
+        } else {
+            applyOrientation(orientation)
+        }
+    }
+
+    private func applyOrientation(_ orientation: PlayerOrientation) {
+        #if os(iOS)
+        OrientationController.apply(orientation, videoSize: controller.engine.videoSize)
+        #endif
+    }
+
+    // MARK: - 前后台
+
+    #if os(iOS)
+    /// 切后台：画中画中（或将自动进入画中画）不处理；否则按设置继续播放声音或暂停。回前台按设置继续播放。
+    private func observeLifecycle() {
+        guard lifecycleObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        lifecycleObservers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.didEnterBackground() }
+        })
+        lifecycleObservers.append(center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.willEnterForeground() }
+        })
+    }
+
+    private func didEnterBackground() {
+        guard let preferences = app?.playerPreferences, !closed else { return }
+        PlayerBrightness.leave()
+        if controller.isPictureInPictureActive { return }
+        if preferences.autoPictureInPicture, controller.engine.kind == .avFoundation, AVPictureInPictureController.isPictureInPictureSupported() {
+            return
+        }
+        if preferences.backgroundAudio {
+            controller.setVideoDetached(true)
+        } else if controller.isPlaying {
+            controller.engine.pause()
+            pausedForBackground = true
+        }
+    }
+
+    private func willEnterForeground() {
+        guard let preferences = app?.playerPreferences, !closed else { return }
+        controller.setVideoDetached(false)
+        if app?.pictureInPictureSession !== self { PlayerBrightness.enter(preferences) }
+        if pausedForBackground {
+            pausedForBackground = false
+            if preferences.resumeOnForeground { controller.engine.play() }
+        }
+    }
+    #endif
+
+    /// MPV 备选内核：按设置配置解码与磁盘预缓存（蜂窝 / 低数据模式下用「流量」大小）。
+    private func makeMPVEngine() -> MPVEngine {
+        let engine = MPVEngine()
+        if let preferences = app?.playerPreferences {
+            engine.configuration.hardwareDecoding = preferences.decodeMode == .hardware
+            engine.configuration.decodeThreads = preferences.softwareDecodeThreads
+            engine.configuration.diskCacheMB = NetworkStatus.shared.isExpensive ? preferences.diskCacheCellularMB : preferences.diskCacheWiFiMB
+        }
+        return engine
     }
 
     private func shouldPresentUpNext(position: TimeInterval, duration: TimeInterval, ended: Bool) -> Bool {

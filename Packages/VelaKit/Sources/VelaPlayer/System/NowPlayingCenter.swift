@@ -27,8 +27,8 @@ public final class NowPlayingCenter {
         register(center.pauseCommand) { $0.engine.pause() }
         register(center.togglePlayPauseCommand) { $0.togglePlayPause() }
 
-        center.skipBackwardCommand.preferredIntervals = [NSNumber(value: controller.gestureSettings.seekBackwardSeconds)]
-        center.skipForwardCommand.preferredIntervals = [NSNumber(value: controller.gestureSettings.seekForwardSeconds)]
+        center.skipBackwardCommand.preferredIntervals = [NSNumber(value: controller.preferences.seekBackwardSeconds)]
+        center.skipForwardCommand.preferredIntervals = [NSNumber(value: controller.preferences.seekForwardSeconds)]
         register(center.skipBackwardCommand) { $0.skipBackward() }
         register(center.skipForwardCommand) { $0.skipForward() }
 

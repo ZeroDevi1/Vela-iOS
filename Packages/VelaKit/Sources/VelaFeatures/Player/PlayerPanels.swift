@@ -5,7 +5,7 @@ import VelaDesignSystem
 import VelaNetwork
 import VelaPlayer
 
-/// 播放器右侧面板。打开时隐藏控制层，点击面板外关闭。
+/// 播放器面板（横屏贴右、iPhone 竖屏贴底）。打开时隐藏控制层，点击面板外关闭。
 enum PlayerPanel: String, Identifiable {
     case info, audio, subtitle, episodes, chapters
 
@@ -27,41 +27,76 @@ struct PlayerPanelHost: View {
     let session: PlayerSession
     let onClose: () -> Void
 
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    #endif
+
+    /// iPhone 竖屏时面板从底部弹出、占满宽度；其余情况（横屏、iPad、Mac）贴右侧。
+    private var isBottomSheet: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .compact && verticalSizeClass == .regular
+        #else
+        false
+        #endif
+    }
+
     var body: some View {
         GeometryReader { proxy in
-            ZStack(alignment: .trailing) {
+            ZStack(alignment: isBottomSheet ? .bottom : .topTrailing) {
                 // 面板外区域：点击关闭，同时挡住下面的手势层。
                 Color.black.opacity(0.25)
                     .contentShape(.rect)
                     .onTapGesture(perform: onClose)
                     .ignoresSafeArea()
 
-                VStack(alignment: .leading, spacing: VelaTheme.Spacing.m) {
-                    HStack {
-                        Text(panel.title).font(.headline)
-                        Spacer()
-                        Button(action: onClose) {
-                            Image(systemName: "xmark").frame(width: 20, height: 20)
-                        }
-                        .buttonStyle(.glass)
-                        .buttonBorderShape(.circle)
-                        .keyboardShortcut(.cancelAction)
-                        .accessibilityLabel("关闭面板")
-                    }
-                    content
-                }
-                .padding(VelaTheme.Spacing.l)
-                .frame(width: min(400, proxy.size.width - 24))
-                .frame(maxHeight: .infinity, alignment: .top)
-                .glassEffect(.regular, in: .rect(cornerRadius: 28))
-                .padding(.vertical, 12)
-                .padding(.trailing, 12)
+                sized(card, in: proxy.size)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 28))
+                    .padding(isBottomSheet ? .all : [.vertical, .trailing], 12)
             }
         }
         .foregroundStyle(.white)
-        .transition(.move(edge: .trailing).combined(with: .opacity))
+        .transition(.move(edge: isBottomSheet ? .bottom : .trailing).combined(with: .opacity))
         .onAppear { session.controller.pinControls(true) }
         .onDisappear { session.controller.pinControls(false) }
+    }
+
+    private var card: some View {
+        VStack(alignment: .leading, spacing: VelaTheme.Spacing.m) {
+            HStack {
+                Text(panel.title).font(.headline)
+                Spacer()
+                Button(action: onClose) {
+                    Image(systemName: "xmark").frame(width: 20, height: 20)
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .keyboardShortcut(.cancelAction)
+                .accessibilityLabel("关闭面板")
+            }
+            content
+        }
+        .padding(VelaTheme.Spacing.l)
+    }
+
+    /// 音轨 / 字幕通常只有几行：高度随内容，超过上限再滚动；剧集 / 章节 / 播放信息是长列表，直接用上限高度。
+    /// 竖屏底部面板上限为屏高 60%，侧边面板上限为整屏高度。
+    @ViewBuilder
+    private func sized(_ card: some View, in size: CGSize) -> some View {
+        let width = isBottomSheet ? min(600, size.width - 24) : min(400, size.width - 24)
+        let maxHeight = isBottomSheet ? size.height * 0.6 : size.height - 24
+        switch panel {
+        case .audio, .subtitle:
+            // 先限制最大高度，再按理想高度（内容高度）收缩。
+            card
+                .frame(width: width)
+                .frame(maxHeight: maxHeight)
+                .fixedSize(horizontal: false, vertical: true)
+        case .info, .episodes, .chapters:
+            card
+                .frame(width: width)
+                .frame(maxHeight: maxHeight, alignment: .top)
+        }
     }
 
     @ViewBuilder
@@ -117,8 +152,12 @@ private struct AudioPanel: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
+                let isMuted = session.controller.engine.isMuted
+                TrackRow(label: TrackLabel(title: "静音", details: [], flags: []), isSelected: isMuted) {
+                    session.muteAudio()
+                }
                 ForEach(session.audioOptions) { option in
-                    TrackRow(label: option.label, isSelected: option.index == session.selectedAudioIndex) {
+                    TrackRow(label: option.label, isSelected: !isMuted && option.index == session.selectedAudioIndex) {
                         session.selectAudio(option.index)
                     }
                     .disabled(session.isSwitchingStream)
@@ -326,6 +365,8 @@ private struct PlaybackInfoPanel: View {
                         session.subtitleOptions.first { $0.index == index }.map(Self.trackSummary)
                     } ?? "关闭")
                     row("总码率", MediaFormat.bitrate(source.bitrate))
+                    row("网速", session.controller.engine.networkThroughput.flatMap { MediaFormat.bitrate(Int($0)) })
+                    row("已缓冲", Self.bufferAhead(session.controller.engine))
                     row("文件大小", MediaFormat.size(source.size))
                     row("文件", source.path)
                 }
@@ -351,12 +392,7 @@ private struct PlaybackInfoPanel: View {
     static func methodTitle(_ stream: ResolvedStream) -> String {
         guard stream.method == .transcode else { return "直接播放" }
         if stream.burnedSubtitleIndex != nil { return "服务器转码（烧录字幕）" }
-        // 原因只涉及容器 / 音频时视频流为复制，画质无损；涉及视频、码率或字幕时为重新编码。
-        let videoAffecting = stream.transcodeReasons.contains {
-            $0.hasPrefix("Video") || $0.contains("Bitrate") || $0.hasPrefix("Subtitle") || $0.hasPrefix("Interlaced")
-                || $0.hasPrefix("RefFrames") || $0.hasPrefix("AnamorphicVideo")
-        }
-        return videoAffecting ? "服务器转码（HLS）" : "服务器转封装（HLS，视频无损）"
+        return PlaybackEngineChoice.reencodesVideo(reasons: stream.transcodeReasons) ? "服务器转码（HLS）" : "服务器转封装（HLS，视频无损）"
     }
 
     static func reasonTitle(_ reason: String) -> String {
@@ -399,6 +435,13 @@ private struct PlaybackInfoPanel: View {
         return [size, codec.isEmpty ? nil : codec, video.videoRangeType, fps, MediaFormat.bitrate(video.bitRate)]
             .compactMap { $0 }
             .joined(separator: " · ")
+    }
+
+    /// 当前位置之后已缓冲的时长；网速低于总码率且这里持续接近 0 即为带宽不足。
+    static func bufferAhead(_ engine: any PlaybackEngine) -> String? {
+        let ahead = engine.bufferedTime - engine.currentTime
+        guard engine.bufferedTime > 0, ahead.isFinite else { return nil }
+        return "\(Int(max(0, ahead))) 秒"
     }
 
     static func trackSummary(_ option: PlayerSession.TrackOption) -> String {

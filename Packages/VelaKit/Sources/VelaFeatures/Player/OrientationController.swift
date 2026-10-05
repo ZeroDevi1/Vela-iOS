@@ -2,6 +2,7 @@
 import UIKit
 import VelaCore
 import VelaData
+import VelaPlayer
 
 /// 播放器横竖屏切换（iPhone）。
 ///
@@ -27,17 +28,51 @@ public enum OrientationController {
             .first { $0.activationState == .foregroundActive }
     }
 
+    /// 强制横屏时使用的方向（「设备横屏方向」设置）。
+    static var landscapeSide: LandscapeSide = .auto
+
+    private static var landscapeMask: UIInterfaceOrientationMask {
+        switch landscapeSide {
+        case .auto: .landscape
+        case .left: .landscapeLeft
+        case .right: .landscapeRight
+        }
+    }
+
     /// 在横屏与竖屏之间切换并锁定。
     static func toggle(in scene: UIWindowScene? = activeScene) {
         guard isSupported, let scene else { return }
         let isLandscape = scene.effectiveGeometry.interfaceOrientation.isLandscape
-        lock(isLandscape ? .portrait : .landscape, preferred: isLandscape ? .portrait : .landscapeRight, in: scene)
+        if isLandscape {
+            lock(.portrait, preferred: .portrait, in: scene)
+        } else {
+            lock(landscapeMask, preferred: landscapeSide == .left ? .landscapeLeft : .landscapeRight, in: scene)
+        }
+    }
+
+    /// 按「进入播放器 / 切换视频后屏幕方向」设置调整方向。`videoSize` 未知时「跟随视频」不做处理。
+    static func apply(_ orientation: PlayerOrientation, videoSize: CGSize, in scene: UIWindowScene? = activeScene) {
+        guard isSupported, let scene else { return }
+        let wantsLandscape: Bool
+        switch orientation {
+        case .unchanged: return
+        case .landscape: wantsLandscape = true
+        case .portrait: wantsLandscape = false
+        case .followVideo:
+            guard videoSize.width > 0, videoSize.height > 0 else { return }
+            wantsLandscape = videoSize.width >= videoSize.height
+        }
+        if wantsLandscape {
+            lock(landscapeMask, preferred: landscapeSide == .left ? .landscapeLeft : .landscapeRight, in: scene)
+        } else {
+            lock(.portrait, preferred: .portrait, in: scene)
+        }
     }
 
     /// 解除锁定；若当前为强制横屏则回到竖屏。
     static func unlock(in scene: UIWindowScene? = activeScene) {
         guard isSupported, supportedMask != defaultMask else { return }
-        let wasLandscapeLock = supportedMask == .landscape
+        let wasLandscapeLock = !supportedMask.contains(.portrait)
         supportedMask = defaultMask
         guard let scene else { return }
         refresh(scene)
