@@ -28,6 +28,12 @@ public struct VelaRootView: View {
             PlayerScreen(request: request)
         }
         #endif
+        .overlay(alignment: .top) {
+            LineSwitchBanner().animation(.snappy, value: app.lineRouter.notice)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { app.lineRouter.appDidBecomeActive() }
+        }
         // 进入多任务切换器时遮挡私密服务器内容，防止快照泄露。
         .overlay {
             if scenePhase != .active, app.servers.activeServer?.isPrivate == true {
@@ -63,5 +69,37 @@ private struct PlaybackEnvironmentModifier: ViewModifier {
         let app = app
         return PlayMediaAction { request in app.presentedPlayback = request }
         #endif
+    }
+}
+
+/// 线路自动切换 / 全部失联的提示条，3 秒后自动收起。
+private struct LineSwitchBanner: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        if let notice = app.lineRouter.notice {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(notice.isFailure ? "\(notice.serverName) 的所有线路都无法连接" : "\(notice.serverName) 已切换到「\(notice.lineName)」")
+                        .font(.subheadline.weight(.semibold))
+                    Text(notice.isFailure ? "将继续使用「\(notice.lineName)」，网络恢复后自动重试" : notice.reason.text)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } icon: {
+                Image(systemName: notice.isFailure ? "exclamationmark.triangle.fill" : "arrow.triangle.branch")
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .glassEffect(.regular, in: .capsule)
+            .padding(.top, 8)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .onTapGesture { app.lineRouter.dismissNotice() }
+            .task(id: notice.id) {
+                try? await Task.sleep(for: .seconds(3))
+                if !Task.isCancelled, app.lineRouter.notice?.id == notice.id { app.lineRouter.dismissNotice() }
+            }
+            .accessibilityAddTraits(.updatesFrequently)
+        }
     }
 }

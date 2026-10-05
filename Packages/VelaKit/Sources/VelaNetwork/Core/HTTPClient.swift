@@ -68,9 +68,13 @@ public struct APIRequest: Sendable {
 /// 无状态 HTTP 执行器。鉴权头由调用方传入，便于同一 client 并发服务多台服务器。
 public struct HTTPClient: Sendable {
     private let session: URLSession
+    /// 连接层失败（超时、无法连接主机等）时回调，参数为请求的 base URL；多线路路由据此触发重新探测。
+    /// 用户取消与 HTTP 状态码错误不会回调。
+    private let onTransportFailure: (@Sendable (URL) -> Void)?
 
-    public init(session: URLSession = .shared) {
+    public init(session: URLSession = .shared, onTransportFailure: (@Sendable (URL) -> Void)? = nil) {
         self.session = session
+        self.onTransportFailure = onTransportFailure
     }
 
     public func data(
@@ -95,6 +99,7 @@ public struct HTTPClient: Sendable {
         do {
             (data, response) = try await session.data(for: urlRequest)
         } catch let error as URLError {
+            if Self.isConnectivityFailure(error) { onTransportFailure?(baseURL) }
             throw APIError.transport(error)
         }
         guard let http = response as? HTTPURLResponse else {
@@ -122,6 +127,17 @@ public struct HTTPClient: Sendable {
             return try JSONDecoder.server.decode(T.self, from: data)
         } catch {
             throw APIError.decoding(String(describing: error))
+        }
+    }
+
+    /// 说明线路本身不可达的错误；取消、证书等问题不代表换线路能解决。
+    static func isConnectivityFailure(_ error: URLError) -> Bool {
+        switch error.code {
+        case .timedOut, .cannotConnectToHost, .cannotFindHost, .networkConnectionLost,
+             .dnsLookupFailed, .notConnectedToInternet, .resourceUnavailable:
+            true
+        default:
+            false
         }
     }
 

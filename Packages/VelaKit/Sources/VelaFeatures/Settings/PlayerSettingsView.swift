@@ -1,4 +1,5 @@
 import SwiftUI
+import VelaCore
 import VelaPlayer
 
 /// 播放设置：快进快退、手势、片头片尾与下一集、字幕外观。修改即时保存，下次进入播放器生效。
@@ -8,6 +9,16 @@ struct PlayerSettingsView: View {
     var body: some View {
         @Bindable var prefs = app.playerPreferences
         Form {
+            Section {
+                Picker("播放内核", selection: $prefs.engineMode) {
+                    ForEach(PlaybackEngineMode.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+            } header: {
+                Text("内核")
+            } footer: {
+                Text("自动：系统内核能直放或服务器只需转封装时用系统内核（HDR / 杜比视界 / 画中画 / AirPlay）；服务器因格式或字幕需要转码时改用 MPV 直放原文件（MKV、ASS 特效字幕、图形字幕）。因码率超限转码时仍用系统内核。MPV 内核不支持画中画与 VR 转平面。")
+            }
+
             Section {
                 Picker("快退", selection: $prefs.seekBackwardSeconds) {
                     ForEach(PlayerPreferences.seekIntervals, id: \.self) { Text("\($0) 秒").tag($0) }

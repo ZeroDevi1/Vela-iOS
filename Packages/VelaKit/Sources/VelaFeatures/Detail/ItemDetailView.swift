@@ -25,8 +25,8 @@ struct ItemDetailView: View {
 
                 VStack(alignment: .leading, spacing: VelaTheme.Spacing.l) {
                     actions
-                    if item.kind.isPlayable, let details = model.details, !details.mediaSources.isEmpty {
-                        SourceSelectionCard(model: model, details: details)
+                    if item.kind.isPlayable, !model.sourceOptions.isEmpty {
+                        SourceSelectionCard(model: model)
                     }
                     overview
                     if let error = model.actionError ?? model.loadError {
@@ -46,6 +46,8 @@ struct ItemDetailView: View {
         .ignoresSafeArea(edges: .top)
         #if os(iOS)
         .toolbarBackground(.hidden, for: .navigationBar)
+        // 头图与背景始终是深色：状态栏与返回按钮使用浅色。
+        .toolbarColorScheme(.dark, for: .navigationBar)
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar(removing: .title)
@@ -67,8 +69,11 @@ struct ItemDetailView: View {
         VStack(spacing: VelaTheme.Spacing.m) {
             if let target = playTarget {
                 Button {
-                    let options = target.id == item.id ? model.playbackOptions : PlaybackRequest.Options()
-                    playMedia(.item(target, options: options))
+                    if target.id == item.id {
+                        playMedia(.item(model.playbackItem, options: model.playbackOptions))
+                    } else {
+                        playMedia(.item(target))
+                    }
                 } label: {
                     Label(playTitle(for: target), systemImage: "play.fill")
                         .font(.headline)
@@ -92,7 +97,7 @@ struct ItemDetailView: View {
                     circleButton("arrow.counterclockwise", label: "从头播放") {
                         var options = model.playbackOptions
                         options.startFromBeginning = true
-                        playMedia(.item(item, options: options))
+                        playMedia(.item(model.playbackItem, options: options))
                     }
                 }
                 circleButton(item.isPlayed ? "checkmark.circle.fill" : "checkmark.circle", label: item.isPlayed ? "标记为未看" : "标记为已看") {
@@ -102,6 +107,9 @@ struct ItemDetailView: View {
                 circleButton(item.isFavorite ? "heart.fill" : "heart", label: item.isFavorite ? "取消收藏" : "收藏") {
                     guard let client else { return }
                     Task { await model.toggleFavorite(client: client) }
+                }
+                if item.kind == .movie || item.kind == .episode {
+                    DownloadButton(item: model.playbackItem)
                 }
             }
         }
@@ -159,6 +167,10 @@ struct ItemDetailView: View {
             }
         }
 
+        if model.parts.count > 1 {
+            PartsShelf(parts: model.parts)
+        }
+
         if item.kind == .episode, model.siblingEpisodes.count > 1 {
             EpisodeShelf(title: "更多来自 \(model.siblingEpisodes.first.flatMap { _ in item.parentIndexNumber.map { "第 \($0) 季" } } ?? "本季")",
                          episodes: model.siblingEpisodes, currentID: item.id)
@@ -166,8 +178,10 @@ struct ItemDetailView: View {
 
         if let details = model.details {
             ChapterShelf(item: item, client: client)
-            CastShelf(people: details.people, client: client)
+            CastShelf(people: details.people, client: client, serverID: item.serverID)
         }
+
+        ExtrasShelf(trailers: model.trailers, remoteTrailers: model.details?.remoteTrailers ?? [], features: model.specialFeatures)
 
         if !model.similar.isEmpty {
             MediaShelf("类似作品", items: model.similar) { other in
@@ -262,13 +276,7 @@ private struct DetailHero: View {
     private var titleBlock: some View {
         VStack(spacing: VelaTheme.Spacing.s) {
             if let logo = client?.logoURL(for: item, maxWidth: 800) {
-                AsyncImage(url: logo) { phase in
-                    if let image = phase.image {
-                        image.resizable().scaledToFit()
-                    } else {
-                        titleText
-                    }
-                }
+                CachedImage(url: logo, contentMode: .fit) { titleText }
                 .frame(maxWidth: isCompact ? 280 : 420, maxHeight: isCompact ? 110 : 150)
                 .accessibilityLabel(item.seriesName ?? item.name)
             } else {
@@ -336,7 +344,7 @@ private struct RatingLabelStyle: LabelStyle {
 }
 
 /// 默认显示 4 行，点击展开全部。
-private struct ExpandableText: View {
+struct ExpandableText: View {
     let text: String
     @State private var expanded = false
 

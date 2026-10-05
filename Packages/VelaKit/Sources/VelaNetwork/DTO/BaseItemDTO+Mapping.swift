@@ -7,7 +7,7 @@ extension BaseItemDTO {
         for (key, tag) in imageTags ?? [:] {
             if let kind = MediaItem.ImageKind(rawValue: key) { images[kind] = tag }
         }
-        return MediaItem(
+        var item = MediaItem(
             id: id,
             serverID: serverID,
             name: name ?? "",
@@ -44,8 +44,16 @@ extension BaseItemDTO {
             seasonID: seasonID,
             premiereDate: premiereDate,
             childCount: childCount,
-            unplayedItemCount: userData?.unplayedItemCount
+            unplayedItemCount: userData?.unplayedItemCount,
+            collectionType: collectionType,
+            mediaSourceCount: (mediaSourceCount ?? 0) > 1 ? mediaSourceCount : nil
         )
+        item.lastPlayedAt = userData?.lastPlayedDate
+        item.path = path
+        item.tags = tags ?? []
+        item.video3DFormat = video3DFormat
+        item.partCount = (partCount ?? 0) > 1 ? partCount : nil
+        return item
     }
 
     static func kind(from type: String?) -> MediaItem.Kind {

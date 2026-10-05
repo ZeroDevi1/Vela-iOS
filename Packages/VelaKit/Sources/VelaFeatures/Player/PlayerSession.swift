@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Observation
 import VelaCore
@@ -21,9 +22,11 @@ final class PlayerSession {
     struct TrackOption: Identifiable, Hashable {
         var id: Int { index }
         var index: Int
-        var title: String
+        var label: TrackLabel
         /// 图形字幕只能由服务器烧录，选择后会触发转码。
         var requiresBurnIn: Bool
+
+        var title: String { label.title }
     }
 
     let request: PlaybackRequest
@@ -40,6 +43,11 @@ final class PlayerSession {
     private(set) var isSwitchingStream = false
     private(set) var trackError: String?
     private(set) var nextEpisode: MediaItem?
+    private(set) var previousEpisode: MediaItem?
+    /// 当前季的全部单集（剧集面板）；非剧集为空。
+    private(set) var seasonEpisodes: [MediaItem] = []
+    /// 最近一次截图，界面据此弹出分享提示；关闭提示时置 nil。
+    var screenshot: CGImage?
 
     @ObservationIgnored private weak var app: AppModel?
     @ObservationIgnored private var server: SavedServer?
@@ -54,6 +62,16 @@ final class PlayerSession {
     @ObservationIgnored private var closed = false
     /// 已在播放结束时发送过 Stopped；用户随后重播需要重新开始上报会话。
     @ObservationIgnored private var endedReported = false
+    /// 多段文件的全部段 id（按顺序）；在段之间切换时保留，换到其他条目时清空。
+    private(set) var partIDs: [String] = []
+    /// 上次发给 Trakt 的暂停状态；nil 表示本条目尚未 scrobble start。
+    @ObservationIgnored private var traktPaused: Bool?
+    /// 用户在失败后选择「用 MPV 重试」时强制使用的内核；nil 表示按设置自动选择。
+    @ObservationIgnored private var engineOverride: PlaybackEngineMode?
+    /// MPV 内核的字幕延迟（秒）；系统内核的延迟存在 `SubtitleTrack.delay`。
+    private(set) var mpvSubtitleDelay: TimeInterval = 0
+    /// 拖动预览独立转码会话的 PlaySessionId；切换条目或关闭时需要通知服务器结束转码。
+    @ObservationIgnored private var previewPlaySessionID: String?
 
     /// 片段数据缺失时，离结尾多少秒提示下一集。
     private static let upNextFallbackLead: TimeInterval = 30
@@ -74,7 +92,13 @@ final class PlayerSession {
         do {
             switch request.target {
             case .url(let url):
+                // 离线文件中系统框架打不开的容器（MKV 等）交给 MPV。
+                if url.isFileURL, !OfflinePlayback.prefersSystemEngine(for: url) {
+                    controller.replaceEngine(MPVEngine())
+                }
                 controller.load(PlaybackSource(url: url, title: request.title))
+                // 外部地址不涉及服务器转码会话，预览可以直接用同一地址。
+                controller.scrubPreview.configure(url.pathExtension.lowercased() == "m3u8" ? .stream(url) : .file(url))
             case .item(let serverID, let itemID):
                 guard let server = app.servers.servers.first(where: { $0.id == serverID }),
                       let client = app.client(forServerID: serverID) else {
@@ -100,6 +124,8 @@ final class PlayerSession {
         loopTask?.cancel()
         subtitleTask?.cancel()
         reporter?.stop(position: controller.engine.currentTime)
+        traktStop()
+        stopPreviewEncoding()
         nowPlaying.deactivate()
         controller.shutdown()
     }
@@ -107,23 +133,44 @@ final class PlayerSession {
     // MARK: - 起播
 
     /// - Parameter options: 只对用户从详情页发起的第一集生效；自动连播的下一集使用默认选择。
-    private func start(item: MediaItem, options: PlaybackRequest.Options = .init()) async throws {
+    /// - Parameter startTime: 指定起播位置（失败重试时沿用当前位置）；nil 按续播规则计算。
+    private func start(item: MediaItem, options: PlaybackRequest.Options = .init(), startTime explicitStart: TimeInterval? = nil) async throws {
         guard let app, let server, let client else { return }
         self.item = item
         nextEpisode = nil
+        previousEpisode = nil
+        if item.seasonID == nil || !seasonEpisodes.contains(where: { $0.seasonID == item.seasonID }) {
+            seasonEpisodes = []
+        }
         autoSkipped = []
         endedReported = false
         app.refreshCapabilities()
 
-        let startTime = options.startFromBeginning ? 0 : resumePosition(for: item)
-        let stream = try await app.playbackResolver.resolve(
+        let startTime = explicitStart ?? (options.startFromBeginning ? 0 : resumePosition(for: item))
+        var stream = try await app.playbackResolver.resolve(
             item: item, server: server, client: client,
             capabilities: app.capabilities,
             mediaSourceID: options.mediaSourceID,
             startTime: startTime,
             audioStreamIndex: options.audioStreamIndex
         )
+        // 内核选择：需要因格式 / 字幕转码时改用 MPV 直放原文件（画质无损、保留 ASS 特效）。
+        let source = stream.mediaSource
+        let useMPV = PlaybackEngineChoice.prefersMPV(
+            mode: engineOverride ?? app.playerPreferences.engineMode,
+            isTranscode: stream.method == .transcode,
+            reasons: stream.transcodeReasons,
+            canDirectStream: source.supportsDirectStream || source.supportsDirectPlay
+        )
+        if useMPV {
+            stream = try app.playbackResolver.originalFileStream(for: stream, item: item, client: client)
+            if controller.engine.kind != .mpv { controller.replaceEngine(MPVEngine()) }
+        } else if controller.engine.kind != .avFoundation {
+            controller.replaceEngine(AVPlayerEngine())
+        }
+        mpvSubtitleDelay = 0
         apply(stream: stream, item: item, startTime: startTime, resetMetadata: true)
+        configurePreview(for: stream, item: item)
         configureTracks(for: stream, preferredSubtitle: options.subtitleStreamIndex)
         nowPlaying.loadArtwork(from: app.imageURL(for: item, kind: .primary, maxWidth: 600))
 
@@ -136,10 +183,45 @@ final class PlayerSession {
             Task { [weak self] in
                 guard let episodes = try? await client.episodes(seriesID: seriesID),
                       let index = episodes.firstIndex(where: { $0.id == item.id }),
-                      episodes.indices.contains(index + 1) else { return }
-                self?.nextEpisode = episodes[index + 1]
+                      let self, self.item?.id == item.id else { return }
+                // 上一集 / 下一集按全剧顺序，可跨季；剧集面板只列当前季。
+                self.previousEpisode = index > 0 ? episodes[index - 1] : nil
+                self.nextEpisode = episodes.indices.contains(index + 1) ? episodes[index + 1] : nil
+                self.seasonEpisodes = episodes.filter { $0.seasonID == item.seasonID }
             }
+        } else {
+            linkParts(for: item, client: client, given: options.partIDs)
         }
+    }
+
+    /// 多段文件：确定各段顺序并预取上一段 / 下一段，复用「上一集 / 下一集」的播放与自动连播。
+    private func linkParts(for item: MediaItem, client: MediaServerClient, given: [String]?) {
+        if let given, given.contains(item.id) {
+            partIDs = given
+        } else if !partIDs.contains(item.id) {
+            partIDs = []
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            if self.partIDs.isEmpty, (item.partCount ?? 0) > 1,
+               let additional = try? await client.additionalParts(itemID: item.id) {
+                self.partIDs = [item.id] + additional.map(\.id)
+            }
+            guard let index = self.partIDs.firstIndex(of: item.id), self.item?.id == item.id else { return }
+            let ids = self.partIDs
+            async let previous = index > 0 ? try? await client.item(id: ids[index - 1]) : nil
+            async let next = ids.indices.contains(index + 1) ? try? await client.item(id: ids[index + 1]) : nil
+            let (previousItem, nextItem) = await (previous, next)
+            guard self.item?.id == item.id else { return }
+            self.previousEpisode = previousItem
+            self.nextEpisode = nextItem
+        }
+    }
+
+    /// 当前是多段文件中的第几段（从 1 开始）与总段数；非多段为 nil。
+    var partPosition: (index: Int, count: Int)? {
+        guard partIDs.count > 1, let item, let index = partIDs.firstIndex(of: item.id) else { return nil }
+        return (index + 1, partIDs.count)
     }
 
     /// 已看完（≥ 95%）的条目从头播放，其余从上次位置继续。
@@ -154,10 +236,14 @@ final class PlayerSession {
         Log.player.info("播放方式：\(stream.method.rawValue, privacy: .public) \(Self.redacted(stream.url), privacy: .public)")
         let video = stream.mediaSource.videoStream
         Log.player.info("视频流：\(video?.codec ?? "-", privacy: .public) tag=\(video?.codecTag ?? "-", privacy: .public) range=\(video?.videoRangeType ?? "-", privacy: .public) depth=\(video?.bitDepth ?? 0) container=\(stream.mediaSource.container ?? "-", privacy: .public)")
+        // 与 Android 版一致：路径、名称、标签、3D 格式与画面尺寸都参与识别。
         let vrLayout = VRLayoutParser.parse(
             mediaSourcePath: stream.mediaSource.path,
+            itemPath: item.path,
             itemName: item.name,
             mediaSourceName: stream.mediaSource.name,
+            tags: item.tags,
+            video3DFormat: item.video3DFormat,
             videoWidth: video?.width,
             videoHeight: video?.height
         )
@@ -215,10 +301,11 @@ final class PlayerSession {
     private func configureTracks(for stream: ResolvedStream, preferredSubtitle: Int? = nil) {
         let source = stream.mediaSource
         audioOptions = source.audioStreams.map {
-            TrackOption(index: $0.index, title: Self.title(for: $0), requiresBurnIn: false)
+            TrackOption(index: $0.index, label: Self.label(for: $0), requiresBurnIn: false)
         }
         subtitleOptions = source.subtitleStreams.map {
-            TrackOption(index: $0.index, title: Self.title(for: $0), requiresBurnIn: !$0.isTextSubtitle)
+            // MPV 能直接渲染图形字幕（PGS 等），不需要服务器烧录。
+            TrackOption(index: $0.index, label: Self.label(for: $0), requiresBurnIn: !$0.isTextSubtitle && controller.engine.kind == .avFoundation)
         }
         selectedAudioIndex = stream.audioStreamIndex ?? source.defaultAudioStreamIndex ?? audioOptions.first?.index
 
@@ -236,10 +323,8 @@ final class PlayerSession {
         }
     }
 
-    private static func title(for stream: MediaStreamInfo) -> String {
-        var title = stream.displayTitle ?? stream.language ?? "轨道 \(stream.index)"
-        if stream.isExternal == true { title += "（外挂）" }
-        return title
+    private static func label(for stream: MediaStreamInfo) -> TrackLabel {
+        stream.trackLabel ?? TrackLabel(title: "轨道 \(stream.index)", details: [], flags: [])
     }
 
     func selectAudio(_ index: Int) {
@@ -265,6 +350,29 @@ final class PlayerSession {
         trackError = nil
         subtitleTask?.cancel()
         selectedSubtitleIndex = index
+
+        // MPV：内嵌字幕按轨道顺序选择，外挂字幕加载服务器上的原始文件；字幕由 libass 渲染，不走 WebVTT。
+        if let mpv = controller.engine as? MPVEngine {
+            controller.subtitleTrack = nil
+            defer { reporter?.flush(position: controller.engine.currentTime, audioStreamIndex: selectedAudioIndex, subtitleStreamIndex: index) }
+            guard let index, let info = stream.mediaSource.subtitleStreams.first(where: { $0.index == index }) else {
+                mpv.setExternalSubtitle(nil)
+                return
+            }
+            if info.isExternal == true {
+                do {
+                    mpv.setExternalSubtitle(try client.subtitleStreamURL(itemID: item.id, mediaSourceID: stream.mediaSource.id, streamIndex: index, codec: info.codec))
+                } catch {
+                    trackError = "字幕加载失败：\(error.localizedDescription)"
+                }
+            } else {
+                let embedded = stream.mediaSource.subtitleStreams.filter { $0.isExternal != true }
+                if let ordinal = embedded.firstIndex(where: { $0.index == index }) {
+                    mpv.selectEmbeddedSubtitle(ordinal: ordinal)
+                }
+            }
+            return
+        }
         let option = index.flatMap { i in subtitleOptions.first { $0.index == i } }
 
         if let option, option.requiresBurnIn {
@@ -301,7 +409,40 @@ final class PlayerSession {
     }
 
     func adjustSubtitleDelay(by seconds: TimeInterval) {
-        controller.subtitleTrack?.delay += seconds
+        if let mpv = controller.engine as? MPVEngine {
+            mpvSubtitleDelay += seconds
+            mpv.setSubtitleDelay(mpvSubtitleDelay)
+        } else {
+            controller.subtitleTrack?.delay += seconds
+        }
+    }
+
+    /// 当前字幕延迟（秒），两种内核统一读取。
+    var subtitleDelay: TimeInterval {
+        controller.engine.kind == .mpv ? mpvSubtitleDelay : (controller.subtitleTrack?.delay ?? 0)
+    }
+
+    /// 是否有字幕在显示（决定是否提供延迟调整）。
+    var hasActiveSubtitle: Bool {
+        controller.engine.kind == .mpv ? selectedSubtitleIndex != nil : controller.subtitleTrack != nil
+    }
+
+    /// 系统内核播放失败时改用 MPV 从当前位置重试。
+    func retryWithMPV() {
+        guard let item, controller.engine.kind == .avFoundation else { return }
+        let position = controller.engine.currentTime
+        engineOverride = .mpv
+        reporter?.stop(position: position)
+        reporter = nil
+        Task {
+            phase = .preparing
+            do {
+                try await start(item: item, startTime: position)
+                phase = .ready
+            } catch {
+                phase = .failed(error.localizedDescription)
+            }
+        }
     }
 
     /// 在当前位置重新向服务器请求码流（切换音轨 / 烧录字幕）。
@@ -330,18 +471,106 @@ final class PlayerSession {
 
     private func playNextEpisode() {
         guard let next = nextEpisode else { return }
+        playEpisode(next)
+    }
+
+    func playPreviousEpisode() {
+        guard let previous = previousEpisode else { return }
+        playEpisode(previous)
+    }
+
+    /// 在当前会话内切换到同剧的另一集（下一集、上一集或剧集面板中选择）。
+    func playEpisode(_ episode: MediaItem) {
+        guard episode.id != item?.id else { return }
+        traktStop()
         reporter?.stop(position: controller.engine.currentTime)
         reporter = nil
+        stopPreviewEncoding()
         Task {
             phase = .preparing
             do {
                 // 列表接口的条目不含章节，取一次完整详情。
-                let full = (try? await client?.item(id: next.id)) ?? next
+                let full = (try? await client?.item(id: episode.id)) ?? episode
                 try await start(item: full)
                 phase = .ready
             } catch {
                 phase = .failed(error.localizedDescription)
             }
+        }
+    }
+
+    // MARK: - 章节
+
+    /// 普通章节（不含 Emby 片头 / 片尾标记），附带其在原始数组中的序号（章节图片按序号寻址）。
+    var chapters: [(index: Int, chapter: MediaChapter)] {
+        (item?.chapters ?? []).enumerated()
+            .filter { $0.element.marker == .chapter }
+            .map { (index: $0.offset, chapter: $0.element) }
+    }
+
+    func chapterImageURL(index: Int, chapter: MediaChapter) -> URL? {
+        guard let item else { return nil }
+        return client?.chapterImageURL(itemID: item.id, index: index, chapter: chapter, maxWidth: 320)
+    }
+
+    func episodeImageURL(_ episode: MediaItem) -> URL? {
+        app?.imageURL(for: episode, kind: .primary, maxWidth: 320)
+    }
+
+    // MARK: - 拖动预览
+
+    /// 直放的单文件直接本地抽帧；HLS 在首次拖动时向服务器另取一路低码率流，不与主播放共享转码会话。
+    private func configurePreview(for stream: ResolvedStream, item: MediaItem) {
+        stopPreviewEncoding()
+        // MPV 直放的多为系统框架打不开的容器（MKV 等），本地抽帧不可用。
+        if controller.engine.kind == .mpv {
+            controller.scrubPreview.configure(nil)
+            return
+        }
+        let isPlaylist = stream.url.pathExtension.lowercased() == "m3u8"
+        if stream.method == .directPlay, !isPlaylist {
+            controller.scrubPreview.configure(.file(stream.url))
+            return
+        }
+        guard let app, let client else {
+            controller.scrubPreview.configure(nil)
+            return
+        }
+        let resolver = app.playbackResolver
+        let mediaSourceID = stream.mediaSource.id
+        controller.scrubPreview.configure { [weak self] in
+            do {
+                let preview = try await resolver.resolvePreview(item: item, client: client, mediaSourceID: mediaSourceID)
+                guard let self, self.item?.id == item.id, !self.closed else {
+                    if let session = preview.playSessionID { try? await client.stopActiveEncodings(playSessionID: session) }
+                    return nil
+                }
+                if preview.method == .transcode { self.previewPlaySessionID = preview.playSessionID }
+                let previewIsPlaylist = preview.url.pathExtension.lowercased() == "m3u8"
+                return preview.method == .directPlay && !previewIsPlaylist ? .file(preview.url) : .stream(preview.url)
+            } catch {
+                Log.player.info("预览流不可用：\(error.localizedDescription, privacy: .public)")
+                return nil
+            }
+        }
+    }
+
+    private func stopPreviewEncoding() {
+        guard let session = previewPlaySessionID, let client else { return }
+        previewPlaySessionID = nil
+        Task { try? await client.stopActiveEncodings(playSessionID: session) }
+    }
+
+    // MARK: - 截图
+
+    func captureScreenshot() {
+        Task {
+            guard let image = await controller.engine.captureFrame() else {
+                controller.flash("截图失败", symbol: "exclamationmark.triangle")
+                return
+            }
+            screenshot = image
+            controller.touchControls()
         }
     }
 
@@ -367,6 +596,7 @@ final class PlayerSession {
         // 播放到结尾立即发送 Stopped（位置 = 片长），服务器据此标记已看，不必等用户关闭播放器。
         if engine.status == .ended, !endedReported {
             endedReported = true
+            traktStop()
             reporter?.stop(position: engine.duration > 0 ? engine.duration : position)
         } else if engine.status != .ended, endedReported, controller.isPlaying {
             // 结束后又开始播放（重播 / 拖回前面）：开启新的上报会话。
@@ -374,6 +604,11 @@ final class PlayerSession {
             restartReporting(at: position)
         } else {
             reporter?.tick(position: position, isPaused: isPaused)
+            // Trakt：开始播放后 start，暂停 / 继续时切换 pause / start。
+            if engine.status == .playing || engine.status == .paused, traktPaused != isPaused {
+                traktPaused = isPaused
+                traktReport(isPaused ? .pause : .start)
+            }
         }
 
         if let app, app.playerPreferences.autoSkipIntro,
@@ -386,10 +621,12 @@ final class PlayerSession {
         if let next = nextEpisode, shouldPresentUpNext(position: position, duration: engine.duration, ended: engine.status == .ended) {
             controller.presentUpNext(
                 .init(
-                    title: next.episodeLabel.map { "\($0) · \(next.name)" } ?? next.name,
+                    title: partPosition.map { "第 \($0.index + 1) 段 · \(next.name)" }
+                        ?? next.episodeLabel.map { "\($0) · \(next.name)" } ?? next.name,
                     subtitle: next.seriesName,
                     imageURL: app?.imageURL(for: next, kind: .primary, maxWidth: 480),
-                    countdown: nil
+                    countdown: nil,
+                    heading: partPosition == nil ? "下一集" : "下一段"
                 ),
                 autoplayAfter: app?.playerPreferences.autoPlayNext == true ? Self.upNextCountdown : nil
             )
@@ -406,6 +643,18 @@ final class PlayerSession {
                 rate: controller.isPlaying ? engine.rate : 0
             )
         }
+    }
+
+    private func traktReport(_ action: TraktScrobble.Action) {
+        guard let item, let app else { return }
+        app.trakt.scrobble(action, item: item, position: controller.engine.currentTime, duration: controller.engine.duration)
+    }
+
+    /// 本条目已 start 过才发 stop，避免重复。
+    private func traktStop() {
+        guard traktPaused != nil else { return }
+        traktReport(.stop)
+        traktPaused = nil
     }
 
     private func restartReporting(at position: TimeInterval) {

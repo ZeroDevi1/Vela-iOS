@@ -1,4 +1,5 @@
 import AVFoundation
+import QuartzCore
 import Foundation
 import VelaCore
 
@@ -15,6 +16,8 @@ public protocol PlaybackEngine: AnyObject {
     /// 已缓冲到的位置（秒）。
     var bufferedTime: TimeInterval { get }
     var rate: Float { get }
+    /// 视频画面的显示尺寸（已应用像素宽高比）；未知或纯音频时为 `.zero`。界面据此计算画面在屏幕上的位置。
+    var videoSize: CGSize { get }
     /// 直接从内核读取的当前位置（秒），不经过 0.25 秒的观察刷新；用于字幕等需要帧级同步的场景。
     var preciseCurrentTime: TimeInterval { get }
     /// 视频画面渲染目标；不同内核提供不同的表面类型。
@@ -28,6 +31,8 @@ public protocol PlaybackEngine: AnyObject {
     /// 在当前媒体内切换音轨（按音轨出现顺序，从 0 开始）。媒体内没有可切换的音轨时返回 false，
     /// 调用方应改为请求服务器重新选流。
     func selectAudioTrack(ordinal: Int) async -> Bool
+    /// 截取当前画面；内核无法提供画面（未起播、纯音频）时返回 nil。
+    func captureFrame() async -> CGImage?
     /// 释放解码与网络资源。调用后实例不再可用。
     func stop()
 }
@@ -51,6 +56,8 @@ public enum PlaybackStatus: Equatable, Sendable {
 
 public enum PlaybackSurface {
     case avPlayer(AVPlayer)
+    /// MPV：libmpv 直接绘制到该图层。
+    case metalLayer(CAMetalLayer)
 }
 
 /// 交给内核的播放请求，已与服务器无关。

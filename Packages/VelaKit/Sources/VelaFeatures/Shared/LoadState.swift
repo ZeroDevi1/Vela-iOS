@@ -13,6 +13,8 @@ enum LoadState<Value> {
     }
 }
 
+extension LoadState: Sendable where Value: Sendable {}
+
 /// 播放入口：iPhone / iPad 全屏覆盖，macOS 打开独立播放器窗口。由根视图注入。
 public struct PlayMediaAction: Sendable {
     let handler: @MainActor @Sendable (PlaybackRequest) -> Void

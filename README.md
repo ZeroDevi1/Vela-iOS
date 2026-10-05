@@ -10,7 +10,7 @@
 
 Android 版见 [ZeroDevi1/Vela](https://github.com/ZeroDevi1/Vela)（基于 [JellyCine](https://github.com/sureshfizzy/JellyCine)）。本仓库按 Android 版的功能与约定在 Apple 平台上原生实现，不共享代码。
 
-> 当前状态：开发中（M0 框架完成，M1 播放完善与详情页改版进行中）。进度与排期见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+> 当前状态：应用大框架基本完成（M0–M8 代码完成，界面已与 Android 版对齐），待实机逐项验收（各项状态见路线图）。进度与排期见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
 ---
 
@@ -20,14 +20,16 @@ Android 版见 [ZeroDevi1/Vela](https://github.com/ZeroDevi1/Vela)（基于 [Jel
 
 - 同时支持 Jellyfin 与 Emby；添加时自动补全 `https` / `http` 与 Emby 的 `/emby` 路径，并识别服务器类型
 - 多服务器切换；每台服务器可设备注、多条线路（局域网 / 公网）、STRM 原始地址直连
-- **私密服务器**：每次启动后需面容 ID / 触控 ID / 密码解锁，解锁状态只在内存中保存；进入多任务切换器时遮挡内容；未解锁时不参与聚合搜索
+- **私密服务器**：每次启动后需面容 ID / 触控 ID / 密码解锁，解锁状态只在内存中保存；进入多任务切换器时遮挡内容；与 Android 版一致，私密服务器（无论是否解锁）不参与聚合搜索、跨服匹配与聚合继续观看
 - 访问 token 保存在 Keychain（仅本机），服务器列表 JSON 不含敏感信息
 
 ### 浏览
 
-- 首页：继续观看、下一集、最新入库
-- 媒体库：分页网格，按最近添加 / 名称 / 上映日期 / 评分排序
-- **聚合搜索**：同时搜索所有已登录服务器，限制并发，单个服务器失败只在其分区提示
+- 导航与 Android 版一致：底栏 首页 / 我的媒体 / 搜索 / 收藏 / 设置（iPad / Mac 侧边栏另有发现、订阅；iPhone 从设置页进入）
+- 首页：分类胶囊（首页 / 电影 / 剧集）、线路切换、投屏、头像菜单；卡片式轮播（Logo + 评分 / 年份 / 类型 / 分级）；媒体库、继续观看（剩余时长）、接下来、各库「最近添加」；电影 / 剧集分类按风格分区
+- 我的媒体：媒体库大卡片网格；媒体库页分 全部 / 推荐 / 类型 / 文件夹，工具条含条目数、随机播放、海报 / 横版样式、观看状态筛选、排序（再选同一项切换方向）
+- 收藏：电影 / 剧集 / 单集分区
+- **聚合搜索**：同时搜索所有非私密服务器，限制并发，单个服务器失败只在其分区提示；未输入时显示沉浸式随机推荐
 - **详情页**：沉浸式头图与 Logo、评分 / 分级 / 类型 / 连载状态、继续播放与进度、已看 / 收藏；剧集的季与按 50 集分段的单集列表；播放源（版本 / 音轨 / 字幕）预选；章节缩略图、演职人员、类似作品、外部链接；视频 / 音频 / 字幕流的完整媒体信息
 
 ### 播放
@@ -35,6 +37,7 @@ Android 版见 [ZeroDevi1/Vela](https://github.com/ZeroDevi1/Vela)（基于 [Jel
 - 系统内核 AVPlayer：HDR10 / 杜比视界（Profile 5、8.x）/ HLG 原生输出，空间音频、画中画、AirPlay
 - 按设备实测能力（AV1 / HEVC 硬解、HDR）生成 DeviceProfile：能直放就直放；MKV 等由服务器转封装为 HLS fMP4，视频流复制不损画质
 - 字幕：文本字幕（内嵌 / 外挂、SRT / ASS 等）由服务器转 WebVTT 后本地渲染，可调字号、位置与延迟；图形字幕可选服务器烧录
+- 播放器界面：章节 / 剧集 / 音轨 / 字幕 / 播放信息侧面板，音轨与字幕显示中文语言名、采样率、码率；拖动进度时本地解码预览画面（不依赖服务器 trickplay）；截图、画面旋转、适应 / 填充 / 拉伸
 - 音轨切换、跳过片头 / 回顾（Jellyfin 媒体片段、Emby 章节标记，可自动跳过）、下一集倒计时自动播放
 - 播放进度与已看状态同步到服务器；锁屏 / 控制中心正在播放与远程控制
 - **手势**（iPhone / iPad）：单击显隐控制层；左 / 右侧双击快退 / 快进、中间双击暂停；横滑调进度；左侧竖滑亮度、右侧竖滑音量；长按临时倍速；捏合切换适应 / 填充；锁定
@@ -54,6 +57,7 @@ Android 版见 [ZeroDevi1/Vela](https://github.com/ZeroDevi1/Vela)（基于 [Jel
 
 需要 Xcode 27（iOS / macOS 27 SDK）。
 
+0. 首次构建前下载 MPV 内核的预编译库（约 1 GB，校验 sha256，不入库）：`./scripts/fetch-mpvkit.sh`
 1. 打开 `Vela.xcodeproj`，选择 `Vela` scheme
 2. 目标选择 iPhone / iPad 模拟器或 My Mac 运行
 3. 真机运行前在 Signing & Capabilities 中选择开发团队（仓库未配置 `DEVELOPMENT_TEAM`）
@@ -75,6 +79,53 @@ cd Packages/VelaKit && swift test
 ```
 
 若 `xcode-select` 指向 CommandLineTools，可在命令前加 `DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer`。
+
+### 部署 Release 版到真机
+
+前提：设备系统为 iOS / iPadOS / macOS 27 或更高（部署目标 27.0）；已执行 `scripts/fetch-mpvkit.sh` 下载 MPV 二进制。
+
+#### iPhone / iPad（Xcode）
+
+1. Xcode 打开 `Vela.xcodeproj` → 选中 `Vela` target → Signing & Capabilities：勾选 Automatically manage signing，Team 选你的 Apple ID（免费账号也可）；Bundle Identifier 冲突时改成自己的，例如 `com.<你的名字>.vela`
+2. Product → Scheme → Edit Scheme… → Run → Info → Build Configuration 改为 **Release**（取消 Debug executable）
+3. 用数据线连接设备并在设备上点「信任此电脑」；首次需在「设置 → 隐私与安全性 → 开发者模式」开启并重启
+4. Xcode 顶部设备列表选中该设备，⌘R。Xcode 会自动把设备注册到你的团队并重新生成描述文件
+5. 首次启动提示「不受信任的开发者」：设备「设置 → 通用 → VPN 与设备管理」信任你的开发者证书
+
+每台新设备（例如再加一台 iPad）重复 3～5 即可，无需改代码。免费账号的限制：描述文件 **7 天**过期（过期后重新 ⌘R 安装即可，数据保留），同一团队最多注册 3 台同类设备；付费开发者账号为 1 年。
+
+#### iPhone / iPad（命令行）
+
+```bash
+xcrun devicectl list devices
+```
+
+记下设备的 UDID（Xcode → Window → Devices and Simulators 中的 Identifier），然后：
+
+```bash
+xcodebuild -project Vela.xcodeproj -scheme Vela -configuration Release -destination 'id=<设备 UDID>' -derivedDataPath build -allowProvisioningUpdates DEVELOPMENT_TEAM=<你的 Team ID> build
+```
+
+```bash
+xcrun devicectl device install app --device <devicectl 列出的设备 Identifier> build/Build/Products/Release-iphoneos/Vela.app
+```
+
+首次给新设备构建时 `-allowProvisioningUpdates` 会自动注册设备；设备需已开启开发者模式并信任这台 Mac。
+
+#### MacBook（原生 macOS 版）
+
+在要使用的 Mac 上直接构建最简单：
+
+1. 该 Mac 安装 Xcode 27，克隆仓库并执行 `scripts/fetch-mpvkit.sh`
+2. Xcode 顶部目标选 **My Mac**，Scheme 的 Build Configuration 改为 Release，⌘R；或 Product → Archive → Distribute App → Custom → Copy App，得到可放进「应用程序」的 `Vela.app`
+
+把一台 Mac 上构建的 `Vela.app` 拷到另一台 Mac：
+
+- 免费账号无法公证（notarize），拷过去后 Gatekeeper 会拦截。在目标 Mac 上右键 `Vela.app` → 打开，或到「系统设置 → 隐私与安全性」点「仍要打开」；必要时执行 `xattr -dr com.apple.quarantine /Applications/Vela.app`
+- 开发证书签名的 App 带描述文件，只能在已注册到团队的 Mac 上运行：目标 Mac 先用 Xcode 运行一次（会自动注册），或改为自行构建
+- 付费开发者账号可用 Developer ID 签名并公证，分发给任意 Mac
+
+测试完把 Scheme 的 Build Configuration 改回 Debug，日常调试更快。TMDB 内置凭据可通过构建设置 `VELA_TMDB_API_KEY` 注入（target Build Settings → User-Defined），或在 App 内「设置 → 探索 → 发现」页填写。
 
 ---
 

@@ -16,6 +16,7 @@ public final class AVPlayerEngine: PlaybackEngine {
     public private(set) var duration: TimeInterval = 0
     public private(set) var bufferedTime: TimeInterval = 0
     public private(set) var rate: Float = 1
+    public private(set) var videoSize: CGSize = .zero
 
     @ObservationIgnored public let player = AVPlayer()
     @ObservationIgnored private var timeObserver: Any?
@@ -100,6 +101,15 @@ public final class AVPlayerEngine: PlaybackEngine {
         return true
     }
 
+    public func captureFrame() async -> CGImage? {
+        guard let item = player.currentItem, item.status == .readyToPlay else { return nil }
+        let player = player
+        // 暂停时没有新帧送达输出：原地精确 seek 一次让内核重新解码当前帧。
+        return await VideoFrameGrabber.grab(from: item) {
+            await player.seek(to: player.currentTime(), toleranceBefore: .zero, toleranceAfter: .zero)
+        }
+    }
+
     /// 视频播放需要 `.playback` 类别：静音开关下仍出声、后台继续播放、画中画可用。
     private func activateAudioSession() {
         #if os(iOS)
@@ -148,7 +158,11 @@ public final class AVPlayerEngine: PlaybackEngine {
     }
 
     private func observeItem(_ item: AVPlayerItem) {
-        itemObservations = [item.observe(\.status, options: [.new]) { [weak self] item, _ in
+        videoSize = .zero
+        itemObservations = [item.observe(\.presentationSize, options: [.new]) { [weak self] item, _ in
+            let size = item.presentationSize
+            Task { @MainActor in self?.videoSize = size }
+        }, item.observe(\.status, options: [.new]) { [weak self] item, _ in
             let status = item.status
             let message = item.error?.localizedDescription
             let seconds = item.duration.seconds

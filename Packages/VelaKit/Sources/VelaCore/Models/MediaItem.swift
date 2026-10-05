@@ -64,6 +64,22 @@ public struct MediaItem: Identifiable, Hashable, Sendable {
     public var childCount: Int?
     /// 剧 / 季内未看集数。
     public var unplayedItemCount: Int?
+    /// 媒体库类型（`movies` / `tvshows` / `boxsets` / `music` / `mixed` 等），只有媒体库条目才有。
+    public var collectionType: String?
+    /// 服务器已合并的版本数（Jellyfin `MediaSourceCount`）；单版本或服务器未提供时为 nil。
+    public var mediaSourceCount: Int?
+    /// 客户端按 provider id 合并进来的其他条目（同一部电影的其他文件），见 `MediaItemMerger`。
+    public var mergedItemIDs: [String] = []
+    /// 最近一次播放时间；跨服务器继续观看按它排序。
+    public var lastPlayedAt: Date?
+    /// 服务器上的文件路径（单条目接口带 Path 字段时才有，普通用户可能为空）。
+    public var path: String?
+    /// 用户 / 刮削器标签；VR 识别会参考（例如 `vr180`、`sbs`）。
+    public var tags: [String] = []
+    /// 服务器识别的 3D 格式（`HalfSideBySide` / `FullTopAndBottom` …）。
+    public var video3DFormat: String?
+    /// 多段文件（CD1 / CD2 …）的段数；单文件为 nil。
+    public var partCount: Int?
 
     public init(
         id: String,
@@ -94,7 +110,9 @@ public struct MediaItem: Identifiable, Hashable, Sendable {
         seasonID: String? = nil,
         premiereDate: Date? = nil,
         childCount: Int? = nil,
-        unplayedItemCount: Int? = nil
+        unplayedItemCount: Int? = nil,
+        collectionType: String? = nil,
+        mediaSourceCount: Int? = nil
     ) {
         self.id = id
         self.serverID = serverID
@@ -125,6 +143,13 @@ public struct MediaItem: Identifiable, Hashable, Sendable {
         self.premiereDate = premiereDate
         self.childCount = childCount
         self.unplayedItemCount = unplayedItemCount
+        self.collectionType = collectionType
+        self.mediaSourceCount = mediaSourceCount
+    }
+
+    /// 可选版本总数：服务器合并的版本 + 客户端合并的条目。
+    public var versionCount: Int {
+        max(mediaSourceCount ?? 1, 1) + mergedItemIDs.count
     }
 
     /// 已播放比例 0...1；缺少时长或进度时为 nil，界面据此决定是否显示进度条。

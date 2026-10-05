@@ -15,6 +15,9 @@ public final class ServerStore {
     public private(set) var persistenceError: String?
 
     public let identity: ClientIdentity
+    /// client 请求遇到连接层失败时回调（服务器 id、请求的线路地址），由多线路路由器设置。
+    /// 需在创建任何 client 之前设置；已缓存的 client 不会更新。
+    @ObservationIgnored public var transportFailureHandler: (@Sendable (_ serverID: String, _ baseURL: URL) -> Void)?
     private let keychain: KeychainStore
     private let fileURL: URL
 
@@ -75,16 +78,62 @@ public final class ServerStore {
         save()
     }
 
+    // MARK: - 线路
+
+    /// 切换当前线路；线路不存在时忽略。
+    public func setActiveLine(serverID: String, lineID: String) {
+        guard let index = servers.firstIndex(where: { $0.id == serverID }),
+              servers[index].lines.contains(where: { $0.id == lineID }),
+              servers[index].activeLineID != lineID else { return }
+        servers[index].activeLineID = lineID
+        save()
+    }
+
+    /// 新增线路；同一地址已存在时返回已有线路。
+    @discardableResult
+    public func addLine(serverID: String, url: URL, name: String) -> ServerLine? {
+        guard let index = servers.firstIndex(where: { $0.id == serverID }) else { return nil }
+        if let existing = servers[index].lines.first(where: { $0.url == url }) { return existing }
+        let line = ServerLine(name: name.trimmingCharacters(in: .whitespaces), url: url)
+        servers[index].lines.append(line)
+        save()
+        return line
+    }
+
+    public func renameLine(serverID: String, lineID: String, name: String) {
+        guard let index = servers.firstIndex(where: { $0.id == serverID }),
+              let lineIndex = servers[index].lines.firstIndex(where: { $0.id == lineID }) else { return }
+        servers[index].lines[lineIndex].name = name.trimmingCharacters(in: .whitespaces)
+        save()
+    }
+
+    /// 删除线路。至少保留一条；删除当前线路时切到剩余的第一条。
+    public func removeLine(serverID: String, lineID: String) {
+        guard let index = servers.firstIndex(where: { $0.id == serverID }),
+              servers[index].lines.count > 1 else { return }
+        servers[index].lines.removeAll { $0.id == lineID }
+        if servers[index].activeLineID == lineID {
+            servers[index].activeLineID = servers[index].lines[0].id
+        }
+        save()
+    }
+
     /// 为指定服务器构造 API client。token 缺失（例如 Keychain 被清空）时抛出未授权，界面应引导重新登录。
     public func client(for server: SavedServer) throws -> MediaServerClient {
         guard let token = try keychain.string(for: server.id) else { throw APIError.unauthorized }
+        var onFailure: (@Sendable (URL) -> Void)?
+        if let handler = transportFailureHandler {
+            let serverID = server.id
+            onFailure = { url in handler(serverID, url) }
+        }
         return MediaServerClient(
             serverID: server.id,
             baseURL: server.baseURL,
             kind: server.kind,
             userID: server.userID,
             accessToken: token,
-            identity: identity
+            identity: identity,
+            http: HTTPClient(onTransportFailure: onFailure)
         )
     }
 

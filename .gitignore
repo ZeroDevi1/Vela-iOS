@@ -8,3 +8,6 @@ Packages/VelaKit/.build/
 Packages/VelaKit/.swiftpm/
 *.ipa
 *.dSYM.zip
+
+# MPVKit 预编译库：由 scripts/fetch-mpvkit.sh 下载，体积大，不入库
+Packages/MPVKitLocal/Frameworks/

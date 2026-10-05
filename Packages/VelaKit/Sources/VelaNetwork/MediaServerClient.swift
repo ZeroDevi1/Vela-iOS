@@ -40,14 +40,15 @@ public struct MediaServerClient: Sendable {
     var httpClient: HTTPClient { http }
 
     /// 列表接口统一请求的附加字段；少请求字段能明显减小响应体。
-    static let listFields = "Overview,Genres,ProviderIds,PrimaryImageAspectRatio,ParentBackdropItemId,ParentBackdropImageTags"
+    static let listFields = "Overview,Genres,ProviderIds,PrimaryImageAspectRatio,ParentBackdropItemId,ParentBackdropImageTags,CommunityRating,ProductionYear,MediaSourceCount"
 
     // MARK: - 浏览
 
     public func userViews() async throws -> [MediaItem] {
         let result = try await http.decode(
             QueryResult<BaseItemDTO>.self,
-            APIRequest("/Users/\(userID)/Views"),
+            // ChildCount 用于「我的媒体」卡片下方的「N 项」。
+            APIRequest("/Users/\(userID)/Views", query: [.init(name: "Fields", value: "ChildCount,PrimaryImageAspectRatio")]),
             baseURL: baseURL,
             headers: headers
         )
@@ -55,32 +56,89 @@ public struct MediaServerClient: Sendable {
     }
 
     public func resumeItems(limit: Int = 20) async throws -> [MediaItem] {
+        try await resume(limit: limit).items
+    }
+
+    /// 继续观看，附带总数（首页显示「75 ›」）。
+    /// - Parameter parentID: 只取某个媒体库内的条目（媒体库「推荐」分段）；nil 为全部。
+    public func resume(limit: Int = 20, startIndex: Int = 0, parentID: String? = nil) async throws -> (items: [MediaItem], total: Int) {
+        var query: [URLQueryItem] = [
+            .init(name: "Limit", value: String(limit)),
+            .init(name: "MediaTypes", value: "Video"),
+            .init(name: "Fields", value: Self.listFields),
+            .init(name: "EnableImageTypes", value: "Primary,Backdrop,Thumb"),
+            .init(name: "EnableTotalRecordCount", value: "true")
+        ]
+        if startIndex > 0 { query.append(.init(name: "StartIndex", value: String(startIndex))) }
+        if let parentID { query.append(.init(name: "ParentId", value: parentID)) }
         let result = try await http.decode(
             QueryResult<BaseItemDTO>.self,
-            APIRequest("/Users/\(userID)/Items/Resume", query: [
-                .init(name: "Limit", value: String(limit)),
-                .init(name: "MediaTypes", value: "Video"),
-                .init(name: "Fields", value: Self.listFields),
-                .init(name: "EnableImageTypes", value: "Primary,Backdrop,Thumb")
-            ]),
+            APIRequest("/Users/\(userID)/Items/Resume", query: query),
             baseURL: baseURL,
             headers: headers
         )
-        return result.items.map { $0.toMediaItem(serverID: serverID) }
+        let items = result.items.map { $0.toMediaItem(serverID: serverID) }
+        return (items, result.totalRecordCount ?? items.count)
+    }
+
+    /// 全库计数（首页底部统计）。
+    public struct ItemCounts: Decodable, Sendable {
+        public var movieCount: Int
+        public var seriesCount: Int
+        public var episodeCount: Int
+
+        enum CodingKeys: String, CodingKey {
+            case movieCount = "MovieCount", seriesCount = "SeriesCount", episodeCount = "EpisodeCount"
+        }
+
+        public init(from decoder: any Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            movieCount = try c.decodeIfPresent(Int.self, forKey: .movieCount) ?? 0
+            seriesCount = try c.decodeIfPresent(Int.self, forKey: .seriesCount) ?? 0
+            episodeCount = try c.decodeIfPresent(Int.self, forKey: .episodeCount) ?? 0
+        }
+    }
+
+    public func itemCounts() async throws -> ItemCounts {
+        try await http.decode(
+            ItemCounts.self,
+            APIRequest("/Items/Counts", query: [.init(name: "UserId", value: userID)]),
+            baseURL: baseURL,
+            headers: headers
+        )
+    }
+
+    /// 用户头像；用户未设置头像时服务器返回 404，界面显示占位。
+    public var userImageURL: URL? {
+        try? HTTPClient.makeURL(baseURL: baseURL, path: "/Users/\(userID)/Images/Primary", query: [
+            .init(name: "maxWidth", value: "96"),
+            .init(name: "quality", value: "90")
+        ])
     }
 
     public func nextUp(limit: Int = 20) async throws -> [MediaItem] {
+        try await nextUpPage(limit: limit).items
+    }
+
+    /// 接下来播放（各剧的下一集），附带总数。
+    /// - Parameter parentID: 只取某个剧集库内的条目；nil 为全部。
+    public func nextUpPage(limit: Int = 20, startIndex: Int = 0, parentID: String? = nil) async throws -> (items: [MediaItem], total: Int) {
+        var query: [URLQueryItem] = [
+            .init(name: "UserId", value: userID),
+            .init(name: "Limit", value: String(limit)),
+            .init(name: "Fields", value: Self.listFields),
+            .init(name: "EnableTotalRecordCount", value: "true")
+        ]
+        if startIndex > 0 { query.append(.init(name: "StartIndex", value: String(startIndex))) }
+        if let parentID { query.append(.init(name: "ParentId", value: parentID)) }
         let result = try await http.decode(
             QueryResult<BaseItemDTO>.self,
-            APIRequest("/Shows/NextUp", query: [
-                .init(name: "UserId", value: userID),
-                .init(name: "Limit", value: String(limit)),
-                .init(name: "Fields", value: Self.listFields)
-            ]),
+            APIRequest("/Shows/NextUp", query: query),
             baseURL: baseURL,
             headers: headers
         )
-        return result.items.map { $0.toMediaItem(serverID: serverID) }
+        let items = result.items.map { $0.toMediaItem(serverID: serverID) }
+        return (items, result.totalRecordCount ?? items.count)
     }
 
     /// 最新入库。注意该接口直接返回数组，不是 `QueryResult`。
@@ -113,7 +171,10 @@ public struct MediaServerClient: Sendable {
     public func item(id: String) async throws -> MediaItem {
         let dto = try await http.decode(
             BaseItemDTO.self,
-            APIRequest("/Users/\(userID)/Items/\(id)"),
+            // 播放前取详情：VR 识别需要 Path / Tags / Video3DFormat，多段文件需要 PartCount。
+            APIRequest("/Users/\(userID)/Items/\(id)", query: [
+                .init(name: "Fields", value: "Path,Tags,Video3DFormat,PartCount,Chapters,ProviderIds,Overview,MediaSources")
+            ]),
             baseURL: baseURL,
             headers: headers
         )
@@ -254,6 +315,18 @@ public struct MediaServerClient: Sendable {
     }
 
     /// 把任意文本字幕（内嵌 / 外挂、SRT / ASS 等）交给服务器转换为 WebVTT 后下载。
+    /// 字幕原始格式的地址（带 token），交给 MPV 直接加载；ASS 保留特效。
+    /// - Parameter codec: 服务器给出的字幕编码（`ass` / `ssa` / `subrip` / `srt` / `webvtt` …）。
+    public func subtitleStreamURL(itemID: String, mediaSourceID: String, streamIndex: Int, codec: String?) throws -> URL {
+        let format = switch codec?.lowercased() {
+        case "ass": "ass"
+        case "ssa": "ssa"
+        case "webvtt", "vtt": "vtt"
+        default: "srt"
+        }
+        return try absoluteURL(forServerRelative: "/Videos/\(itemID)/\(mediaSourceID)/Subtitles/\(streamIndex)/Stream.\(format)")
+    }
+
     public func subtitleWebVTT(itemID: String, mediaSourceID: String, streamIndex: Int) async throws -> String {
         let (data, _) = try await http.data(
             APIRequest("/Videos/\(itemID)/\(mediaSourceID)/Subtitles/\(streamIndex)/Stream.vtt", timeout: 30),
@@ -343,6 +416,35 @@ public enum MediaServerProbe {
             }
         }
         throw lastError
+    }
+
+    /// 线路探测结果。
+    public enum LineProbeResult: Equatable, Sendable {
+        /// 可达，附带往返耗时（秒）。
+        case reachable(latency: TimeInterval)
+        /// 可达但不是同一台服务器（例如局域网地址被分配给了另一台设备）。
+        case mismatch
+        case unreachable
+    }
+
+    /// 探测某条线路：请求 `/System/Info/Public` 并核对服务器实例 id，只有同一台服务器才算可达。
+    public static func probeLine(
+        _ baseURL: URL,
+        expectedServerID: String,
+        timeout: TimeInterval = 4,
+        http: HTTPClient = HTTPClient()
+    ) async -> LineProbeResult {
+        let clock = ContinuousClock()
+        let start = clock.now
+        do {
+            let (data, _) = try await http.data(APIRequest("/System/Info/Public", timeout: timeout), baseURL: baseURL, headers: [:])
+            let info = try JSONDecoder.server.decode(PublicSystemInfo.self, from: data)
+            guard info.id == expectedServerID else { return .mismatch }
+            let elapsed = clock.now - start
+            return .reachable(latency: Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18)
+        } catch {
+            return .unreachable
+        }
     }
 
     public static func authenticate(

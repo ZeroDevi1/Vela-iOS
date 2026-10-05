@@ -24,6 +24,18 @@ public struct ItemDetails: Sendable {
     /// 剧集状态：`Continuing` / `Ended`。
     public var seriesStatus: String?
     public var endDate: Date?
+    /// 远程预告片（通常是 YouTube 链接），由刮削器提供，只能交给系统打开。
+    public var remoteTrailers: [RemoteTrailer]
+    /// 本地预告片数量；为 0 时不必请求 LocalTrailers 接口。
+    public var localTrailerCount: Int
+    /// 人物：出生地；作品：制作地区。
+    public var productionLocations: [String]
+
+    public struct RemoteTrailer: Identifiable, Hashable, Sendable {
+        public var id: String { url.absoluteString }
+        public var name: String?
+        public var url: URL
+    }
 }
 
 extension BaseItemDTO {
@@ -39,7 +51,12 @@ extension BaseItemDTO {
             path: path,
             dateCreated: dateCreated,
             seriesStatus: status,
-            endDate: endDate
+            endDate: endDate,
+            remoteTrailers: (remoteTrailers ?? []).compactMap { dto in
+                URL(string: dto.url).map { .init(name: dto.name, url: $0) }
+            },
+            localTrailerCount: localTrailerCount ?? 0,
+            productionLocations: productionLocations ?? []
         )
     }
 }
@@ -50,12 +67,78 @@ extension MediaServerClient {
         let dto = try await httpClient.decode(
             BaseItemDTO.self,
             APIRequest("/Users/\(userID)/Items/\(id)", query: [
-                .init(name: "Fields", value: "People,Studios,Taglines,MediaSources,MediaStreams,Chapters,ProviderIds,Overview,Genres,DateCreated,Path,PremiereDate,ParentLogoItemId,ParentLogoImageTag")
+                .init(name: "Fields", value: "People,Studios,Taglines,MediaSources,MediaStreams,Chapters,ProviderIds,Overview,Genres,DateCreated,Path,PremiereDate,ParentLogoItemId,ParentLogoImageTag,RemoteTrailers,LocalTrailerCount,ProductionLocations,EndDate,Tags,Video3DFormat,PartCount")
             ]),
             baseURL: baseURL,
             headers: requestHeaders
         )
         return dto.toDetails(serverID: serverID)
+    }
+
+    /// 本地预告片与花絮（幕后、删减片段等），二者都是可直接播放的条目。
+    ///
+    /// 使用 `/Users/{userId}/Items/{id}/...` 路径：Emby 只支持此路径；Jellyfin 10.9 起改为
+    /// `/Items/{id}/...?userId=`，旧路径在新版本可能 404，此时回退到新路径。
+    public func localTrailers(itemID: String) async throws -> [MediaItem] {
+        try await extras(itemID: itemID, kind: "LocalTrailers")
+    }
+
+    public func specialFeatures(itemID: String) async throws -> [MediaItem] {
+        try await extras(itemID: itemID, kind: "SpecialFeatures")
+    }
+
+    private func extras(itemID: String, kind: String) async throws -> [MediaItem] {
+        do {
+            return try await decodeExtras(APIRequest("/Users/\(userID)/Items/\(itemID)/\(kind)"))
+        } catch APIError.http(status: 404, _) where self.kind == .jellyfin {
+            return try await decodeExtras(APIRequest("/Items/\(itemID)/\(kind)", query: [.init(name: "userId", value: userID)]))
+        }
+    }
+
+    private func decodeExtras(_ request: APIRequest) async throws -> [MediaItem] {
+        try await httpClient.decode([BaseItemDTO].self, request, baseURL: baseURL, headers: requestHeaders)
+            .map { $0.toMediaItem(serverID: serverID) }
+    }
+
+    /// 媒体库内的风格 / 工作室（媒体库页的「风格」「工作室」分段）。
+    public enum Facet: String, Sendable {
+        case genres = "Genres"
+        case studios = "Studios"
+    }
+
+    /// - Parameters:
+    ///   - parentID: 限定媒体库；nil 表示全部库（首页「电影」「剧集」分类按风格分区）。
+    ///   - includeItemTypes: 只统计含这些类型条目的风格，例如 `["Movie"]`；空数组不限制。
+    public func facets(_ facet: Facet, parentID: String?, includeItemTypes: [String] = []) async throws -> [MediaItem] {
+        var query: [URLQueryItem] = [
+            .init(name: "UserId", value: userID),
+            .init(name: "SortBy", value: "SortName"),
+            .init(name: "Recursive", value: "true"),
+            .init(name: "Fields", value: "PrimaryImageAspectRatio,ChildCount")
+        ]
+        if let parentID { query.append(.init(name: "ParentId", value: parentID)) }
+        if !includeItemTypes.isEmpty { query.append(.init(name: "IncludeItemTypes", value: includeItemTypes.joined(separator: ","))) }
+        let result = try await httpClient.decode(
+            QueryResult<BaseItemDTO>.self,
+            APIRequest("/\(facet.rawValue)", query: query),
+            baseURL: baseURL,
+            headers: requestHeaders
+        )
+        return result.items.map { $0.toMediaItem(serverID: serverID) }
+    }
+
+    /// 多段文件（CD1 / CD2 …）的附加段，不含主条目本身，按段顺序排列。
+    public func additionalParts(itemID: String) async throws -> [MediaItem] {
+        let result = try await httpClient.decode(
+            QueryResult<BaseItemDTO>.self,
+            APIRequest("/Videos/\(itemID)/AdditionalParts", query: [
+                .init(name: "UserId", value: userID),
+                .init(name: "Fields", value: Self.listFields)
+            ]),
+            baseURL: baseURL,
+            headers: requestHeaders
+        )
+        return result.items.map { $0.toMediaItem(serverID: serverID) }
     }
 
     public func seasons(seriesID: String) async throws -> [MediaItem] {

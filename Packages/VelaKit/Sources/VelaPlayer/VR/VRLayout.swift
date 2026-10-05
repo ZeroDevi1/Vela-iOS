@@ -27,6 +27,20 @@ public struct VRLayout: Hashable, Sendable, Codable {
         self.inputFOV = inputFOV
     }
 
+    /// 菜单中的名称，例如「180° 左右」「鱼眼 200° 左右」。
+    public var displayName: String {
+        let stereoName = switch stereo {
+        case .sideBySide: "左右"
+        case .topBottom: "上下"
+        case .mono: "单眼"
+        }
+        switch projection {
+        case .halfEquirect: return "180° \(stereoName)"
+        case .equirect: return "360° \(stereoName)"
+        case .fisheye: return "鱼眼 \(inputFOV)° \(stereoName)"
+        }
+    }
+
     /// 视角水平转动的上限（度）。
     public var yawLimit: Double { projection == .equirect ? 180 : 90 }
 }

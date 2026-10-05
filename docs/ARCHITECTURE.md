@@ -12,7 +12,7 @@
 | 领域 | Android 实现要点 | Apple 版对应 |
 |---|---|---|
 | 服务器 | Jellyfin + Emby；`SavedServer` 身份 = 服务器 + 用户；备注替换显示名 | `VelaCore.SavedServer`，id = `instanceID\|userID` |
-| 多线路 | 一个账号多条 Line（LAN / WAN / 备用），按网络自动路由，失败切换并冷却 | `ServerLine` + `LineRouting`（纯逻辑已移植）；探测器待做 |
+| 多线路 | 一个账号多条 Line（LAN / WAN / 备用），按网络自动路由，失败切换并冷却 | `ServerLine` + `LineRouting` / `LineCooldown`（纯逻辑）+ `LineRouter`（`NWPathMonitor` + 并发探测 + 冷却） |
 | 隐私服务器 | 系统锁屏验证；解锁只在进程内存；FLAG_SECURE 防截屏；未解锁不建页面 | `PrivacyGuard`（LocalAuthentication）+ `PrivacyGate` + 后台切换遮挡 |
 | 聚合搜索 | 多服务器并发、限并发 4、单源失败不影响整体；扩展 TMDB / 豆瓣源 | `FederatedSearchService`（TaskGroup 限流），TMDB 源待做 |
 | 播放器 | MPV 主 + ExoPlayer 回退；HDR10 / HDR10+ / DV；DV7→8.1；音频直通 | `PlaybackEngine` 协议；AVPlayer 默认，MPV 预留 |
@@ -20,7 +20,7 @@
 | VR 转平面 | 文件名 / 标签 / 宽高比严格识别；GLSL 反投影；拖动看视角、捏合调 FOV | `VRLayoutParser` 已移植；Metal 渲染待做 |
 | 手势 | 单击显隐；两侧双击快退快进（2:1:2）；中间双击暂停；横滑进度；左亮度右音量；长按倍速；捏合缩放；锁定 | `PlayerGestureModel`（纯逻辑）+ iOS UIKit 识别器 + macOS 键鼠 |
 | 画中画 | Android PiP | `AVPictureInPictureController`，支持后台自动进入 |
-| 发现 / 目录 | TMDB 趋势、分类、查看全部；目录条目 ≠ 库条目，靠 provider id 精确匹配 | 占位，M4 |
+| 发现 / 目录 | TMDB 趋势、分类、查看全部；目录条目 ≠ 库条目，靠 provider id 精确匹配 | `CatalogRequest` / `CatalogIdentity`（Core）+ `TMDBClient`（Network）+ `CatalogService`（Data：凭据、匹配、跨服务器继续观看） |
 | 订阅 / 日历 | MoviePilot 为真相源，Bangumi 公开回退 | 占位，M5 |
 | Trakt | OAuth、scrobble | M7 |
 | 下载 | 队列、转码下载 | M8（`AVAssetDownloadURLSession`） |

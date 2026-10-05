@@ -79,3 +79,71 @@ struct SegmentTests {
         #expect(!outro.contains(1200, duration: 1400))
     }
 }
+
+struct LineDecisionTests {
+    private let lan = ServerLine(id: "lan", url: URL(string: "http://192.168.1.2:8096")!)
+    private let wan = ServerLine(id: "wan", url: URL(string: "https://media.example.com")!)
+
+    @Test func switchesToLANWhenBackOnWiFi() {
+        let decision = LineRouting.decide(
+            lines: [wan, lan], reachableIDs: ["wan", "lan"], access: .lanCapable,
+            currentID: "wan", cooldown: LineCooldown()
+        )
+        #expect(decision == .switchTo(lan))
+    }
+
+    @Test func keepsCurrentWhenAlreadyBest() {
+        let decision = LineRouting.decide(
+            lines: [wan, lan], reachableIDs: ["wan", "lan"], access: .lanCapable,
+            currentID: "lan", cooldown: LineCooldown()
+        )
+        #expect(decision == .keep)
+    }
+
+    @Test func coolingLineIsSkippedWhenAlternativeExists() {
+        let now = Date()
+        var cooldown = LineCooldown(duration: 60)
+        cooldown.markFailed("lan", at: now.addingTimeInterval(-10))
+        let decision = LineRouting.decide(
+            lines: [wan, lan], reachableIDs: ["wan", "lan"], access: .lanCapable,
+            currentID: "wan", cooldown: cooldown, now: now
+        )
+        #expect(decision == .keep)
+    }
+
+    @Test func cooldownExpires() {
+        let now = Date()
+        var cooldown = LineCooldown(duration: 60)
+        cooldown.markFailed("lan", at: now.addingTimeInterval(-61))
+        #expect(!cooldown.isCoolingDown("lan", now: now))
+    }
+
+    @Test func coolingLineStillUsedAsLastResort() {
+        var cooldown = LineCooldown()
+        cooldown.markFailed("lan")
+        let decision = LineRouting.decide(
+            lines: [wan, lan], reachableIDs: ["lan"], access: .lanCapable,
+            currentID: "wan", cooldown: cooldown
+        )
+        #expect(decision == .switchTo(lan))
+    }
+
+    @Test func nothingReachable() {
+        let decision = LineRouting.decide(
+            lines: [wan, lan], reachableIDs: [], access: .wan, currentID: "wan", cooldown: LineCooldown()
+        )
+        #expect(decision == .unreachable)
+    }
+
+    @Test func offlineNeverSwitches() {
+        let decision = LineRouting.decide(
+            lines: [wan, lan], reachableIDs: ["lan"], access: .offline, currentID: "wan", cooldown: LineCooldown()
+        )
+        #expect(decision == .keep)
+    }
+
+    @Test func autoNames() {
+        #expect(LineRouting.displayName(of: lan) == "局域网")
+        #expect(LineRouting.displayName(of: ServerLine(name: " 家宽 ", url: wan.url)) == "家宽")
+    }
+}

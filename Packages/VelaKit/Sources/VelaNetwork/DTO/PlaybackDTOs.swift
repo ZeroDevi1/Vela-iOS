@@ -222,3 +222,30 @@ public struct PlaybackReportState: Sendable, Equatable {
         self.subtitleStreamIndex = subtitleStreamIndex
     }
 }
+
+extension MediaStreamInfo {
+    /// 音轨 / 字幕的展示信息（中文语言名、采样率、码率、标记）；视频流返回 nil。
+    public var trackLabel: TrackLabel? {
+        let kind: TrackAttributes.Kind
+        switch type {
+        case "Audio": kind = .audio
+        case "Subtitle": kind = .subtitle
+        default: return nil
+        }
+        return TrackLabelFormatter.label(for: TrackAttributes(
+            kind: kind,
+            index: index,
+            language: language,
+            title: title,
+            displayTitle: displayTitle,
+            codec: codec,
+            channels: channels,
+            channelLayout: channelLayout,
+            sampleRate: sampleRate,
+            bitRate: bitRate,
+            isDefault: isDefault ?? false,
+            isForced: isForced ?? false,
+            isExternal: isExternal ?? false
+        ))
+    }
+}

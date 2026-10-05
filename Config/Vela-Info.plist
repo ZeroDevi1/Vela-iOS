@@ -8,6 +8,10 @@
 		<!-- 后台音频与画中画持续播放。 -->
 		<string>audio</string>
 	</array>
+	<!-- TMDB 内置凭据：由构建设置 VELA_TMDB_API_KEY 注入（例如本地 xcconfig），仓库中不保存 key。
+	     未定义时为空，用户需在「设置 → 发现 → TMDB」中自行填写。 -->
+	<key>VelaTMDBAPIKey</key>
+	<string>$(VELA_TMDB_API_KEY)</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<!-- 自建媒体服务器常见为 HTTP（局域网或公网 DDNS），地址由用户输入，无法预先列入例外域名。

@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import VelaCore
 
 /// 播放偏好，持久化在 UserDefaults。修改即时生效；正在播放的会话在下次读取时使用新值。
 @MainActor
@@ -15,6 +16,7 @@ public final class PlayerPreferences {
         static let autoPlayNext = "player.autoPlayNext"
         static let subtitleScale = "player.subtitle.scale"
         static let subtitleBottomOffset = "player.subtitle.bottomOffset"
+        static let engineMode = "player.engineMode"
     }
 
     /// 可选的快进 / 快退秒数。
@@ -37,6 +39,8 @@ public final class PlayerPreferences {
     public var subtitleScale: Double { didSet { defaults.set(subtitleScale, forKey: Key.subtitleScale) } }
     /// 字幕距画面底部的额外距离（pt），0...200。
     public var subtitleBottomOffset: Double { didSet { defaults.set(subtitleBottomOffset, forKey: Key.subtitleBottomOffset) } }
+    /// 播放内核：自动 / 系统 / MPV。
+    public var engineMode: PlaybackEngineMode { didSet { defaults.set(engineMode.rawValue, forKey: Key.engineMode) } }
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -49,6 +53,7 @@ public final class PlayerPreferences {
         autoPlayNext = defaults.object(forKey: Key.autoPlayNext) as? Bool ?? true
         subtitleScale = defaults.object(forKey: Key.subtitleScale) as? Double ?? 1
         subtitleBottomOffset = defaults.object(forKey: Key.subtitleBottomOffset) as? Double ?? 0
+        engineMode = defaults.string(forKey: Key.engineMode).flatMap(PlaybackEngineMode.init(rawValue:)) ?? .auto
     }
 
     /// 手势相关的快照，交给播放控制器使用。

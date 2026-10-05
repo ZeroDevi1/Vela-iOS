@@ -171,18 +171,3 @@ struct ServerSwitcherMenu: View {
         .sheet(isPresented: $isAdding) { AddServerView() }
     }
 }
-
-/// 打开设置的工具栏按钮（iPhone / iPad）。macOS 使用系统「设置」窗口，不显示此按钮。
-struct SettingsToolbarButton: View {
-    @State private var isPresented = false
-
-    var body: some View {
-        #if os(iOS)
-        Button("设置", systemImage: "gearshape") { isPresented = true }
-            .sheet(isPresented: $isPresented) {
-                SettingsView()
-                    .velaPlaybackEnvironment()
-            }
-        #endif
-    }
-}

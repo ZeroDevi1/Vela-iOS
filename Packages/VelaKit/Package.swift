@@ -14,11 +14,16 @@ let package = Package(
     products: [
         .library(name: "VelaFeatures", targets: ["VelaFeatures"])
     ],
+    dependencies: [
+        // 第二播放内核（libmpv + FFmpeg，MPVKit 1.0.0 LGPL）。与本项目 GPLv3 兼容。
+        // 本地镜像：二进制由 scripts/fetch-mpvkit.sh 下载到 Packages/MPVKitLocal/Frameworks。
+        .package(path: "../MPVKitLocal")
+    ],
     targets: [
         .target(name: "VelaCore"),
         .target(name: "VelaNetwork", dependencies: ["VelaCore"]),
         .target(name: "VelaData", dependencies: ["VelaCore", "VelaNetwork"]),
-        .target(name: "VelaPlayer", dependencies: ["VelaCore"]),
+        .target(name: "VelaPlayer", dependencies: ["VelaCore", .product(name: "MPVKit", package: "MPVKitLocal")]),
         .target(name: "VelaDesignSystem", dependencies: ["VelaCore"]),
         .target(
             name: "VelaFeatures",

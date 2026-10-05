@@ -72,8 +72,10 @@ struct BaseItemDTO: Decodable, Sendable {
         var played: Bool?
         var isFavorite: Bool?
         var unplayedItemCount: Int?
+        var lastPlayedDate: Date?
 
         enum CodingKeys: String, CodingKey {
+            case lastPlayedDate = "LastPlayedDate"
             case playbackPositionTicks = "PlaybackPositionTicks"
             case played = "Played"
             case isFavorite = "IsFavorite"
@@ -114,6 +116,21 @@ struct BaseItemDTO: Decodable, Sendable {
     var mediaSources: [MediaSourceInfo]?
     var status: String?
     var endDate: Date?
+    var remoteTrailers: [RemoteTrailerDTO]?
+    var collectionType: String?
+    var productionLocations: [String]?
+    var mediaSourceCount: Int?
+    var tags: [String]?
+    var video3DFormat: String?
+    var partCount: Int?
+    var localTrailerCount: Int?
+
+    struct RemoteTrailerDTO: Decodable, Sendable {
+        var url: String
+        var name: String?
+
+        enum CodingKeys: String, CodingKey { case url = "Url", name = "Name" }
+    }
 
     struct ChapterDTO: Decodable, Sendable {
         var name: String?
@@ -195,6 +212,14 @@ struct BaseItemDTO: Decodable, Sendable {
         case mediaSources = "MediaSources"
         case status = "Status"
         case endDate = "EndDate"
+        case remoteTrailers = "RemoteTrailers"
+        case localTrailerCount = "LocalTrailerCount"
+        case collectionType = "CollectionType"
+        case productionLocations = "ProductionLocations"
+        case mediaSourceCount = "MediaSourceCount"
+        case tags = "Tags"
+        case video3DFormat = "Video3DFormat"
+        case partCount = "PartCount"
     }
 }
 

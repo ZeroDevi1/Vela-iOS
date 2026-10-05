@@ -15,29 +15,49 @@ public final class AppModel {
     public let searchService = FederatedSearchService()
     public let playbackResolver = PlaybackResolver()
     public let playerPreferences = PlayerPreferences()
+    /// 多线路自动路由。
+    public let lineRouter: LineRouter
+    /// TMDB 发现 / 目录。
+    public let catalog = CatalogService()
+    /// MoviePilot 订阅与日历。
+    public let subscriptions = SubscriptionService()
+    /// Trakt 同步。
+    public let trakt = TraktService()
+    /// 离线下载。
+    public let downloads = DownloadManager()
     /// 启动时探测一次；外接显示器变化导致的 HDR 能力变化在播放前重新探测。
     public private(set) var capabilities: PlaybackCapabilities
 
     /// iPhone / iPad 上全屏呈现的播放请求；macOS 使用独立窗口，不经过此属性。
     public var presentedPlayback: PlaybackRequest?
 
-    @ObservationIgnored private var clientCache: [String: (key: String, client: MediaServerClient)] = [:]
+    /// 服务器 id → (线路地址, client)。线路切换后地址变化，缓存随之失效。
+    @ObservationIgnored private var clientCache: [String: (baseURL: URL, client: MediaServerClient)] = [:]
 
     public init() {
         let identity = DeviceIdentity.current()
-        self.servers = ServerStore(identity: identity)
+        let servers = ServerStore(identity: identity)
+        let router = LineRouter(store: servers)
+        // 必须在创建任何 client 之前设置，失败回调才会进入路由器。
+        servers.transportFailureHandler = { [weak router] serverID, baseURL in
+            router?.reportTransportFailure(serverID: serverID, baseURL: baseURL)
+        }
+        self.servers = servers
+        self.lineRouter = router
         self.privacy = PrivacyGuard()
         self.loginService = ServerLoginService(identity: identity)
         self.capabilities = PlaybackCapabilityProbe.current()
+        router.start()
+        downloads.clientProvider = { [weak self] serverID in self?.client(forServerID: serverID) }
     }
 
     /// 返回服务器对应的 client，并按「服务器 + 当前线路」缓存，避免每次取图片地址都读 Keychain。
     public func client(forServerID serverID: String) -> MediaServerClient? {
+        // 每张卡片渲染都会调用：只做查找与 URL 比较，不拼接字符串、不读 Keychain。
         guard let server = servers.servers.first(where: { $0.id == serverID }) else { return nil }
-        let key = server.id + "|" + server.baseURL.absoluteString
-        if let cached = clientCache[serverID], cached.key == key { return cached.client }
+        if let cached = clientCache[serverID], cached.baseURL == server.baseURL { return cached.client }
         guard let client = try? servers.client(for: server) else { return nil }
-        clientCache[serverID] = (key, client)
+        clientCache[serverID] = (server.baseURL, client)
         return client
     }
 
@@ -55,11 +75,13 @@ public final class AppModel {
         capabilities = PlaybackCapabilityProbe.current()
     }
 
-    /// 聚合搜索的数据源：排除未解锁的私密服务器，避免在搜索结果中泄露其内容。
+    /// 跨服务器聚合（搜索、目录匹配、聚合继续观看）的数据源。
+    ///
+    /// 与 Android 版一致：私密服务器无论是否解锁都不参与聚合，只能切换为当前服务器后单独浏览，
+    /// 避免其内容混入公共结果（例如解锁后忘记锁定、给他人演示搜索）。
     public var searchableSources: [FederatedSearchService.Source] {
         servers.servers.compactMap { server in
-            guard !server.isPrivate || privacy.isUnlocked(server.id),
-                  let client = client(forServerID: server.id) else { return nil }
+            guard !server.isPrivate, let client = client(forServerID: server.id) else { return nil }
             return .init(id: server.id, name: server.displayName, client: client)
         }
     }
@@ -85,12 +107,16 @@ public struct PlaybackRequest: Hashable, Codable, Identifiable, Sendable {
         public var subtitleStreamIndex: Int?
         /// 忽略续播位置，从头播放。
         public var startFromBeginning: Bool
+        /// 多段文件（CD1 / CD2 …）全部段的条目 id（按顺序）；从任意一段起播时，播放器据此衔接上一段 / 下一段。
+        public var partIDs: [String]?
 
-        public init(mediaSourceID: String? = nil, audioStreamIndex: Int? = nil, subtitleStreamIndex: Int? = nil, startFromBeginning: Bool = false) {
+        public init(mediaSourceID: String? = nil, audioStreamIndex: Int? = nil, subtitleStreamIndex: Int? = nil,
+                    startFromBeginning: Bool = false, partIDs: [String]? = nil) {
             self.mediaSourceID = mediaSourceID
             self.audioStreamIndex = audioStreamIndex
             self.subtitleStreamIndex = subtitleStreamIndex
             self.startFromBeginning = startFromBeginning
+            self.partIDs = partIDs
         }
     }
 

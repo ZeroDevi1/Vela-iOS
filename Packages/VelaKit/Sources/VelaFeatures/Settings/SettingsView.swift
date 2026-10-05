@@ -1,5 +1,6 @@
 import SwiftUI
 import VelaCore
+import VelaDesignSystem
 import VelaPlayer
 
 /// 设置。iPhone / iPad 在标签页中显示；macOS 在系统「设置」窗口（⌘,）中显示。
@@ -7,6 +8,7 @@ public struct SettingsView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.playMedia) private var playMedia
     @State private var isAdding = false
+    @State private var imageCacheSize: Int64?
 
     public init() {}
 
@@ -22,12 +24,62 @@ public struct SettingsView: View {
                     Button("添加服务器", systemImage: "plus") { isAdding = true }
                 }
 
+                #if os(iOS)
+                // iPhone 标签栏只放与 Android 版一致的 5 项，发现 / 订阅从这里进入（iPad 侧边栏中也直接可见）。
+                Section("探索") {
+                    NavigationLink { DiscoverPage() } label: { Label("发现", systemImage: "safari") }
+                    NavigationLink { SubscriptionsPage() } label: { Label("订阅日历", systemImage: "calendar") }
+                }
+                #endif
+
                 Section("播放") {
                     NavigationLink("播放设置") { PlayerSettingsView() }
-                    LabeledContent("播放内核", value: "AVPlayer（系统）")
+                    LabeledContent("播放内核", value: app.playerPreferences.engineMode.title)
                     LabeledContent("杜比视界", value: app.capabilities.supportsDolbyVision ? "支持" : "不支持")
                     LabeledContent("HDR10", value: app.capabilities.supportsHDR10 ? "支持" : "不支持")
                     LabeledContent("AV1 硬件解码", value: app.capabilities.supportsAV1 ? "支持" : "不支持")
+                }
+
+                Section("发现") {
+                    NavigationLink {
+                        TMDBCredentialForm()
+                    } label: {
+                        LabeledContent("TMDB", value: app.catalog.isConfigured ? (app.catalog.usesBundledCredential ? "内置" : "已配置") : "未配置")
+                    }
+                }
+
+                Section("订阅") {
+                    NavigationLink {
+                        MoviePilotConnectionForm()
+                    } label: {
+                        LabeledContent("MoviePilot", value: app.subscriptions.isConnected ? "已连接" : "未连接")
+                    }
+                }
+
+                Section("同步") {
+                    NavigationLink {
+                        TraktSettingsView()
+                    } label: {
+                        LabeledContent("Trakt", value: app.trakt.isConnected ? "已连接" : "未连接")
+                    }
+                }
+
+                Section("存储") {
+                    NavigationLink {
+                        DownloadsView()
+                    } label: {
+                        LabeledContent("下载", value: "\(app.downloads.records.filter { $0.state == .completed }.count) 项")
+                    }
+                    LabeledContent("图片缓存") {
+                        Text(imageCacheSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "计算中…")
+                    }
+                    Button("清除图片缓存", systemImage: "trash") {
+                        Task {
+                            await ImagePipeline.shared.removeAll()
+                            imageCacheSize = await ImagePipeline.shared.diskUsage()
+                        }
+                    }
+                    .disabled(imageCacheSize == 0)
                 }
 
                 Section("隐私") {
@@ -59,6 +111,7 @@ public struct SettingsView: View {
                 ServerEditView(serverID: serverID)
             }
             .sheet(isPresented: $isAdding) { AddServerView() }
+            .task { imageCacheSize = await ImagePipeline.shared.diskUsage() }
         }
     }
 }
@@ -103,24 +156,11 @@ private struct ServerEditView: View {
                     Toggle("STRM 优先播放原始地址", isOn: binding(server, \.preferStrmOriginalPath))
                     Toggle("自动切换线路", isOn: binding(server, \.autoRouteEnabled))
                 }
-                Section("线路") {
-                    ForEach(server.lines) { line in
-                        Button {
-                            var updated = server
-                            updated.activeLineID = line.id
-                            app.servers.update(updated)
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading) {
-                                    Text(line.name.isEmpty ? (line.isLAN ? "局域网" : "公网") : line.name)
-                                    Text(line.url.absoluteString).font(.caption).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if line.id == server.activeLineID { Image(systemName: "checkmark") }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
+                LineManagementSection(server: server)
+                Section {
+                    NavigationLink("服务器管理") { ServerAdminView(serverID: server.id) }
+                } footer: {
+                    Text("系统信息、活动会话、计划任务与媒体库扫描，需要管理员账号。")
                 }
                 Section {
                     if server.id != app.servers.activeServer?.id {

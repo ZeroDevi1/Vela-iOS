@@ -15,7 +15,21 @@ final class DetailModel {
     private(set) var nextUp: MediaItem?
     private(set) var siblingEpisodes: [MediaItem] = []
     private(set) var similar: [MediaItem] = []
+    /// 本地预告片与花絮（幕后、删减片段等）。
+    private(set) var trailers: [MediaItem] = []
+    private(set) var specialFeatures: [MediaItem] = []
+    /// 多段文件的全部段（第一段为本条目）；单文件为空。
+    private(set) var parts: [MediaItem] = []
     private(set) var actionError: String?
+    /// 客户端合并进来的同一部电影的其他条目（见 `MediaItemMerger`），其媒体源作为额外版本供选择。
+    private(set) var alternates: [ItemDetails] = []
+
+    /// 一个可选版本：媒体源及其所属条目。合并条目的版本播放时要用所属条目的 id。
+    struct SourceOption: Identifiable {
+        var item: MediaItem
+        var source: MediaSourceInfo
+        var id: String { source.id }
+    }
 
     /// 播放源选择（单集 / 电影）。
     var selectedSourceID: String?
@@ -29,39 +43,97 @@ final class DetailModel {
 
     var item: MediaItem { details?.item ?? seed }
 
-    var selectedSource: MediaSourceInfo? {
-        guard let sources = details?.mediaSources, !sources.isEmpty else { return nil }
-        return sources.first { $0.id == selectedSourceID } ?? sources.first
+    /// 本条目的媒体源在前，合并条目的媒体源在后。
+    var sourceOptions: [SourceOption] {
+        guard let details else { return [] }
+        let own = details.mediaSources.map { SourceOption(item: details.item, source: $0) }
+        let others = alternates.flatMap { alternate in alternate.mediaSources.map { SourceOption(item: alternate.item, source: $0) } }
+        return own + others
     }
+
+    private var selectedOption: SourceOption? {
+        let options = sourceOptions
+        return options.first { $0.id == selectedSourceID } ?? options.first
+    }
+
+    var selectedSource: MediaSourceInfo? { selectedOption?.source }
+
+    /// 播放时使用的条目：选中合并条目的版本时为该条目，否则为当前条目。
+    var playbackItem: MediaItem { selectedOption?.item ?? item }
 
     func load(client: MediaServerClient) async {
         do {
             let details = try await client.itemDetails(id: seed.id)
             self.details = details
             loadError = nil
+            if !seed.mergedItemIDs.isEmpty {
+                alternates = await loadAlternates(client: client)
+            }
             resetSelections()
         } catch {
             loadError = error.localizedDescription
         }
 
+        // 各分区相互独立：并发请求，哪个先返回先显示；单个失败只缺对应分区。
         let item = item
-        switch item.kind {
-        case .series:
-            async let seasons = capture { try await client.seasons(seriesID: item.id) }
-            async let next = capture { try await client.nextUp(seriesID: item.id) }
-            if case .success(let value) = await seasons { self.seasons = value }
-            if case .success(let value) = await next { self.nextUp = value }
-        case .episode:
-            if let seriesID = item.seriesID,
-               case .success(let episodes) = await capture({ try await client.episodes(seriesID: seriesID, seasonID: item.seasonID) }) {
-                siblingEpisodes = episodes
+        let details = details
+        await withTaskGroup(of: Section.self) { group in
+            switch item.kind {
+            case .series:
+                group.addTask { .seasons((try? await client.seasons(seriesID: item.id)) ?? []) }
+                group.addTask { .nextUp(try? await client.nextUp(seriesID: item.id)) }
+            case .episode:
+                if let seriesID = item.seriesID {
+                    group.addTask { .siblings((try? await client.episodes(seriesID: seriesID, seasonID: item.seasonID)) ?? []) }
+                }
+            default:
+                break
             }
-        default:
-            break
+            if item.kind.isPlayable, (item.partCount ?? 0) > 1 {
+                group.addTask { .parts((try? await client.additionalParts(itemID: item.id)).map { [item] + $0 } ?? []) }
+            }
+            if item.kind == .movie || item.kind == .series {
+                if (details?.localTrailerCount ?? 0) > 0 {
+                    group.addTask { .trailers((try? await client.localTrailers(itemID: item.id)) ?? []) }
+                }
+                group.addTask { .features((try? await client.specialFeatures(itemID: item.id)) ?? []) }
+            }
+            if item.kind != .episode {
+                group.addTask { .similar((try? await client.similarItems(itemID: item.id)) ?? []) }
+            }
+            for await section in group { apply(section) }
         }
-        if item.kind != .episode, case .success(let value) = await capture({ try await client.similarItems(itemID: item.id) }) {
-            similar = value
+    }
+
+    private enum Section: Sendable {
+        case seasons([MediaItem]), nextUp(MediaItem?), siblings([MediaItem]), parts([MediaItem])
+        case trailers([MediaItem]), features([MediaItem]), similar([MediaItem])
+    }
+
+    private func apply(_ section: Section) {
+        switch section {
+        case .seasons(let value): seasons = value
+        case .nextUp(let value): nextUp = value
+        case .siblings(let value): siblingEpisodes = value
+        case .parts(let value): parts = value
+        case .trailers(let value): trailers = value
+        case .features(let value): specialFeatures = value
+        case .similar(let value): similar = value
         }
+    }
+
+    /// 合并条目逐个取详情；单个失败只是少一个版本，不影响页面。
+    private func loadAlternates(client: MediaServerClient) async -> [ItemDetails] {
+        let ids = seed.mergedItemIDs
+        let results = await withTaskGroup(of: (Int, ItemDetails?).self) { group in
+            for (index, id) in ids.enumerated() {
+                group.addTask { (index, try? await client.itemDetails(id: id)) }
+            }
+            var collected: [(Int, ItemDetails?)] = []
+            for await result in group { collected.append(result) }
+            return collected
+        }
+        return results.sorted { $0.0 < $1.0 }.compactMap(\.1)
     }
 
     /// 选择变化时重置为该版本的服务器默认音轨 / 字幕。
@@ -80,7 +152,8 @@ final class DetailModel {
         PlaybackRequest.Options(
             mediaSourceID: selectedSourceID,
             audioStreamIndex: selectedAudioIndex,
-            subtitleStreamIndex: selectedSubtitleIndex
+            subtitleStreamIndex: selectedSubtitleIndex,
+            partIDs: parts.isEmpty ? nil : parts.map(\.id)
         )
     }
 

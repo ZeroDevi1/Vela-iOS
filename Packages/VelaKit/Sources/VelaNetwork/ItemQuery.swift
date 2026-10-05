@@ -8,6 +8,13 @@ public struct ItemQuery: Sendable, Hashable {
         case premiereDate = "PremiereDate"
         case communityRating = "CommunityRating"
         case random = "Random"
+        /// 剧集按最近新增单集的时间排序，用于「最近更新」。
+        case dateLastContentAdded = "DateLastContentAdded"
+        case productionYear = "ProductionYear"
+        case criticRating = "CriticRating"
+        case datePlayed = "DatePlayed"
+        case playCount = "PlayCount"
+        case officialRating = "OfficialRating"
     }
 
     public var parentID: String?
@@ -19,6 +26,17 @@ public struct ItemQuery: Sendable, Hashable {
     public var startIndex: Int
     public var limit: Int?
     public var isFavorite: Bool?
+    /// 只返回具有这些图片类型的条目（例如 `Backdrop`），用于轮播图。
+    public var imageTypes: [String]
+    /// 只返回这些人物参与的作品（演职人员详情页）。
+    public var personIDs: [String]
+    /// `IsPlayed`：true 只返回已看，false 只返回未看，nil 不筛选。
+    public var isPlayed: Bool?
+    /// `AnyProviderIdEquals`，例如 `["Tmdb.123", "Imdb.tt456"]`；服务器可能忽略，结果需调用方核对。
+    public var anyProviderIDs: [String]
+    /// 只返回这些风格 / 工作室下的条目。
+    public var genreIDs: [String] = []
+    public var studioIDs: [String] = []
 
     public init(
         parentID: String? = nil,
@@ -29,7 +47,11 @@ public struct ItemQuery: Sendable, Hashable {
         sortDescending: Bool = false,
         startIndex: Int = 0,
         limit: Int? = nil,
-        isFavorite: Bool? = nil
+        isFavorite: Bool? = nil,
+        imageTypes: [String] = [],
+        personIDs: [String] = [],
+        isPlayed: Bool? = nil,
+        anyProviderIDs: [String] = []
     ) {
         self.parentID = parentID
         self.searchTerm = searchTerm
@@ -40,6 +62,10 @@ public struct ItemQuery: Sendable, Hashable {
         self.startIndex = startIndex
         self.limit = limit
         self.isFavorite = isFavorite
+        self.imageTypes = imageTypes
+        self.personIDs = personIDs
+        self.isPlayed = isPlayed
+        self.anyProviderIDs = anyProviderIDs
     }
 
     var queryItems: [URLQueryItem] {
@@ -51,12 +77,19 @@ public struct ItemQuery: Sendable, Hashable {
         }
         if recursive { items.append(.init(name: "Recursive", value: "true")) }
         if let sortBy {
-            items.append(.init(name: "SortBy", value: sortBy.rawValue))
+            // 主排序相同时按名称稳定排序，分页不会重复或漏项。
+            items.append(.init(name: "SortBy", value: sortBy == .name ? sortBy.rawValue : "\(sortBy.rawValue),SortName"))
             items.append(.init(name: "SortOrder", value: sortDescending ? "Descending" : "Ascending"))
         }
         if startIndex > 0 { items.append(.init(name: "StartIndex", value: String(startIndex))) }
         if let limit { items.append(.init(name: "Limit", value: String(limit))) }
         if let isFavorite { items.append(.init(name: "IsFavorite", value: isFavorite ? "true" : "false")) }
+        if !genreIDs.isEmpty { items.append(.init(name: "GenreIds", value: genreIDs.joined(separator: ","))) }
+        if !studioIDs.isEmpty { items.append(.init(name: "StudioIds", value: studioIDs.joined(separator: ","))) }
+        if !anyProviderIDs.isEmpty { items.append(.init(name: "AnyProviderIdEquals", value: anyProviderIDs.joined(separator: ","))) }
+        if !personIDs.isEmpty { items.append(.init(name: "PersonIds", value: personIDs.joined(separator: ","))) }
+        if let isPlayed { items.append(.init(name: "IsPlayed", value: isPlayed ? "true" : "false")) }
+        if !imageTypes.isEmpty { items.append(.init(name: "ImageTypes", value: imageTypes.joined(separator: ","))) }
         return items
     }
 }

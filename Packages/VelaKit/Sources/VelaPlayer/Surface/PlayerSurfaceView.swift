@@ -25,6 +25,32 @@ public final class PlayerLayerView: PlayerPlatformView {
         set { activeLayer.player = newValue }
     }
 
+    /// MPV 内核的渲染图层，铺满视图；系统内核时为 nil。
+    private(set) var metalLayer: CAMetalLayer?
+
+    func host(_ layer: CAMetalLayer) {
+        metalLayer = layer
+        #if os(iOS)
+        self.layer.addSublayer(layer)
+        #else
+        self.layer?.addSublayer(layer)
+        #endif
+        layoutMetalLayer()
+    }
+
+    private func layoutMetalLayer() {
+        guard let metalLayer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        metalLayer.frame = bounds
+        #if os(iOS)
+        metalLayer.contentsScale = window?.screen.scale ?? traitCollection.displayScale
+        #else
+        metalLayer.contentsScale = window?.backingScaleFactor ?? 2
+        #endif
+        CATransaction.commit()
+    }
+
     var activeLayer: AVPlayerLayer {
         #if os(iOS)
         hostedLayer
@@ -37,6 +63,11 @@ public final class PlayerLayerView: PlayerPlatformView {
     public override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .black
+    }
+
+    public override func layoutSubviews() {
+        super.layoutSubviews()
+        layoutMetalLayer()
     }
     #else
     public override init(frame frameRect: NSRect) {
@@ -51,6 +82,7 @@ public final class PlayerLayerView: PlayerPlatformView {
     public override func layout() {
         super.layout()
         playerLayer.frame = bounds
+        layoutMetalLayer()
     }
     #endif
 
@@ -106,17 +138,26 @@ public struct PlayerSurface: PlayerPlatformViewRepresentable {
     @MainActor
     private func makeView(context: Context) -> PlayerLayerView {
         let view = PlayerLayerView()
-        if case .avPlayer(let player) = controller.engine.surface {
+        switch controller.engine.surface {
+        case .avPlayer(let player):
             view.player = player
+            // 画中画依赖 AVPlayerLayer，只有系统内核支持。
+            context.coordinator.lastToggleRequest = controller.pictureInPictureToggleRequest
+            context.coordinator.attach(to: view.activeLayer, controller: controller)
+        case .metalLayer(let layer):
+            view.host(layer)
         }
-        context.coordinator.lastToggleRequest = controller.pictureInPictureToggleRequest
-        context.coordinator.attach(to: view.activeLayer, controller: controller)
         return view
     }
 
     @MainActor
     private func updateView(_ view: PlayerLayerView, context: Context) {
-        view.activeLayer.videoGravity = controller.videoGravity == .fill ? .resizeAspectFill : .resizeAspect
+        view.activeLayer.videoGravity = switch controller.videoGravity {
+        case .fit: .resizeAspect
+        case .fill: .resizeAspectFill
+        case .stretch: .resize
+        }
+        (controller.engine as? MPVEngine)?.setGravity(fill: controller.videoGravity == .fill, stretch: controller.videoGravity == .stretch)
         context.coordinator.handleToggle(controller.pictureInPictureToggleRequest)
     }
 

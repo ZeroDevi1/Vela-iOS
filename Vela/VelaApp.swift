@@ -5,6 +5,10 @@ import VelaFeatures
 @main
 struct VelaApp: App {
     @State private var app = AppModel()
+    #if os(iOS)
+    /// 播放器横竖屏锁定需要由 App 代理返回当前允许的方向。
+    @UIApplicationDelegateAdaptor(VelaAppDelegate.self) private var appDelegate
+    #endif
 
     var body: some Scene {
         WindowGroup {

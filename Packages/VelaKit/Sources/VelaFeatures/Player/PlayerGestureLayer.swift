@@ -34,6 +34,8 @@ struct PlayerGestureLayer: UIViewRepresentable {
         private var panStart: CGPoint = .zero
         private var levelAtPanStart: Double = 0
         private var holdActive = false
+        /// VR 模式下拖动转视角：记录上一次的平移量，按增量更新。
+        private var lastVRTranslation: CGPoint = .zero
 
         /// 屏幕边缘的系统手势区（控制中心、主屏幕指示条）内不触发拖动，单位 pt。
         private static let verticalEdgeExclusion: CGFloat = 48
@@ -105,6 +107,15 @@ struct PlayerGestureLayer: UIViewRepresentable {
 
         @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
             guard let view else { return }
+            // VR 转平面：拖动只转视角，不调进度 / 亮度 / 音量。
+            if controller.vrEnabled, let layout = controller.effectiveVRLayout {
+                let translation = recognizer.translation(in: view)
+                if recognizer.state == .began { lastVRTranslation = .zero }
+                let delta = CGSize(width: translation.x - lastVRTranslation.x, height: translation.y - lastVRTranslation.y)
+                lastVRTranslation = translation
+                controller.vrState.drag(by: delta, viewSize: view.bounds.size, layout: layout)
+                return
+            }
             let translation = recognizer.translation(in: view)
             let size = view.bounds.size
             let settings = controller.gestureSettings
@@ -186,7 +197,14 @@ struct PlayerGestureLayer: UIViewRepresentable {
         // MARK: - 捏合
 
         @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
-            guard !controller.isLocked, recognizer.state == .ended else { return }
+            guard !controller.isLocked else { return }
+            // VR 转平面：捏合连续调整视场角。
+            if controller.vrEnabled {
+                controller.vrState.zoom(by: Double(recognizer.scale))
+                recognizer.scale = 1
+                return
+            }
+            guard recognizer.state == .ended else { return }
             if recognizer.scale > 1 + PlayerGestureModel.pinchToggleThreshold {
                 controller.videoGravity = .fill
             } else if recognizer.scale < 1 - PlayerGestureModel.pinchToggleThreshold {
@@ -224,6 +242,9 @@ private final class SystemVolume {
 struct PlayerGestureLayer: View {
     let controller: PlayerController
     @FocusState private var focused: Bool
+    /// VR 拖动的上一次平移量与捏合的上一次倍率，按增量更新视角。
+    @State private var lastDrag: CGSize = .zero
+    @State private var lastMagnification: CGFloat = 1
 
     var body: some View {
         Color.clear
@@ -239,10 +260,34 @@ struct PlayerGestureLayer: View {
                 TapGesture(count: 2).onEnded { NSApp.keyWindow?.toggleFullScreen(nil) }
                     .exclusively(before: TapGesture().onEnded { controller.togglePlayPause() })
             )
+            .simultaneousGesture(vrDrag, including: controller.vrEnabled ? .all : .none)
+            .simultaneousGesture(vrMagnify, including: controller.vrEnabled ? .all : .none)
             .onKeyPress(.space) { controller.togglePlayPause(); return .handled }
             .onKeyPress(.leftArrow) { controller.skipBackward(); return .handled }
             .onKeyPress(.rightArrow) { controller.skipForward(); return .handled }
             .onKeyPress("f") { NSApp.keyWindow?.toggleFullScreen(nil); return .handled }
+    }
+
+    /// VR 转平面：鼠标拖动转视角。
+    private var vrDrag: some Gesture {
+        DragGesture(minimumDistance: 2)
+            .onChanged { value in
+                guard let layout = controller.effectiveVRLayout, let size = NSApp.keyWindow?.contentView?.bounds.size else { return }
+                let delta = CGSize(width: value.translation.width - lastDrag.width, height: value.translation.height - lastDrag.height)
+                lastDrag = value.translation
+                controller.vrState.drag(by: delta, viewSize: size, layout: layout)
+            }
+            .onEnded { _ in lastDrag = .zero }
+    }
+
+    /// VR 转平面：触控板捏合缩放。
+    private var vrMagnify: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                controller.vrState.zoom(by: value.magnification / lastMagnification)
+                lastMagnification = value.magnification
+            }
+            .onEnded { _ in lastMagnification = 1 }
     }
 }
 #endif
