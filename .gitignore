@@ -9,5 +9,6 @@ Packages/VelaKit/.swiftpm/
 *.ipa
 *.dSYM.zip
 
-# MPVKit 预编译库：由 scripts/fetch-mpvkit.sh 下载，体积大，不入库
-Packages/MPVKitLocal/Frameworks/
+# KSPlayer / FFmpegKit 本地镜像：由 scripts/fetch-ksplayer.sh 拉取，体积大，不入库
+Packages/KSPlayer/
+Packages/FFmpegKit/

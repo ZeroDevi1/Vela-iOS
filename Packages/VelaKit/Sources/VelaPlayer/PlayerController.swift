@@ -37,7 +37,7 @@ public final class PlayerController {
         case message(String, symbol: String)
     }
 
-    /// 当前内核。会话可在起播前或失败重试时替换（系统 ↔ MPV），渲染表面按实例重建。
+    /// 当前内核。会话可在起播前或失败重试时替换（系统 ↔ KSPlayer），渲染表面按实例重建。
     public private(set) var engine: any PlaybackEngine
     public private(set) var source: PlaybackSource?
     /// 播放偏好；会话起播时换成应用共享的实例，设置页的修改即时生效。
@@ -119,7 +119,7 @@ public final class PlayerController {
             vrLayoutOverride = nil
             vrState = VRViewState()
             vrIssue = nil
-            vrEnabled = source.vrLayout != nil && engine.kind == .avFoundation
+            vrEnabled = source.vrLayout != nil
             zoomScale = preferences.rememberZoom ? CGFloat(preferences.savedZoomScale) : 1
             zoomOffset = .zero
         }
@@ -143,11 +143,8 @@ public final class PlayerController {
         engine = newEngine
         newEngine.setRate(rate)
         newEngine.setMuted(isMuted)
-        // VR 与画中画依赖系统内核的画面输出。
-        if newEngine.kind != .avFoundation {
-            vrEnabled = false
-            isPictureInPictureActive = false
-        }
+        // 画中画绑定在旧内核的渲染图层上，随旧内核结束。
+        isPictureInPictureActive = false
     }
 
     /// 当前内核的渲染宿主；内核替换后重建。
@@ -383,7 +380,7 @@ public final class PlayerController {
 
     /// 开关「VR 转平面」；每次开启从正前方、默认视场角开始。
     public func toggleVR() {
-        guard effectiveVRLayout != nil, engine.kind == .avFoundation else { return }
+        guard effectiveVRLayout != nil else { return }
         vrEnabled.toggle()
         vrState = VRViewState()
         flashHUD(.message(vrEnabled ? "VR 转平面：拖动转视角，捏合缩放" : "已关闭 VR 转平面", symbol: "visionpro"), delay: .seconds(1.5))
@@ -391,7 +388,6 @@ public final class PlayerController {
 
     /// 手动指定 VR 排布并开启转平面。
     public func selectVRLayout(_ layout: VRLayout) {
-        guard engine.kind == .avFoundation else { return }
         vrLayoutOverride = layout
         vrState = VRViewState()
         vrEnabled = true

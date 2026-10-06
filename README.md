@@ -57,7 +57,7 @@ Android 版见 [ZeroDevi1/Vela](https://github.com/ZeroDevi1/Vela)（基于 [Jel
 
 需要 Xcode 27（iOS / macOS 27 SDK）。
 
-0. 首次构建前下载 MPV 内核的预编译库（约 1 GB，校验 sha256，不入库）：`./scripts/fetch-mpvkit.sh`
+0. 首次构建前拉取 KSPlayer 内核及其 FFmpegKit 依赖（约 1.4 GB，固定版本，不入库）：`./scripts/fetch-ksplayer.sh`
 1. 打开 `Vela.xcodeproj`，选择 `Vela` scheme
 2. 目标选择 iPhone / iPad 模拟器或 My Mac 运行
 3. 真机运行前在 Signing & Capabilities 中选择开发团队（仓库未配置 `DEVELOPMENT_TEAM`）
@@ -82,7 +82,7 @@ cd Packages/VelaKit && swift test
 
 ### 部署 Release 版到真机
 
-前提：设备系统为 iOS / iPadOS / macOS 27 或更高（部署目标 27.0）；已执行 `scripts/fetch-mpvkit.sh` 下载 MPV 二进制。
+前提：设备系统为 iOS / iPadOS / macOS 27 或更高（部署目标 27.0）；已执行 `scripts/fetch-ksplayer.sh` 拉取 KSPlayer 与 FFmpegKit。
 
 #### iPhone / iPad（Xcode）
 
@@ -110,14 +110,38 @@ xcodebuild -project Vela.xcodeproj -scheme Vela -configuration Release -destinat
 xcrun devicectl device install app --device <devicectl 列出的设备 Identifier> build/Build/Products/Release-iphoneos/Vela.app
 ```
 
-首次给新设备构建时 `-allowProvisioningUpdates` 会自动注册设备；设备需已开启开发者模式并信任这台 Mac。
+首次给新设备构建时 `-allowProvisioningUpdates` 会自动注册设备；设备需已开启开发者模式并信任这台 Mac。iPad 与 iPhone 命令相同，只换成 iPad 的 UDID / Identifier。
+
+注意 `xcodebuild -destination 'id=…'` 用的是设备 **UDID**（如 `00008140-…`），`devicectl --device` 用的是 `xcrun devicectl list devices` 列出的 **Identifier**（如 `0FE1D33C-…`），两者不同。
+
+安装后启动（设备需解锁）：
+
+```bash
+xcrun devicectl device process launch --device <devicectl 列出的设备 Identifier> com.zerodevi1.vela
+```
+
+排查播放 / 字幕问题时带日志启动，终端会实时输出播放器日志（`Log.player`，含内核选择、字幕加载与耗时）：
+
+```bash
+xcrun devicectl device process launch --device <devicectl 列出的设备 Identifier> --terminate-existing --console --environment-variables '{"OS_ACTIVITY_DT_MODE":"YES"}' com.zerodevi1.vela
+```
 
 #### MacBook（原生 macOS 版）
 
 在要使用的 Mac 上直接构建最简单：
 
-1. 该 Mac 安装 Xcode 27，克隆仓库并执行 `scripts/fetch-mpvkit.sh`
+1. 该 Mac 安装 Xcode 27，克隆仓库并执行 `scripts/fetch-ksplayer.sh`
 2. Xcode 顶部目标选 **My Mac**，Scheme 的 Build Configuration 改为 Release，⌘R；或 Product → Archive → Distribute App → Custom → Copy App，得到可放进「应用程序」的 `Vela.app`
+
+命令行（本机构建并装到「应用程序」）：
+
+```bash
+xcodebuild -project Vela.xcodeproj -scheme Vela -configuration Release -destination 'platform=macOS' -derivedDataPath build -allowProvisioningUpdates DEVELOPMENT_TEAM=<你的 Team ID> build
+```
+
+```bash
+ditto build/Build/Products/Release/Vela.app /Applications/Vela.app
+```
 
 把一台 Mac 上构建的 `Vela.app` 拷到另一台 Mac：
 

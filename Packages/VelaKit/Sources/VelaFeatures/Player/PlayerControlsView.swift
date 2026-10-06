@@ -1,188 +1,191 @@
 import AVKit
 import SwiftUI
+import UniformTypeIdentifiers
+import VelaCore
 import VelaDesignSystem
 import VelaPlayer
 
-/// 播放控制层（参考 SenPlayer 布局）。图标直接压在上下渐变遮罩上，不加玻璃底，尽量少遮挡画面。
+/// 播放控制层。布局与 Android 版（`ControlsOverlay`）一致，保留 iOS 的 SF Symbols、原生菜单、AirPlay 与系统画中画：
 ///
-/// - 顶部：标题；关闭、AirPlay、画面比例、旋转 | 画中画、章节、截图、倍速
-/// - 拖动时顶部居中：当前 / 总时长、迷你进度条、偏移量；预览帧浮在进度条上方并跟随拖动位置
-/// - 底部次级行：播放信息 | 音轨、字幕、更多
-/// - 进度行：当前时间、进度条（含缓冲）、总时长
-/// - 传输行：锁定 | 上一集（电影为快退）、播放 / 暂停、下一集（电影为快进） | 剧集
+/// - 顶部：返回、（横屏）剧集 Logo | 内核标签、AirPlay、画中画、媒体信息、画面比例、旋转、章节、更多
+/// - 左侧居中：截图、锁定；右侧居中：倍速（＋ / 当前值 / －）
+/// - 中央：快退、播放 / 暂停（缓冲时转圈）、快进
+/// - 底部：上一集 / 下一集、标题块（剧名 · 单集 · HDR 标记，点按看单集信息）；时间 + 按章节分段的进度条；
+///   剧集 / 音轨 / 字幕按钮（横屏在进度条右侧，竖屏居中在下方）
+///
+/// 按钮用半透明圆底而不是玻璃材质：玻璃需要对下方逐帧变化的视频实时模糊，十余个按钮叠在 4K 画面上会持续占用 GPU。
+/// 拖动进度时只保留进度行，其余控件淡出，让预览帧与时间成为唯一焦点（与 Android 版相同）。
 struct PlayerControlsView: View {
     let session: PlayerSession
     @Binding var panel: PlayerPanel?
     let onClose: () -> Void
+    /// 「更多 → 添加本地字幕」的文件选择器。
+    @State private var isImportingSubtitle = false
 
     private var controller: PlayerController { session.controller }
     /// 「自定义播放器按钮」。
     private var buttons: PlayerButtons { controller.preferences.buttons }
 
-    private static let speeds: [Float] = [0.5, 0.75, 1, 1.25, 1.5, 2, 3]
+    private static let speedPresets: [Float] = [0.5, 0.75, 1, 1.25, 1.5, 2, 3]
+    /// 倍速 ＋ / － 的步长与范围，与 Android 版一致。
+    private static let speedStep: Float = 0.25
+    private static let speedRange: ClosedRange<Float> = 0.25...4
 
     var body: some View {
         let visible = controller.controlsVisible && panel == nil
-        // 隐藏时移出视图树而不是只设透明度：否则进度与时间仍按 4 Hz 刷新，整层阴影也随之重新离屏渲染。
+        // 隐藏时移出视图树而不是只设透明度：否则进度与时间仍按 4 Hz 刷新，整层也随之重新合成。
         ZStack {
             if visible {
-                Group {
+                GeometryReader { proxy in
+                    let landscape = proxy.size.width > proxy.size.height
                     if controller.isLocked {
-                        lockedOverlay
+                        lockedOverlay(landscape: landscape)
                     } else {
-                        fullControls
+                        fullControls(landscape: landscape)
                     }
                 }
                 .transition(.opacity)
             }
         }
         .animation(.easeInOut(duration: 0.25), value: visible)
+        .fileImporter(isPresented: $isImportingSubtitle, allowedContentTypes: Self.subtitleTypes) { result in
+            switch result {
+            case .success(let url): session.loadLocalSubtitle(from: url)
+            case .failure(let error): controller.showMessage("无法打开文件：\(error.localizedDescription)", symbol: "exclamationmark.triangle", duration: .seconds(3))
+            }
+        }
     }
 
-    private var fullControls: some View {
-        VStack(spacing: 0) {
-            topBar
-            ScrubTimeIndicator(controller: controller)
-                .padding(.top, 12)
-            Spacer(minLength: 0)
-            bottomArea
-        }
-        .background {
-            VStack {
-                LinearGradient(colors: [.black.opacity(0.65), .clear], startPoint: .top, endPoint: .bottom).frame(height: 180)
-                Spacer()
-                LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .top, endPoint: .bottom).frame(height: 240)
+    /// 本地字幕可选的文件类型。SRT / ASS 没有系统声明的类型，按扩展名生成动态类型；部分文件管理器把它们标成纯文本。
+    private static let subtitleTypes: [UTType] =
+        ["srt", "ass", "ssa", "vtt"].compactMap { UTType(filenameExtension: $0) } + [.plainText]
+
+    private var hasFailed: Bool {
+        if case .failed = controller.engine.status { return true }
+        return false
+    }
+
+    private func fullControls(landscape: Bool) -> some View {
+        let chrome: Double = controller.scrubTime == nil ? 1 : 0
+        let edge: CGFloat = landscape ? 20 : 12
+        return ZStack {
+            VStack(spacing: 0) {
+                topSection(landscape: landscape)
+                    .opacity(chrome)
+                    .overlay(alignment: .top) { ScrubTimeIndicator(controller: controller) }
+                Spacer(minLength: 0)
+                bottomSection(landscape: landscape, chrome: chrome)
             }
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
+
+            // 播放出错时中央显示错误与重试按钮，不再叠放传输控件与两侧按钮。
+            if !hasFailed {
+                HStack {
+                    leftColumn(landscape: landscape)
+                    Spacer(minLength: 0)
+                    if buttons.speed { speedControl(landscape: landscape) }
+                }
+                .padding(.horizontal, edge)
+                .opacity(chrome)
+
+                transportControls(landscape: landscape)
+                    .opacity(chrome)
+            }
         }
+        .padding(.horizontal, landscape ? 8 : 0)
+        .background { scrims(landscape: landscape) }
         .foregroundStyle(.white)
-        .shadow(color: .black.opacity(0.35), radius: 3)
+        .animation(.easeOut(duration: 0.2), value: chrome)
+    }
+
+    /// 上下渐变遮罩：保证白色控件在亮画面上的对比度。
+    private func scrims(landscape: Bool) -> some View {
+        VStack {
+            LinearGradient(colors: [.black.opacity(0.66), .black.opacity(0.3), .clear], startPoint: .top, endPoint: .bottom)
+                .frame(height: landscape ? 150 : 200)
+            Spacer()
+            LinearGradient(colors: [.clear, .black.opacity(0.3), .black.opacity(0.66)], startPoint: .top, endPoint: .bottom)
+                .frame(height: landscape ? 200 : 300)
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
     }
 
     // MARK: - 顶部
 
-    private var topBar: some View {
-        VStack(spacing: 6) {
-            title
-            HStack(spacing: 4) {
-                iconButton("xmark", label: "关闭播放器", action: onClose)
-                    .keyboardShortcut(.cancelAction)
-                if buttons.cast {
-                    AirPlayButton()
-                        .frame(width: 44, height: 44)
-                        .accessibilityLabel("AirPlay")
-                }
-                if buttons.zoom {
-                    iconButton(controller.videoGravity.symbol, label: "画面比例：\(controller.videoGravity.title)") {
-                        controller.cycleVideoGravity()
-                        controller.touchControls()
-                    }
-                }
-                #if os(iOS)
-                if buttons.rotate, OrientationController.isSupported {
-                    iconButton("arrow.trianglehead.2.clockwise.rotate.90", label: "横竖屏切换") {
-                        OrientationController.toggle()
-                        controller.touchControls()
-                    }
-                }
-                #endif
-
-                Spacer(minLength: 0)
-
-                // 画中画依赖系统内核的 AVPlayerLayer。
-                if buttons.pictureInPicture, controller.engine.kind == .avFoundation {
-                    iconButton(controller.isPictureInPictureActive ? "pip.exit" : "pip.enter", label: "画中画") {
-                        controller.requestPictureInPictureToggle()
-                    }
-                }
-                if buttons.chapters, session.chapters.count > 1 {
-                    iconButton("book", label: "章节") { open(.chapters) }
-                }
-                if buttons.screenshot {
-                    iconButton("camera", label: "截图") { session.captureScreenshot() }
-                }
-                if buttons.speed {
-                    speedMenu
+    private func topSection(landscape: Bool) -> some View {
+        let size: CGFloat = landscape ? 48 : 40
+        return HStack(spacing: landscape ? 10 : 4) {
+            circleButton("chevron.backward", label: "关闭播放器", size: size, action: onClose)
+                .keyboardShortcut(.cancelAction)
+            if landscape, let logo = session.logoURL {
+                CachedImage(url: logo, contentMode: .fit) { EmptyView() }
+                    .frame(maxWidth: 200, maxHeight: 48, alignment: .leading)
+                    .padding(.leading, 6)
+                    .accessibilityHidden(true)
+            }
+            Spacer(minLength: 0)
+            if session.canSwitchEngine {
+                engineBadge(size: size)
+            }
+            if buttons.cast {
+                AirPlayButton()
+                    .frame(width: size, height: size)
+                    .background(Circle().fill(Self.buttonFill))
+                    .accessibilityLabel("AirPlay")
+            }
+            if buttons.pictureInPicture {
+                circleButton(controller.isPictureInPictureActive ? "pip.exit" : "pip.enter", label: "画中画", size: size) {
+                    controller.requestPictureInPictureToggle()
                 }
             }
+            circleButton("info.circle", label: "媒体信息", size: size) { open(.info) }
+            if buttons.zoom {
+                circleButton(controller.videoGravity.symbol, label: "画面比例：\(controller.videoGravity.title)", size: size) {
+                    controller.cycleVideoGravity()
+                    controller.touchControls()
+                }
+            }
+            #if os(iOS)
+            if buttons.rotate, OrientationController.isSupported {
+                circleButton("arrow.trianglehead.2.clockwise.rotate.90", label: "横竖屏切换", size: size) {
+                    OrientationController.toggle()
+                    controller.touchControls()
+                }
+            }
+            #endif
+            if buttons.chapters, session.chapters.count > 1 {
+                circleButton("book", label: "章节", size: size) { open(.chapters) }
+            }
+            moreMenu(size: size)
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 4)
+        .padding(.horizontal, landscape ? 12 : 12)
+        .padding(.top, landscape ? 8 : 4)
     }
 
-    private var title: some View {
-        let parts = [controller.source?.title, controller.source?.subtitle].compactMap { $0 }
-        return Text(parts.joined(separator: " · "))
-            .font(.subheadline.weight(.semibold))
-            .lineLimit(1)
-            .padding(.horizontal, 24)
-    }
-
-    private var speedMenu: some View {
-        Menu {
-            Picker("播放速度", selection: Binding(
-                get: { controller.engine.rate },
-                set: { controller.engine.setRate($0) }
-            )) {
-                ForEach(Self.speeds, id: \.self) { speed in
-                    Text(speed == 1 ? "正常" : "\(speed.formatted())×").tag(speed)
-                }
-            }
-            pinWhileOpen
-        } label: {
-            Image(systemName: "gauge.with.dots.needle.67percent")
-                .font(.title3)
-                .overlay(alignment: .bottomTrailing) {
-                    if controller.engine.rate != 1 {
-                        Text("\(controller.engine.rate.formatted())×")
-                            .font(.system(size: 9, weight: .bold).monospacedDigit())
-                            .offset(x: 10, y: 8)
-                    }
-                }
-                .frame(width: 44, height: 44)
+    /// 当前内核的文字标签（对应 Android 顶栏的解码模式标签），点按在两种内核间切换并从当前位置继续。
+    private func engineBadge(size: CGFloat) -> some View {
+        let isKS = controller.engine.kind == .ksPlayer
+        return Button { session.switchEngine() } label: {
+            Text(isKS ? "KS" : "AV")
+                .font(.system(size: size * 0.36, weight: .semibold, design: .rounded))
+                .frame(minWidth: size, minHeight: size)
                 .contentShape(.rect)
         }
-        .menuIndicator(.hidden)
         .buttonStyle(.plain)
-        .accessibilityLabel("播放速度")
-        .accessibilityValue("\(controller.engine.rate.formatted())×")
+        .accessibilityLabel(isKS ? "当前 KSPlayer 内核，点按切换到系统内核" : "当前系统内核，点按切换到 KSPlayer")
     }
 
-    // MARK: - 底部
-
-    private var bottomArea: some View {
-        VStack(spacing: 6) {
-            secondaryRow
-            scrubberRow
-            transportRow
-        }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 4)
-    }
-
-    private var secondaryRow: some View {
-        HStack(spacing: 4) {
-            iconButton("info.circle", label: "播放信息") { open(.info) }
-            Spacer(minLength: 0)
-            if !session.audioOptions.isEmpty {
-                let isMuted = controller.engine.isMuted
-                iconButton(isMuted ? "speaker.slash.circle" : "waveform.circle", label: isMuted ? "音轨（已静音）" : "音轨") { open(.audio) }
-                    .disabled(session.isSwitchingStream)
-            }
-            iconButton(session.selectedSubtitleIndex == nil ? "captions.bubble" : "captions.bubble.fill", label: "字幕") {
-                open(.subtitle)
-            }
-            .disabled(session.isSwitchingStream)
-            moreMenu
-        }
-    }
-
-    private var moreMenu: some View {
+    private func moreMenu(size: CGFloat) -> some View {
         Menu {
-            Button("截图", systemImage: "camera") { session.captureScreenshot() }
-            Button("画面旋转 90°", systemImage: "rotate.right") { controller.rotateClockwise() }
-            Picker("画面比例", selection: Binding(
+            if session.canSwitchEngine {
+                Button(
+                    controller.engine.kind == .ksPlayer ? "使用系统内核" : "使用 KSPlayer 内核",
+                    systemImage: "arrow.left.arrow.right"
+                ) { session.switchEngine() }
+            }
+            sleepTimerMenu
+            Button("媒体信息", systemImage: "info.circle") { open(.info) }
+            Picker("调整画面尺寸", systemImage: "aspectratio", selection: Binding(
                 get: { controller.videoGravity },
                 set: { controller.videoGravity = $0 }
             )) {
@@ -190,156 +193,306 @@ struct PlayerControlsView: View {
                     Label(gravity.title, systemImage: gravity.symbol).tag(gravity)
                 }
             }
-            if controller.engine.kind == .avFoundation {
-                // 任何片源都可手动选择排布：文件名不规范时自动识别会漏掉。
-                Menu {
-                    if controller.effectiveVRLayout != nil {
-                        Toggle(isOn: Binding(get: { controller.vrEnabled }, set: { _ in controller.toggleVR() })) {
-                            Text("开启")
-                        }
-                    }
-                    Section(controller.source?.vrLayout.map { "自动识别：\($0.displayName)" } ?? "未自动识别，手动选择排布") {
-                        ForEach(VRLayoutParser.manualOptions, id: \.self) { layout in
-                            Button {
-                                controller.selectVRLayout(layout)
-                            } label: {
-                                if controller.vrEnabled, controller.effectiveVRLayout == layout {
-                                    Label(layout.displayName, systemImage: "checkmark")
-                                } else {
-                                    Text(layout.displayName)
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    Label("VR 转平面", systemImage: "visionpro")
-                }
-            } else {
-                // MPV 没有可供反投影的画面输出：提供切回系统内核（从当前位置继续）。
-                Button("VR 转平面（切换到系统内核）", systemImage: "visionpro") { session.switchToSystemEngineForVR() }
-            }
+            Button("画面旋转 90°", systemImage: "rotate.right") { controller.rotateClockwise() }
+            Divider()
+            Button("添加本地字幕", systemImage: "plus") { isImportingSubtitle = true }
+            Button("字幕缩放与位置", systemImage: "textformat.size") { open(.subtitleStyle) }
+            Button("字幕时间偏移", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90") { open(.subtitleDelay) }
+            Divider()
+            vrMenu
             pinWhileOpen
         } label: {
-            Image(systemName: "ellipsis.circle")
-                .font(.title3)
-                .frame(width: 44, height: 44)
-                .contentShape(.rect)
+            Image(systemName: "ellipsis")
+                .font(.system(size: size * 0.45, weight: .semibold))
         }
         .menuIndicator(.hidden)
-        .buttonStyle(.plain)
+        .buttonStyle(OverlayCircleButtonStyle(size: size))
         .accessibilityLabel("更多选项")
     }
 
-    /// 独立子视图：进度每 0.25 秒变化一次，只让这一行刷新，不牵动整个控制层。
-    private var scrubberRow: some View {
-        ScrubberRow(controller: controller)
-    }
-
-    private var transportRow: some View {
-        // 剧集与多段文件（CD1 / CD2）都提供上一个 / 下一个。
-        let isEpisode = session.item?.kind == .episode || session.partPosition != nil
-        return HStack {
-            HStack {
-                iconButton("lock.open", label: "锁定屏幕", size: 22) {
-                    controller.isLocked = true
-                    controller.touchControls()
-                }
-                Spacer(minLength: 0)
+    /// 定时关闭（与 Android 版相同的预设）：到时暂停播放。
+    private var sleepTimerMenu: some View {
+        Menu {
+            Button {
+                session.setSleepTimer(minutes: nil)
+            } label: {
+                if session.sleepDeadline == nil { Label("关闭", systemImage: "checkmark") } else { Text("关闭") }
             }
-            .frame(maxWidth: .infinity)
-
-            HStack(spacing: 28) {
-                if isEpisode, buttons.switchMedia {
-                    iconButton("backward.end.fill", label: session.partPosition == nil ? "上一集" : "上一段", size: 24) { session.playPreviousEpisode() }
-                        .disabled(session.previousEpisode == nil)
-                }
-                if buttons.seek {
-                    iconButton("gobackward.\(controller.preferences.seekBackwardSeconds)", label: "快退", size: 24) {
-                        controller.skipBackward()
-                    }
-                }
-                if buttons.playPause {
-                    playPauseButton
-                }
-                if buttons.seek {
-                    iconButton("goforward.\(controller.preferences.seekForwardSeconds)", label: "快进", size: 24) {
-                        controller.skipForward()
-                    }
-                }
-                if isEpisode, buttons.switchMedia {
-                    iconButton("forward.end.fill", label: session.partPosition == nil ? "下一集" : "下一段", size: 24) { controller.playNextNow() }
-                        .disabled(session.nextEpisode == nil)
-                        // 下一集已预加载：服务器已开始准备，切换会更快。
-                        .overlay(alignment: .topTrailing) {
-                            if session.isNextPreloaded {
-                                Image(systemName: "bolt.fill")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundStyle(.yellow)
-                                    .offset(x: -4, y: 6)
-                                    .accessibilityLabel("已预加载")
-                            }
-                        }
-                }
+            ForEach(PlayerSession.sleepTimerPresets, id: \.self) { minutes in
+                Button("\(minutes) 分钟") { session.setSleepTimer(minutes: minutes) }
             }
-            .fixedSize()
-
-            HStack {
-                Spacer(minLength: 0)
-                if !session.seasonEpisodes.isEmpty {
-                    iconButton("list.bullet", label: "剧集列表", size: 22) { open(.episodes) }
-                }
+        } label: {
+            if let deadline = session.sleepDeadline {
+                let minutes = max(1, Int((deadline.timeIntervalSinceNow / 60).rounded(.up)))
+                Label("定时关闭（剩余 \(minutes) 分钟）", systemImage: "moon.zzz.fill")
+            } else {
+                Label("定时关闭", systemImage: "moon.zzz")
             }
-            .frame(maxWidth: .infinity)
         }
     }
 
-    /// 播放 / 暂停；开启「长按播放暂停键退出播放器」时长按关闭播放器。
-    private var playPauseButton: some View {
-        Image(systemName: controller.isPlaying ? "pause.fill" : "play.fill")
-            .font(.system(size: 34, weight: .semibold))
-            .contentTransition(.symbolEffect(.replace))
-            .frame(width: 56, height: 56)
-            .contentShape(.rect)
-            .onTapGesture { controller.togglePlayPause() }
-            .onLongPressGesture(minimumDuration: 0.6) {
-                if controller.preferences.longPressPlayPauseExits { onClose() }
+    /// VR 转平面：两种内核都支持。任何片源都可手动选择排布（文件名不规范时自动识别会漏掉）。
+    private var vrMenu: some View {
+        Menu {
+            if controller.effectiveVRLayout != nil {
+                Toggle(isOn: Binding(get: { controller.vrEnabled }, set: { _ in controller.toggleVR() })) {
+                    Text("开启")
+                }
             }
-            .accessibilityElement()
-            .accessibilityAddTraits(.isButton)
-            .accessibilityLabel(controller.isPlaying ? "暂停" : "播放")
-            .accessibilityAction { controller.togglePlayPause() }
+            Section(controller.source?.vrLayout.map { "自动识别：\($0.displayName)" } ?? "未自动识别，手动选择排布") {
+                ForEach(VRLayoutParser.manualOptions, id: \.self) { layout in
+                    Button {
+                        controller.selectVRLayout(layout)
+                    } label: {
+                        if controller.vrEnabled, controller.effectiveVRLayout == layout {
+                            Label(layout.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(layout.displayName)
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label("VR 转平面", systemImage: "visionpro")
+        }
     }
 
-    /// 无底色的图标按钮，点击区域固定 44pt。
-    private func iconButton(_ symbol: String, label: String, size: CGFloat = 20, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: size, weight: .medium))
-                .contentTransition(.symbolEffect(.replace))
-                .frame(width: 44, height: 44)
-                .contentShape(.rect)
+    // MARK: - 两侧
+
+    private func leftColumn(landscape: Bool) -> some View {
+        let size: CGFloat = landscape ? 52 : 44
+        return VStack(spacing: 20) {
+            if buttons.screenshot {
+                circleButton("camera", label: "截图", size: size) { session.captureScreenshot() }
+            }
+            circleButton("lock.open", label: "锁定屏幕", size: size) {
+                controller.isLocked = true
+                controller.touchControls()
+            }
+        }
+    }
+
+    /// 右侧倍速：上下按钮按 0.25× 微调，中间点按展开预设。
+    private func speedControl(landscape: Bool) -> some View {
+        let size: CGFloat = landscape ? 48 : 40
+        let rate = controller.engine.rate
+        return VStack(spacing: 12) {
+            circleButton("plus", label: "加快播放", size: size) { stepSpeed(Self.speedStep) }
+                .disabled(rate >= Self.speedRange.upperBound - 0.001)
+            Menu {
+                Picker("播放速度", selection: Binding(
+                    get: { controller.engine.rate },
+                    set: { controller.engine.setRate($0) }
+                )) {
+                    ForEach(Self.speedPresets, id: \.self) { speed in
+                        Text(speed == 1 ? "正常" : "\(speed.formatted())×").tag(speed)
+                    }
+                }
+                pinWhileOpen
+            } label: {
+                // 与按钮相同的半透明底：倍速值浮在画面中部，亮画面上没有底色会看不清。
+                Text("\(rate.formatted())×")
+                    .font(.subheadline.weight(rate == 1 ? .medium : .bold).monospacedDigit())
+                    .padding(.horizontal, 8)
+                    .frame(minWidth: size, minHeight: 32)
+                    .background(Capsule().fill(Self.buttonFill))
+                    .contentShape(.capsule)
+            }
+            .menuIndicator(.hidden)
+            .buttonStyle(.plain)
+            .accessibilityLabel("播放速度")
+            .accessibilityValue("\(rate.formatted())×")
+            circleButton("minus", label: "减慢播放", size: size) { stepSpeed(-Self.speedStep) }
+                .disabled(rate <= Self.speedRange.lowerBound + 0.001)
+        }
+    }
+
+    /// 按步长调整并对齐到 0.05×，消除浮点累加误差。
+    private func stepSpeed(_ delta: Float) {
+        let stepped = ((controller.engine.rate + delta) * 20).rounded() / 20
+        controller.engine.setRate(min(max(stepped, Self.speedRange.lowerBound), Self.speedRange.upperBound))
+        controller.touchControls()
+    }
+
+    // MARK: - 中央
+
+    private func transportControls(landscape: Bool) -> some View {
+        HStack(spacing: landscape ? 48 : 28) {
+            if buttons.seek {
+                circleButton(Self.seekSymbol("gobackward", controller.preferences.seekBackwardSeconds), label: "快退", size: 56, iconScale: 0.5) {
+                    controller.skipBackward()
+                }
+            }
+            if buttons.playPause {
+                playPauseButton
+            }
+            if buttons.seek {
+                circleButton(Self.seekSymbol("goforward", controller.preferences.seekForwardSeconds), label: "快进", size: 56, iconScale: 0.5) {
+                    controller.skipForward()
+                }
+            }
+        }
+    }
+
+    /// SF Symbols 只提供部分秒数的快进 / 快退图标，其余用通用图标。
+    private static func seekSymbol(_ base: String, _ seconds: Int) -> String {
+        [5, 10, 15, 30, 45, 60, 75, 90].contains(seconds) ? "\(base).\(seconds)" : base
+    }
+
+    /// 播放 / 暂停；缓冲时转圈占据按钮位置。开启「长按播放暂停键退出播放器」时长按关闭播放器。
+    private var playPauseButton: some View {
+        let status = controller.engine.status
+        let buffering = status == .buffering || status == .loading || session.isSwitchingStream
+        return ZStack {
+            Circle().fill(Self.buttonFill)
+            if buffering {
+                ProgressView().controlSize(.large).tint(.white)
+            } else {
+                Image(systemName: controller.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 34, weight: .semibold))
+                    .contentTransition(.symbolEffect(.replace))
+            }
+        }
+        .frame(width: 76, height: 76)
+        .contentShape(.circle)
+        .onTapGesture { controller.togglePlayPause() }
+        .onLongPressGesture(minimumDuration: 0.6) {
+            if controller.preferences.longPressPlayPauseExits { onClose() }
+        }
+        .accessibilityElement()
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(controller.isPlaying ? "暂停" : "播放")
+        .accessibilityAction { controller.togglePlayPause() }
+    }
+
+    // MARK: - 底部
+
+    private func bottomSection(landscape: Bool, chrome: Double) -> some View {
+        // 剧集与多段文件（CD1 / CD2）都提供上一个 / 下一个。
+        let hasNavigation = (session.item?.kind == .episode || session.partPosition != nil) && buttons.switchMedia
+        return VStack(spacing: 4) {
+            HStack(spacing: 8) {
+                if hasNavigation { episodeNavigation }
+                titleBlock
+                Spacer(minLength: 0)
+            }
+            .opacity(chrome)
+
+            HStack(spacing: 12) {
+                PlaybackTimeLabel(controller: controller)
+                PlayerScrubber(controller: controller, chapterStarts: session.chapters.map(\.chapter.start))
+                if landscape {
+                    bottomActions.opacity(chrome)
+                }
+            }
+            if !landscape {
+                bottomActions
+                    .padding(.top, 8)
+                    .opacity(chrome)
+            }
+        }
+        .padding(.horizontal, landscape ? 12 : 12)
+        .padding(.bottom, landscape ? 8 : 12)
+    }
+
+    private var episodeNavigation: some View {
+        HStack(spacing: 8) {
+            let isPart = session.partPosition != nil
+            circleButton("backward.end.fill", label: isPart ? "上一段" : "上一集", size: 44) { session.playPreviousEpisode() }
+                .disabled(session.previousEpisode == nil)
+            circleButton("forward.end.fill", label: isPart ? "下一段" : "下一集", size: 44) { controller.playNextNow() }
+                .disabled(session.nextEpisode == nil)
+                // 下一集已预加载：服务器已开始准备，切换会更快。
+                .overlay(alignment: .topTrailing) {
+                    if session.isNextPreloaded {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.yellow)
+                            .accessibilityLabel("已预加载")
+                    }
+                }
+        }
+    }
+
+    /// 标题块：剧名（次要）+ 单集 / 片名 + HDR 标记；点按打开单集信息。
+    private var titleBlock: some View {
+        let title = controller.source?.title ?? ""
+        let subtitle = controller.source?.subtitle
+        return Button { open(.episodeInfo) } label: {
+            HStack(spacing: 4) {
+                VStack(alignment: .leading, spacing: 1) {
+                    if subtitle != nil {
+                        Text(title)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.white.opacity(0.72))
+                    }
+                    HStack(spacing: 8) {
+                        Text(subtitle ?? title)
+                            .font(.headline)
+                        if let hdr = session.dynamicRangeLabel {
+                            Text(hdr)
+                                .font(.caption2.weight(.bold))
+                                .padding(.horizontal, 4)
+                                .overlay(RoundedRectangle(cornerRadius: 4).stroke(.white.opacity(0.72), lineWidth: 1))
+                        }
+                    }
+                }
+                .lineLimit(1)
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.72))
+            }
+            .padding(.horizontal, 8)
+            .frame(minHeight: 44)
+            .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .accessibilityHint("查看单集信息")
+    }
+
+    /// 剧集 / 音轨 / 字幕。
+    private var bottomActions: some View {
+        HStack(spacing: 12) {
+            if !session.seasonEpisodes.isEmpty {
+                circleButton("list.bullet", label: "剧集列表", size: 44) { open(.episodes) }
+            }
+            if !session.audioOptions.isEmpty {
+                let isMuted = controller.engine.isMuted
+                circleButton(isMuted ? "speaker.slash" : "waveform", label: isMuted ? "音轨（已静音）" : "音轨", size: 44) { open(.audio) }
+                    .disabled(session.isSwitchingStream)
+            }
+            circleButton(session.selectedSubtitleIndex == nil ? "captions.bubble" : "captions.bubble.fill", label: "字幕", size: 44) {
+                open(.subtitle)
+            }
+            .disabled(session.isSwitchingStream)
+        }
+    }
+
+    // MARK: - 通用
+
+    /// 圆形按钮底色，与 Android 版 `OverlayButtonFill` 相同。
+    static let buttonFill = Color.black.opacity(0.36)
+
+    private func circleButton(_ symbol: String, label: String, size: CGFloat, iconScale: CGFloat = 0.45, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: size * iconScale, weight: .medium))
+                .contentTransition(.symbolEffect(.replace))
+        }
+        .buttonStyle(OverlayCircleButtonStyle(size: size))
         .accessibilityLabel(label)
     }
 
-    private var lockedOverlay: some View {
-        VStack {
-            Spacer()
-            HStack {
-                Button {
-                    controller.isLocked = false
-                    controller.touchControls()
-                } label: {
-                    Image(systemName: "lock.fill").frame(width: 24, height: 24)
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .accessibilityLabel("解除锁定")
-                Spacer()
+    private func lockedOverlay(landscape: Bool) -> some View {
+        HStack {
+            circleButton("lock.fill", label: "解除锁定", size: 52) {
+                controller.isLocked = false
+                controller.touchControls()
             }
-            .padding(24)
+            Spacer()
         }
+        .padding(.horizontal, landscape ? 28 : 12)
+        .frame(maxHeight: .infinity)
         .foregroundStyle(.white)
     }
 
@@ -355,42 +508,66 @@ struct PlayerControlsView: View {
     }
 }
 
-// MARK: - 进度条
+/// 半透明圆底按钮：按下时轻微缩小；禁用时降低不透明度。
+private struct OverlayCircleButtonStyle: ButtonStyle {
+    let size: CGFloat
 
-/// 进度行：当前时间、进度条、总时长。
-private struct ScrubberRow: View {
+    func makeBody(configuration: Configuration) -> some View {
+        CircleLabel(configuration: configuration, size: size)
+    }
+
+    private struct CircleLabel: View {
+        let configuration: Configuration
+        let size: CGFloat
+        @Environment(\.isEnabled) private var isEnabled
+
+        var body: some View {
+            configuration.label
+                .frame(width: size, height: size)
+                .background(Circle().fill(PlayerControlsView.buttonFill))
+                .contentShape(.circle)
+                .opacity(isEnabled ? 1 : 0.4)
+                .scaleEffect(configuration.isPressed ? 0.9 : 1)
+                .animation(.spring(duration: 0.2), value: configuration.isPressed)
+        }
+    }
+}
+
+/// 「当前 / 总时长」：点按在总时长与剩余时长之间切换（「进度条时间模式」）。
+/// 独立子视图：进度每 0.25 秒变化一次，只让这段文字刷新，不牵动整个控制层。
+private struct PlaybackTimeLabel: View {
     let controller: PlayerController
 
     var body: some View {
         let position = controller.scrubTime ?? controller.engine.currentTime
-        HStack(spacing: 12) {
-            Text(PlayerTime.format(position))
-                .frame(minWidth: 44, alignment: .leading)
-            PlayerScrubber(controller: controller)
-            // 「进度条时间模式」：总时长或剩余时长；点按切换。
-            Text(trailingTime(position: position))
-                .frame(minWidth: 44, alignment: .trailing)
-                .contentShape(.rect)
-                .onTapGesture {
-                    let preferences = controller.preferences
-                    preferences.progressTimeMode = preferences.progressTimeMode == .total ? .remaining : .total
-                    controller.touchControls()
-                }
-        }
-        .font(.footnote.monospacedDigit())
-    }
-
-    private func trailingTime(position: TimeInterval) -> String {
         let duration = controller.engine.duration
-        guard controller.preferences.progressTimeMode == .remaining, duration > 0 else { return PlayerTime.format(duration) }
-        return "-" + PlayerTime.format(max(0, duration - position))
+        let remaining = controller.preferences.progressTimeMode == .remaining && duration > 0
+        // 时长未知（起播中、直播）时不显示误导性的 0:00。
+        let total = duration <= 0 ? "--:--" : remaining ? "-" + PlayerTime.format(max(0, duration - position)) : PlayerTime.format(duration)
+        Text("\(PlayerTime.format(position))\(Text(" / \(total)").foregroundStyle(.white.opacity(0.72)))")
+            .font(.footnote.weight(.medium).monospacedDigit())
+            .padding(.vertical, 6)
+            .contentShape(.rect)
+            .onTapGesture {
+                let preferences = controller.preferences
+                preferences.progressTimeMode = preferences.progressTimeMode == .total ? .remaining : .total
+                controller.touchControls()
+            }
     }
 }
 
+// MARK: - 进度条
+
 /// 细进度条：未播放 / 已缓冲 / 已播放三段，拖动时放大滑块，并在上方浮出跟随位置的预览帧。
 /// 不用系统 `Slider`：需要缓冲段，并且预览帧要按滑块的横向位置定位。
+/// 进度条：已播放段为主题色直线，未播放的轨道按章节起点分段并留出间隙（与 Android 一致），滑块为竖条。
 private struct PlayerScrubber: View {
     let controller: PlayerController
+    /// 章节起点（秒），用于把未播放轨道分段；为空时为一整段。
+    var chapterStarts: [TimeInterval] = []
+
+    private static let segmentGap: CGFloat = 5
+    static let playedTint = VelaTheme.accentLight
 
     /// 预览帧底边距进度条顶部的距离：越过次级按钮行，避免遮挡手指附近的按钮。
     private static let previewLift: CGFloat = 56
@@ -405,24 +582,22 @@ private struct PlayerScrubber: View {
             let buffered = fraction(controller.engine.bufferedTime, of: duration)
             let isScrubbing = controller.scrubTime != nil
 
-            ZStack(alignment: .leading) {
-                Capsule().fill(.white.opacity(0.25))
-                Capsule().fill(.white.opacity(0.45)).frame(width: width * buffered)
-                Capsule().fill(.white).frame(width: width * progress)
+            Canvas { context, size in
+                draw(in: &context, size: size, progress: progress, buffered: buffered, duration: duration, thick: isScrubbing)
             }
-            .frame(height: isScrubbing ? 6 : 4)
+            .frame(height: 8)
             .overlay(alignment: .leading) {
-                Circle()
+                Capsule()
                     .fill(.white)
-                    .frame(width: isScrubbing ? 18 : 12, height: isScrubbing ? 18 : 12)
-                    .offset(x: width * progress - (isScrubbing ? 9 : 6))
+                    .frame(width: isScrubbing ? 6 : 4, height: isScrubbing ? 26 : 20)
+                    .offset(x: width * progress - (isScrubbing ? 3 : 2))
             }
             .frame(maxHeight: .infinity)
             .contentShape(.rect)
             .overlay(alignment: .bottomLeading) {
                 if isScrubbing, controller.scrubPreview.isEnabled, controller.preferences.scrubPreview == .window {
                     let size = previewSize(trackWidth: width)
-                    ScrubPreviewFrame(previewer: controller.scrubPreview, size: size)
+                    ScrubPreviewFrame(controller: controller, size: size)
                         .offset(
                             x: min(max(0, width * progress - size.width / 2), max(0, width - size.width)),
                             y: -(Self.height + Self.previewLift)
@@ -462,6 +637,42 @@ private struct PlayerScrubber: View {
     }
 
     /// 竖屏手机进度条较窄，预览帧相应缩小。
+    private func draw(in context: inout GraphicsContext, size: CGSize, progress: Double, buffered: Double,
+                      duration: TimeInterval, thick: Bool) {
+        let width = size.width
+        let midY = size.height / 2
+        let lineWidth: CGFloat = thick ? 6 : 4
+        let playedX = width * progress
+        let style = StrokeStyle(lineWidth: lineWidth, lineCap: .round)
+
+        // 未播放轨道：章节边界处断开；与已播放段之间也留出间隙，像 Android 一样把滑块两侧分开。
+        let bounds = [0] + chapterStarts
+            .filter { duration > 0 && $0 > 0 && $0 < duration }
+            .map { CGFloat($0 / duration) * width } + [width]
+        let bufferedX = width * buffered
+        for (a, b) in zip(bounds, bounds.dropFirst()) {
+            let start = max(a + (a > 0 ? Self.segmentGap / 2 : 0), playedX + Self.segmentGap + lineWidth / 2)
+            let end = b - (b < width ? Self.segmentGap / 2 : 0)
+            guard end > start else { continue }
+            var track = Path()
+            track.move(to: CGPoint(x: start, y: midY))
+            track.addLine(to: CGPoint(x: end, y: midY))
+            context.stroke(track, with: .color(.white.opacity(0.25)), style: style)
+            if bufferedX > start {
+                var loaded = Path()
+                loaded.move(to: CGPoint(x: start, y: midY))
+                loaded.addLine(to: CGPoint(x: min(end, bufferedX), y: midY))
+                context.stroke(loaded, with: .color(.white.opacity(0.45)), style: style)
+            }
+        }
+
+        guard playedX > lineWidth / 2 else { return }
+        var played = Path()
+        played.move(to: CGPoint(x: lineWidth / 2, y: midY))
+        played.addLine(to: CGPoint(x: playedX, y: midY))
+        context.stroke(played, with: .color(Self.playedTint), style: style)
+    }
+
     private func previewSize(trackWidth: CGFloat) -> CGSize {
         let width: CGFloat = trackWidth < 400 ? 176 : 240
         return CGSize(width: width, height: width * 9 / 16)
@@ -475,16 +686,15 @@ private struct PlayerScrubber: View {
 
 /// 预览帧：白色描边圆角框；帧未解码出来时显示加载指示。
 private struct ScrubPreviewFrame: View {
-    let previewer: ScrubPreviewer
+    let controller: PlayerController
     let size: CGSize
 
     var body: some View {
         ZStack {
             Color.black
-            if let image = previewer.image {
-                Image(decorative: image, scale: 1)
-                    .resizable()
-                    .scaledToFit()
+            if let image = controller.scrubPreview.image {
+                // 预览框 2 倍像素即可，再大只是放大低分辨率的预览源。
+                ScrubPreviewImage(image: image, controller: controller, pixelSize: CGSize(width: size.width * 2, height: size.height * 2))
             } else {
                 ProgressView().tint(.white)
             }
@@ -493,6 +703,54 @@ private struct ScrubPreviewFrame: View {
         .clipShape(.rect(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white, lineWidth: 2))
         .shadow(color: .black.opacity(0.5), radius: 8)
+    }
+}
+
+/// 拖动预览帧：开启 VR 转平面时按当前视角转成平面画面，与主画面一致（否则预览显示的是整幅 VR 原图）。
+///
+/// 转换在后台进行；新帧转换完成前继续显示上一张转换结果，避免在 VR 原图与平面画面之间闪烁。
+struct ScrubPreviewImage: View {
+    let image: CGImage
+    let controller: PlayerController
+    /// 转平面输出的像素尺寸（决定宽高比与清晰度）。
+    let pixelSize: CGSize
+
+    @State private var flattened: (source: ObjectIdentifier, image: CGImage)?
+
+    private struct FlattenKey: Hashable {
+        var source: ObjectIdentifier
+        var layout: VRLayout?
+        var view: VRViewState
+        var width: Int
+        var height: Int
+    }
+
+    var body: some View {
+        let layout = controller.vrEnabled ? controller.effectiveVRLayout : nil
+        Group {
+            if layout == nil {
+                Image(decorative: image, scale: 1).resizable().scaledToFit()
+            } else if let flattened {
+                Image(decorative: flattened.image, scale: 1).resizable().scaledToFill()
+            } else {
+                ProgressView().tint(.white)
+            }
+        }
+        .task(id: FlattenKey(
+            source: ObjectIdentifier(image), layout: layout, view: controller.vrState,
+            width: Int(pixelSize.width), height: Int(pixelSize.height)
+        )) {
+            guard let layout else {
+                flattened = nil
+                return
+            }
+            let source = image, view = controller.vrState, size = pixelSize
+            let result = await Task.detached(priority: .userInitiated) {
+                VRPreviewFlattener.flatten(source, layout: layout, view: view, outputSize: size)
+            }.value
+            guard !Task.isCancelled, let result else { return }
+            flattened = (ObjectIdentifier(source), result)
+        }
     }
 }
 

@@ -24,7 +24,7 @@ struct HomeView: View {
                     HomeTopBar(category: $category)
                     let featured = featuredItems
                     if prefs.showHero, !featured.isEmpty {
-                        HomeCarousel(items: featured, compact: isCompact, style: prefs.heroStyle)
+                        HomeCarousel(items: featured, compact: isCompact, style: prefs.heroStyle, size: prefs.heroSize)
                     }
                     if category == .home {
                         homeContent
@@ -102,7 +102,7 @@ struct HomeView: View {
 
         if prefs.showResume, !model.resume.isEmpty {
             MediaShelf("继续观看", items: model.resume) { item in
-                NavigationLink(value: item) { resumeCard(item) }.buttonStyle(.plain)
+                NavigationLink(value: item) { resumeCard(item) }.buttonStyle(.plain).itemContextMenu(item)
             } accessory: {
                 NavigationLink(value: HomeListRoute.resume) { ShelfCountLabel(count: model.resumeTotal) }
                     .buttonStyle(.plain)
@@ -111,7 +111,7 @@ struct HomeView: View {
 
         if prefs.showNextUp, !model.nextUp.isEmpty {
             MediaShelf("接下来", items: model.nextUp) { item in
-                NavigationLink(value: item) { resumeCard(item) }.buttonStyle(.plain)
+                NavigationLink(value: item) { resumeCard(item) }.buttonStyle(.plain).itemContextMenu(item)
             } accessory: {
                 NavigationLink(value: HomeListRoute.nextUp) { ShelfCountLabel(count: model.nextUpTotal) }
                     .buttonStyle(.plain)
@@ -120,7 +120,7 @@ struct HomeView: View {
 
         ForEach(model.shelves) { shelf in
             MediaShelf("最近添加-\(shelf.library.name)", items: unwatched(shelf.items)) { item in
-                NavigationLink(value: item) { posterCard(item) }.buttonStyle(.plain)
+                NavigationLink(value: item) { posterCard(item) }.buttonStyle(.plain).itemContextMenu(item)
             } accessory: {
                 // 从「最近添加」进入时临时按添加日期倒序，与分区含义一致。
                 NavigationLink(value: LibraryRoute(library: shelf.library, initialSort: LibrarySort(field: .dateCreated, descending: true))) {
@@ -134,10 +134,6 @@ struct HomeView: View {
 
         if model.isEmpty {
             ContentUnavailableView("暂无内容", systemImage: "film.stack", description: Text("服务器上还没有可展示的内容。"))
-        }
-
-        if let counts = model.counts, counts.movieCount + counts.seriesCount + counts.episodeCount > 0 {
-            LibraryStatistics(counts: counts)
         }
     }
 
@@ -161,7 +157,7 @@ struct HomeView: View {
         case .loaded(let shelves):
             ForEach(shelves) { shelf in
                 MediaShelf(shelf.genre.name, items: unwatched(shelf.items)) { item in
-                    NavigationLink(value: item) { posterCard(item) }.buttonStyle(.plain)
+                    NavigationLink(value: item) { posterCard(item) }.buttonStyle(.plain).itemContextMenu(item)
                 } accessory: {
                     if let type = category.itemType {
                         NavigationLink(value: GenreRoute(genre: shelf.genre, itemType: type)) { ShelfViewAllArrow() }
@@ -288,16 +284,53 @@ private struct GenreItemsView: View {
 
 // MARK: - 轮播
 
-/// 卡片式轮播（Android 版「紧凑」样式）：当前卡片占 80% 宽、两侧露出相邻卡片，8 秒自动翻页，到末尾回到第一张。
+/// 卡片式轮播（Android 版「紧凑」样式）：当前卡片居中、两侧露出相邻卡片，8 秒自动翻页，首尾相接循环。
 /// 不用 `TabView(.page)`：macOS 不支持，且无法露出相邻卡片。
+///
+/// 循环：条目重复三份，从中间一份开始；滚动停下后若落在首尾两份，无动画地跳回中间一份的同一条目，
+/// 因此第一张左侧也有卡片，末尾翻到开头也只滑一格。
+/// 当前卡片按可见度判断（完全可见的那一张），不用 `scrollPosition(id:)` 的回写：动画滚动途中它会写入经过的卡片，
+/// 自动翻页以此为起点会一次跳过好几张。拖动期间不自动翻页。
 private struct HomeCarousel: View {
     let items: [MediaItem]
     let compact: Bool
     /// 海报（竖版，露出更多相邻卡片）或背景图（横版）。
     let style: LibraryPreferences.ArtworkStyle
-    @State private var current: String?
+    let size: LibraryPreferences.HeroSize
+
+    /// 第几份副本中的第几个条目。
+    private struct Slot: Hashable {
+        var copy: Int
+        var index: Int
+    }
+
+    private struct AdvanceKey: Hashable {
+        var visible: Slot?
+        var isScrolling: Bool
+        var itemIDs: [String]
+    }
+
+    @State private var position: ScrollPosition
+    @State private var visible: Slot?
+    @State private var isScrolling = false
 
     private static let interval: Duration = .seconds(8)
+
+    init(items: [MediaItem], compact: Bool, style: LibraryPreferences.ArtworkStyle, size: LibraryPreferences.HeroSize) {
+        self.items = items
+        self.compact = compact
+        self.style = style
+        self.size = size
+        _position = State(initialValue: ScrollPosition(id: Slot(copy: items.count > 1 ? 1 : 0, index: 0), anchor: .center))
+    }
+
+    /// 只有一个条目时不循环。
+    private var copies: Int { items.count > 1 ? 3 : 1 }
+    private var middle: Int { copies / 2 }
+
+    private var slots: [Slot] {
+        (0..<copies).flatMap { copy in items.indices.map { Slot(copy: copy, index: $0) } }
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -306,13 +339,12 @@ private struct HomeCarousel: View {
                 : proxy.size.width * (compact ? 0.8 : 0.62)
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 10) {
-                    ForEach(items) { item in
-                        NavigationLink(value: item) {
-                            CarouselCard(item: item, style: style)
+                    ForEach(slots, id: \.self) { slot in
+                        NavigationLink(value: items[slot.index]) {
+                            CarouselCard(item: items[slot.index], style: style)
                                 .frame(width: cardWidth, height: proxy.size.height)
                         }
                         .buttonStyle(.plain)
-                        .id(item.id)
                     }
                 }
                 .scrollTargetLayout()
@@ -320,16 +352,40 @@ private struct HomeCarousel: View {
             .contentMargins(.horizontal, (proxy.size.width - cardWidth) / 2, for: .scrollContent)
             .scrollTargetBehavior(.viewAligned)
             .scrollIndicators(.hidden)
-            .scrollPosition(id: $current, anchor: .center)
+            .scrollPosition($position, anchor: .center)
+            // 居中的卡片完全可见，两侧只露出一部分。
+            .onScrollTargetVisibilityChange(idType: Slot.self, threshold: 0.95) { ids in
+                if let id = ids.first { visible = id }
+            }
+            .onScrollPhaseChange { _, phase in
+                isScrolling = phase != .idle
+                if phase == .idle { recenter() }
+            }
         }
-        .frame(height: style == .poster ? (compact ? 360 : 460) : (compact ? 260 : 380))
-        .task(id: current) {
+        .frame(height: (style == .poster ? (compact ? 360 : 460) : (compact ? 260 : 380)) * size.scale)
+        .task(id: AdvanceKey(visible: visible, isScrolling: isScrolling, itemIDs: items.map(\.id))) {
             try? await Task.sleep(for: Self.interval)
-            guard !Task.isCancelled, items.count > 1 else { return }
-            let index = items.firstIndex { $0.id == current } ?? 0
-            withAnimation(.easeInOut(duration: 0.6)) { current = items[(index + 1) % items.count].id }
+            guard !Task.isCancelled, !isScrolling, items.count > 1 else { return }
+            let current = visible ?? Slot(copy: middle, index: 0)
+            let next = current.index + 1 < items.count
+                ? Slot(copy: current.copy, index: current.index + 1)
+                : Slot(copy: min(current.copy + 1, copies - 1), index: 0)
+            withAnimation(.easeInOut(duration: 0.6)) { position.scrollTo(id: next, anchor: .center) }
         }
-        .onAppear { if current == nil { current = items.first?.id } }
+        .onChange(of: items.map(\.id)) {
+            visible = nil
+            position.scrollTo(id: Slot(copy: middle, index: 0), anchor: .center)
+        }
+    }
+
+    /// 停在首尾两份副本时跳回中间一份的同一条目（无动画，画面不变）。
+    private func recenter() {
+        guard let visible, visible.copy != middle, items.indices.contains(visible.index) else { return }
+        let target = Slot(copy: middle, index: visible.index)
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { position.scrollTo(id: target, anchor: .center) }
+        self.visible = target
     }
 }
 
@@ -398,12 +454,14 @@ struct CarouselMetadataRow: View {
                     Image(systemName: "star.fill").foregroundStyle(.red)
                     Text(rating.formatted(.number.precision(.fractionLength(1))))
                 }
+                .fixedSize()
             }
             if let year = item.productionYear {
-                Text(String(year))
+                Text(String(year)).fixedSize()
             }
+            // 卡片较窄（轮播「小」号的竖版海报）时只截断类型，评分、年份与分级保持完整。
             if !item.genres.isEmpty {
-                Text(item.genres.prefix(3).joined(separator: "/")).lineLimit(1)
+                Text(item.genres.prefix(3).joined(separator: "/")).lineLimit(1).layoutPriority(-1)
             }
             if let official = item.officialRating, !official.isEmpty {
                 Text(official)
@@ -411,6 +469,7 @@ struct CarouselMetadataRow: View {
                     .padding(.horizontal, 5)
                     .padding(.vertical, 1)
                     .overlay(Capsule().stroke(.white.opacity(0.7), lineWidth: 1))
+                    .fixedSize()
             }
         }
         .font(.footnote.weight(.medium).monospacedDigit())
@@ -521,35 +580,6 @@ private struct AirPlayButton: UIViewRepresentable {
     func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
 }
 #endif
-
-// MARK: - 统计
-
-private struct LibraryStatistics: View {
-    let counts: MediaServerClient.ItemCounts
-
-    var body: some View {
-        HStack(spacing: VelaTheme.Spacing.m) {
-            tile(counts.movieCount, "电影")
-            tile(counts.seriesCount, "节目")
-            tile(counts.episodeCount, "集数")
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, VelaTheme.Spacing.l)
-    }
-
-    private func tile(_ value: Int, _ title: String) -> some View {
-        VStack(spacing: 2) {
-            Text(value.formatted())
-                .font(.title2.weight(.semibold).monospacedDigit())
-                .foregroundStyle(LinearGradient(colors: [VelaTheme.accentSecondary, .pink], startPoint: .leading, endPoint: .trailing))
-            Text(title).font(.caption).foregroundStyle(.secondary)
-        }
-        .frame(minWidth: 92)
-        .padding(.vertical, 10)
-        .glassEffect(.regular, in: .rect(cornerRadius: 16))
-        .accessibilityElement(children: .combine)
-    }
-}
 
 extension Color {
     /// 页面背景色。

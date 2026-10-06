@@ -44,14 +44,16 @@ struct CalendarRulesTests {
 }
 
 struct EngineChoiceTests {
-    @Test func autoAlwaysPrefersSystemEngine() {
-        #expect(!PlaybackEngineChoice.prefersMPV(mode: .auto, canDirectStream: true))
-        #expect(!PlaybackEngineChoice.prefersMPV(mode: .system, canDirectStream: true))
+    /// 转封装播放的 MKV 内嵌文本字幕要由播放器自己读取（改用 KSPlayer），否则服务器需读完整个文件。
+    @Test func embeddedTextSubtitleInRemuxedMKVNeedsPlayer() {
+        #expect(PlaybackEngineChoice.needsPlayerSideSubtitle(isTranscode: true, container: "mkv", isEmbeddedText: true))
+        #expect(PlaybackEngineChoice.needsPlayerSideSubtitle(isTranscode: true, container: "matroska,webm", isEmbeddedText: true))
     }
 
-    @Test func mpvOnlyWhenChosenAndOriginalFileAvailable() {
-        #expect(PlaybackEngineChoice.prefersMPV(mode: .mpv, canDirectStream: true))
-        #expect(!PlaybackEngineChoice.prefersMPV(mode: .mpv, canDirectStream: false))
+    @Test func directPlayExternalOrSystemContainersUseServerSubtitle() {
+        #expect(!PlaybackEngineChoice.needsPlayerSideSubtitle(isTranscode: false, container: "mkv", isEmbeddedText: true))
+        #expect(!PlaybackEngineChoice.needsPlayerSideSubtitle(isTranscode: true, container: "mkv", isEmbeddedText: false))
+        #expect(!PlaybackEngineChoice.needsPlayerSideSubtitle(isTranscode: true, container: "mov,mp4,m4a", isEmbeddedText: true))
     }
 
     @Test func remuxKeepsVideoLossless() {

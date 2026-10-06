@@ -3,7 +3,7 @@ import simd
 
 /// VR 反投影的视角状态与数学。与 Metal 着色器（`VRRenderer.shaderSource`）及 Android 版 `vr_flatten.glsl` 使用同一套公式；
 /// Swift 版用于单测与边界计算，渲染只走 GPU。
-public struct VRViewState: Equatable, Sendable {
+public struct VRViewState: Hashable, Sendable {
     /// 水平转角（度），正值向右看。
     public var yaw: Double = 0
     /// 俯仰角（度），正值向上看。

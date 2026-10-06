@@ -1,9 +1,8 @@
 import AVFoundation
-import QuartzCore
 import Foundation
 import VelaCore
 
-/// 可替换的播放内核。界面与手势只依赖此协议；AVPlayer 为默认内核，MPV / KSPlayer 后续以同一协议接入。
+/// 可替换的播放内核。界面与手势只依赖此协议；AVPlayer 为默认内核，KSPlayer 为备选内核。
 ///
 /// 实现类型须为 `@Observable`，界面通过读取属性自动订阅变化。
 @MainActor
@@ -51,8 +50,8 @@ public protocol PlaybackEngine: AnyObject {
 public enum PlaybackEngineKind: String, Sendable, CaseIterable {
     /// 系统内核：原生 HDR10 / 杜比视界 / 空间音频 / 画中画 / AirPlay。
     case avFoundation
-    /// 预留：MPV（FFmpeg + libplacebo），用于 MKV 直放、ASS 特效字幕等。
-    case mpv
+    /// KSPlayer（FFmpeg 解封装 + VideoToolbox 硬解）：直放 MKV 等系统框架打不开的容器，同样支持画中画与 VR 转平面。
+    case ksPlayer
 }
 
 public enum PlaybackStatus: Equatable, Sendable {
@@ -67,8 +66,8 @@ public enum PlaybackStatus: Equatable, Sendable {
 
 public enum PlaybackSurface {
     case avPlayer(AVPlayer)
-    /// MPV：libmpv 直接绘制到该图层。
-    case metalLayer(CAMetalLayer)
+    /// KSPlayer：内核自带的视频视图（挂在容器视图中）。
+    case view(PlayerPlatformView)
 }
 
 /// 交给内核的播放请求，已与服务器无关。

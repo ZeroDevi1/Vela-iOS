@@ -30,7 +30,7 @@ struct PlayerSettingsView: View {
                     ForEach(PlaybackEngineMode.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
             } footer: {
-                Text("自动：始终使用系统内核（硬件解码，最省电；支持 HDR / 杜比视界 / 画中画 / AirPlay / VR 转平面），MKV 等格式由服务器转封装。系统内核播放失败时可选择「用 MPV 内核重试」。MPV 仅作备选：直放原文件，耗电更高，不支持画中画与 VR 转平面。")
+                Text("自动：始终使用系统内核（硬件解码，最省电；支持 HDR / 杜比视界 / 画中画 / AirPlay / VR 转平面），MKV 等格式由服务器转封装。系统内核播放失败时可选择「用 KSPlayer 内核重试」。KSPlayer 仅作备选：基于 FFmpeg 直放原文件（同样硬件解码，支持画中画与 VR 转平面），不支持 AirPlay 视频，杜比视界按 HDR10 显示。")
             }
 
             Section {
@@ -86,19 +86,6 @@ struct PlayerSettingsView: View {
             }
 
             Section {
-                Picker("缓存大小 (Wi-Fi)", selection: $prefs.diskCacheWiFiMB) {
-                    ForEach(PlayerPreferences.diskCacheOptions, id: \.self) { Text(Self.cacheTitle($0)).tag($0) }
-                }
-                Picker("缓存大小 (流量)", selection: $prefs.diskCacheCellularMB) {
-                    ForEach(PlayerPreferences.diskCacheOptions, id: \.self) { Text(Self.cacheTitle($0)).tag($0) }
-                }
-            } header: {
-                Text("磁盘预缓存（MPV 备选内核）")
-            } footer: {
-                Text("推荐 1 GB 左右；关闭后只使用内存缓存。系统内核不支持把流媒体缓存到磁盘，请使用上方的「预缓冲时长」。")
-            }
-
-            Section {
                 Picker("预加载下一集", selection: $prefs.preloadNextPercent) {
                     ForEach(PlayerPreferences.preloadOptions, id: \.self) { percent in
                         Text(percent == 0 ? "禁用" : "播放到 \(percent)%").tag(percent)
@@ -114,14 +101,6 @@ struct PlayerSettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("播放设置")
-    }
-
-    static func cacheTitle(_ megabytes: Int) -> String {
-        switch megabytes {
-        case 0: "关闭"
-        case let mb where mb >= 1024: "\(mb / 1024) GB"
-        default: "\(megabytes) MB"
-        }
     }
 }
 
@@ -142,7 +121,7 @@ struct VideoSettingsView: View {
                 }
                 .disabled(prefs.decodeMode == .hardware)
             } header: {
-                Text("解码（MPV 备选内核）")
+                Text("解码（KSPlayer 备选内核）")
             } footer: {
                 Text("硬解码：高效省电，基本不发热，能否硬解取决于你的设备及系统。\n软解码：兼容性强，解码稳定，但播放大文件容易发热且耗电量高。\n除非无法正常播放，否则不要使用软解码！系统内核始终使用硬件解码。")
             }
@@ -391,7 +370,6 @@ struct InterfaceSettingsView: View {
             #endif
 
             Section("提示信息") {
-                Toggle("开始播放提示标题", isOn: $prefs.hintTitleOnStart)
                 Toggle("即将跳过片头/片尾", isOn: $prefs.hintBeforeSkip)
             }
         }

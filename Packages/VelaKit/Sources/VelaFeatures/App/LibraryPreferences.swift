@@ -29,6 +29,8 @@ public final class LibraryPreferences {
     public var mixedContentView: MixedContentView { didSet { save(mixedContentView.rawValue, "library.mixedContentView") } }
     public var preferredVersion: MediaVersionPreference { didSet { save(preferredVersion.rawValue, "library.preferredVersion") } }
     public var heroStyle: ArtworkStyle { didSet { save(heroStyle.rawValue, "library.heroStyle") } }
+    /// 首页轮播高度（Android「旋转木马高度」）。
+    public var heroSize: HeroSize { didSet { save(heroSize.rawValue, "library.heroSize") } }
     public var detailHeaderStyle: ArtworkStyle { didSet { save(detailHeaderStyle.rawValue, "library.detailHeaderStyle") } }
 
     // MARK: 海报
@@ -60,8 +62,9 @@ public final class LibraryPreferences {
         showPlayButton = value("library.showPlayButton", false)
         showCollections = value("library.showCollections", false)
         mixedContentView = raw("library.mixedContentView", .folders)
-        preferredVersion = raw("library.preferredVersion", .serverDefault)
+        preferredVersion = MediaVersionPreference.stored(defaults.string(forKey: "library.preferredVersion")) ?? .serverDefault
         heroStyle = raw("library.heroStyle", .poster)
+        heroSize = raw("library.heroSize", .large)
         detailHeaderStyle = raw("library.detailHeaderStyle", .backdrop)
         titleAlignment = raw("library.titleAlignment", .leading)
         showRating = value("library.showRating", true)
@@ -96,6 +99,27 @@ public final class LibraryPreferences {
             switch self {
             case .poster: "海报 (竖版)"
             case .backdrop: "背景图 (横版)"
+            }
+        }
+    }
+
+    public enum HeroSize: String, CaseIterable, Sendable {
+        case large, medium, small
+
+        public var title: String {
+            switch self {
+            case .large: "大号"
+            case .medium: "中等"
+            case .small: "小"
+            }
+        }
+
+        /// 相对「大号」（此前的固定高度）的比例。
+        public var scale: CGFloat {
+            switch self {
+            case .large: 1
+            case .medium: 0.85
+            case .small: 0.7
             }
         }
     }

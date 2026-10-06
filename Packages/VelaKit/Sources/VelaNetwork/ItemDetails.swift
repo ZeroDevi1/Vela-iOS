@@ -216,6 +216,21 @@ extension MediaServerClient {
         )
     }
 
+    /// 让服务器重新扫描文件并刷新元数据（不替换已有图片与元数据，只补缺）。需要管理员权限，否则服务器返回 401 / 403。
+    public func refreshMetadata(itemID: String) async throws {
+        _ = try await httpClient.data(
+            APIRequest("/Items/\(itemID)/Refresh", method: .post, query: [
+                .init(name: "Recursive", value: "true"),
+                .init(name: "MetadataRefreshMode", value: "Default"),
+                .init(name: "ImageRefreshMode", value: "Default"),
+                .init(name: "ReplaceAllMetadata", value: "false"),
+                .init(name: "ReplaceAllImages", value: "false")
+            ]),
+            baseURL: baseURL,
+            headers: requestHeaders
+        )
+    }
+
     // MARK: - 图片
 
     public func personImageURL(_ person: ItemDetails.Person, maxWidth: Int) -> URL? {
@@ -229,6 +244,15 @@ extension MediaServerClient {
     }
 
     /// 条目自己的 Logo，没有时回退到剧的 Logo。
+    /// 只知道条目 id、没有图片 tag 时的主图地址（如单集所属剧集的海报）。服务器没有该图时返回 404，由图片组件显示占位。
+    public func primaryImageURL(itemID: String, maxWidth: Int) -> URL? {
+        try? HTTPClient.makeURL(
+            baseURL: baseURL,
+            path: "/Items/\(itemID)/Images/Primary",
+            query: [.init(name: "maxWidth", value: String(maxWidth)), .init(name: "quality", value: "90")]
+        )
+    }
+
     public func logoURL(for item: MediaItem, maxWidth: Int) -> URL? {
         if let tag = item.imageTags[.logo] {
             return imageURL(itemID: item.id, path: "Logo", tag: tag, maxWidth: maxWidth)

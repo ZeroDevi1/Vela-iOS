@@ -332,6 +332,7 @@ struct PagedItemGrid<Header: View>: View {
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                     NavigationLink(value: item) { card(item) }
                         .buttonStyle(.plain)
+                        .itemContextMenu(item)
                         .onAppear {
                             if index >= items.count - Self.prefetchDistance { Task { await loadMore() } }
                         }
@@ -618,7 +619,7 @@ private struct LibraryRecommendationsView: View {
             LazyVStack(alignment: .leading, spacing: VelaTheme.Spacing.xl) {
                 ForEach(rows) { row in
                     MediaShelf(row.title, items: row.items) { item in
-                        NavigationLink(value: item) { card(item, landscape: row.landscape) }.buttonStyle(.plain)
+                        NavigationLink(value: item) { card(item, landscape: row.landscape) }.buttonStyle(.plain).itemContextMenu(item)
                     }
                 }
                 if hasLoaded, rows.isEmpty {

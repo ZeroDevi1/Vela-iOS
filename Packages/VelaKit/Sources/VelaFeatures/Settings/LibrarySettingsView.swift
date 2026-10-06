@@ -11,6 +11,17 @@ struct LibrarySettingsView: View {
             Section("首页配置") {
                 Toggle("显示我的媒体", isOn: $prefs.showMyMedia)
                 Toggle("显示轮播图片", isOn: $prefs.showHero)
+                if prefs.showHero {
+                    // 分段样式在表单中不显示 Picker 自身的标签，单独放一行标题。
+                    VStack(alignment: .leading) {
+                        Text("轮播高度")
+                        Picker("轮播高度", selection: $prefs.heroSize) {
+                            ForEach(LibraryPreferences.HeroSize.allCases, id: \.self) { Text($0.title).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                    }
+                }
                 Toggle("隐藏已观看项目", isOn: $prefs.hideWatched)
             }
 

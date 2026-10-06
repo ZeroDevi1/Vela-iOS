@@ -58,7 +58,6 @@ final class HomeModel {
     private(set) var nextUpTotal = 0
     private(set) var libraries: [MediaItem] = []
     private(set) var shelves: [LibraryShelf] = []
-    private(set) var counts: MediaServerClient.ItemCounts?
     /// 分区名 → 失败原因。
     private(set) var failures: [String: String] = [:]
     private(set) var hasLoaded = false
@@ -86,7 +85,6 @@ final class HomeModel {
         async let resumeTask = capture { try await client.resume(limit: Self.shelfLimit) }
         async let nextUpTask = capture { try await client.nextUpPage(limit: Self.shelfLimit) }
         async let librariesTask = capture { try await client.userViews() }
-        async let countsTask = capture { try await client.itemCounts() }
 
         var failures: [String: String] = [:]
         switch await featuredTask {
@@ -101,7 +99,6 @@ final class HomeModel {
         case .success(let page): (nextUp, nextUpTotal) = page
         case .failure(let error): failures["接下来播放"] = error.localizedDescription
         }
-        if case .success(let value) = await countsTask { counts = value }
 
         switch await librariesTask {
         case .success(let views):

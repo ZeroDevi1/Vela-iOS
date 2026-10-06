@@ -24,6 +24,11 @@ public final class AVPlayerEngine: PlaybackEngine {
     /// 访问日志读取有开销：每 4 次进度回调（约 1 秒）读一次。
     @ObservationIgnored private var throughputTick = 0
     public private(set) var videoSize: CGSize = .zero
+    /// 有视频轨、已播放数秒却始终没有画面（只有声音）：系统解码器打不开该视频，常见于超过本机硬解上限的分辨率
+    /// （如 8192 宽的 8K VR）或 MP4 中 `hev1` 标签的 HEVC。界面据此提示并提供改用 KSPlayer / 服务器缩放转码。
+    public private(set) var videoDecodeIssue: String?
+    /// 本条目起播位置，用于判断「已播放数秒」。
+    @ObservationIgnored private var loadedAt: TimeInterval = 0
 
     @ObservationIgnored public let player = AVPlayer()
     @ObservationIgnored private var timeObserver: Any?
@@ -53,6 +58,8 @@ public final class AVPlayerEngine: PlaybackEngine {
 
     public func load(_ source: PlaybackSource) {
         status = .loading
+        videoDecodeIssue = nil
+        loadedAt = source.startTime
         activateAudioSession()
         var options: [String: Any] = [:]
         if !source.httpHeaders.isEmpty {
@@ -177,6 +184,7 @@ public final class AVPlayerEngine: PlaybackEngine {
                    observed > 0 {
                     self.networkThroughput = observed
                 }
+                if self.throughputTick % 8 == 0 { self.checkVideoDecoding() }
             }
         }
         playerObservations.append(player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
@@ -218,6 +226,24 @@ public final class AVPlayerEngine: PlaybackEngine {
         }
     }
 
+    /// 播放 5 秒后仍没有画面尺寸且存在视频轨，即判定系统解码器没有输出画面（只检查一次结果，直到下次加载）。
+    private func checkVideoDecoding() {
+        guard videoDecodeIssue == nil, status == .playing, currentTime - loadedAt > 5,
+              let item = player.currentItem, item.presentationSize == .zero,
+              let video = item.tracks.first(where: { $0.assetTrack?.mediaType == .video }) else { return }
+        videoDecodeIssue = "系统内核无法解码该视频画面：可能超过本机硬件解码上限（如 8K）或编码标签不受支持"
+        // 补充编码与尺寸，便于判断原因（异步读取轨道格式）。
+        Task { [weak self] in
+            guard let format = try? await video.assetTrack?.load(.formatDescriptions).first else { return }
+            let dimensions = format.dimensions
+            let fourCC = String(decoding: [24, 16, 8, 0].map { UInt8((format.mediaSubType.rawValue >> $0) & 0xFF) }, as: UTF8.self)
+            let detail = "\(fourCC) \(dimensions.width)×\(dimensions.height)"
+            Log.player.error("视频无画面：\(detail, privacy: .public)")
+            guard let self, self.videoDecodeIssue != nil else { return }
+            self.videoDecodeIssue = "系统内核无法解码该视频画面（\(detail)）：可能超过本机硬件解码上限（如 8K）或编码标签不受支持"
+        }
+    }
+
     /// 起播诊断：画面尺寸与轨道类型。presentationSize 为 0 说明视频轨没有被解码（只有声音）。
     private func logTracks(of item: AVPlayerItem) {
         let size = item.presentationSize
@@ -235,3 +261,4 @@ public final class AVPlayerEngine: PlaybackEngine {
         }
     }
 }
+

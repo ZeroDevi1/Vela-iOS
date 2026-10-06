@@ -107,6 +107,35 @@ struct WebVTTTests {
     }
 }
 
+struct ASSParserTests {
+    @Test func parsesDialogueWithCommasAndOverrideTags() {
+        let ass = """
+        [Script Info]
+        Title: 示例
+
+        [V4+ Styles]
+        Format: Name, Fontname
+        Style: Default,Arial
+
+        [Events]
+        Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+        Dialogue: 0,0:00:05.00,0:00:07.50,Default,,0,0,0,,{\\an8\\fs20}第二条，含逗号
+        Dialogue: 0,0:00:01.20,0:00:03.00,Default,,0,0,0,,第一行\\N第二行
+        Comment: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,注释不显示
+        """
+        let cues = SubtitleFileParser.parse(ass, fileExtension: "ASS")
+        #expect(cues.count == 2)
+        #expect(cues[0] == SubtitleCue(start: 1.2, end: 3, text: "第一行\n第二行"))
+        #expect(cues[1].text == "第二条，含逗号")
+        #expect(cues[1].end == 7.5)
+    }
+
+    @Test func srtUsesWebVTTParser() {
+        let srt = "1\n00:00:01,000 --> 00:00:02,000\n你好\n"
+        #expect(SubtitleFileParser.parse(srt, fileExtension: "srt") == [SubtitleCue(start: 1, end: 2, text: "你好")])
+    }
+}
+
 struct VRProjectionTests {
     private let sbs180 = VRLayout(projection: .halfEquirect, stereo: .sideBySide, inputFOV: 180)
 
@@ -166,17 +195,81 @@ struct VRShaderTests {
 struct VRTextureTests {
     /// 视频输出按这组属性分配缓冲区；缺少 IOSurface / Metal 兼容声明时纹理创建失败，画面全黑。
     @Test func outputBuffersAreMetalCompatible() throws {
+        let textures = try makeTextures(format: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+        #expect(textures.mode == 0)
+        #expect(CVMetalTextureGetTexture(textures.luma)?.width == 64)
+        #expect(textures.chroma.flatMap(CVMetalTextureGetTexture)?.width == 32)
+    }
+
+    /// KSPlayer 的 10 位 HEVC 硬解输出（x420）按 16 位纹理读取。
+    @Test func tenBitFramesUseSixteenBitTextures() throws {
+        let textures = try makeTextures(format: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
+        #expect(CVMetalTextureGetTexture(textures.luma)?.pixelFormat == .r16Unorm)
+        #expect(textures.chroma.flatMap(CVMetalTextureGetTexture)?.pixelFormat == .rg16Unorm)
+    }
+
+    /// KSPlayer 软解输出的 I420（y420）：三个单通道平面。
+    @Test func planarFramesUseThreeTextures() throws {
+        let textures = try makeTextures(format: kCVPixelFormatType_420YpCbCr8Planar)
+        #expect(textures.mode == 3)
+        #expect(textures.chromaRed.flatMap(CVMetalTextureGetTexture)?.width == 32)
+    }
+
+    @Test func bgraFramesSampleRGBDirectly() throws {
+        let textures = try makeTextures(format: kCVPixelFormatType_32BGRA)
+        #expect(textures.mode == 2)
+        #expect(textures.chroma == nil)
+    }
+
+    private func makeTextures(format: OSType) throws -> VRRenderer.VRFrameTextures {
         let device = try #require(MTLCreateSystemDefaultDevice())
         var cache: CVMetalTextureCache?
         CVMetalTextureCacheCreate(nil, nil, device, nil, &cache)
         var buffer: CVPixelBuffer?
-        let created = CVPixelBufferCreate(nil, 64, 32, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, VRRenderer.pixelBufferAttributes as CFDictionary, &buffer)
+        let created = CVPixelBufferCreate(nil, 64, 32, format, VRRenderer.pixelBufferAttributes as CFDictionary, &buffer)
         #expect(created == kCVReturnSuccess)
-        var luma: CVMetalTexture?
-        var chroma: CVMetalTexture?
-        let status = VRRenderer.makeTextures(from: try #require(buffer), cache: try #require(cache), luma: &luma, chroma: &chroma)
-        #expect(status == kCVReturnSuccess)
-        #expect(luma.flatMap(CVMetalTextureGetTexture)?.width == 64)
-        #expect(chroma.flatMap(CVMetalTextureGetTexture)?.width == 32)
+        return try VRRenderer.makeTextures(from: try #require(buffer), cache: try #require(cache)).get()
+    }
+}
+
+struct VRPreviewFlattenerTests {
+    /// 180° 单眼片源正前方：输出中心取源画面中心，与着色器取景一致。
+    @Test func centerOfOutputSamplesCenterOfSource() throws {
+        let width = 64, height = 64
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                let central = (24..<40).contains(x) && (24..<40).contains(y)
+                pixels[i] = central ? 0 : 255
+                pixels[i + 1] = central ? 255 : 0
+                pixels[i + 3] = 255
+            }
+        }
+        let provider = try #require(CGDataProvider(data: Data(pixels) as CFData))
+        let source = try #require(CGImage(
+            width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
+        ))
+        let layout = VRLayout(projection: .halfEquirect, stereo: .mono, inputFOV: 180)
+        let output = try #require(VRPreviewFlattener.flatten(source, layout: layout, view: VRViewState(), outputSize: CGSize(width: 32, height: 18)))
+        #expect(output.width == 32 && output.height == 18)
+        let data = try #require(output.dataProvider?.data as Data?)
+        let center = (9 * 32 + 16) * 4
+        #expect(data[center + 1] > 200 && data[center] < 50)
+    }
+}
+
+struct SRTParsingTests {
+    /// 字幕改为直接取 SRT 原文：序号行、逗号毫秒、BOM 与 CRLF 都要能解析。
+    @Test func parsesRawSRT() {
+        let srt = "\u{FEFF}1\r\n00:11:48,100 --> 00:11:50,200\r\n祖父唤孙儿前来\r\n\r\n2\r\n00:11:51,000 --> 00:11:52,500\r\n<i>第二句</i>\r\n"
+        let cues = WebVTTParser.parse(srt)
+        #expect(cues.count == 2)
+        #expect(cues.first?.text == "祖父唤孙儿前来")
+        #expect(abs((cues.first?.start ?? 0) - 708.1) < 0.001)
+        #expect(cues.last?.text == "第二句")
     }
 }

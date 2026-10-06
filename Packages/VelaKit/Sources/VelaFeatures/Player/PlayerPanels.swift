@@ -8,16 +8,23 @@ import VelaPlayer
 /// 播放器面板（横屏贴右、iPhone 竖屏贴底）。打开时隐藏控制层，点击面板外关闭。
 enum PlayerPanel: String, Identifiable {
     case info, audio, subtitle, episodes, chapters
+    /// 点按底部标题块打开：海报、简介、本季剧集与演职人员（Android 的节目信息面板）。
+    case episodeInfo
+    case subtitleStyle, subtitleDelay
 
     var id: String { rawValue }
 
-    var title: String {
+    /// 面板标题；单集信息自带大标题，返回 nil。
+    var title: String? {
         switch self {
-        case .info: "播放信息"
+        case .info: "媒体信息"
         case .audio: "音轨"
         case .subtitle: "字幕"
         case .episodes: "剧集"
         case .chapters: "章节"
+        case .episodeInfo: nil
+        case .subtitleStyle: "字幕缩放与位置"
+        case .subtitleDelay: "字幕时间偏移"
         }
     }
 }
@@ -64,7 +71,7 @@ struct PlayerPanelHost: View {
     private var card: some View {
         VStack(alignment: .leading, spacing: VelaTheme.Spacing.m) {
             HStack {
-                Text(panel.title).font(.headline)
+                if let title = panel.title { Text(title).font(.headline) }
                 Spacer()
                 Button(action: onClose) {
                     Image(systemName: "xmark").frame(width: 20, height: 20)
@@ -86,13 +93,13 @@ struct PlayerPanelHost: View {
         let width = isBottomSheet ? min(600, size.width - 24) : min(400, size.width - 24)
         let maxHeight = isBottomSheet ? size.height * 0.6 : size.height - 24
         switch panel {
-        case .audio, .subtitle:
+        case .audio, .subtitle, .subtitleStyle, .subtitleDelay:
             // 先限制最大高度，再按理想高度（内容高度）收缩。
             card
                 .frame(width: width)
                 .frame(maxHeight: maxHeight)
                 .fixedSize(horizontal: false, vertical: true)
-        case .info, .episodes, .chapters:
+        case .info, .episodes, .chapters, .episodeInfo:
             card
                 .frame(width: width)
                 .frame(maxHeight: maxHeight, alignment: .top)
@@ -107,6 +114,9 @@ struct PlayerPanelHost: View {
         case .subtitle: SubtitlePanel(session: session)
         case .episodes: EpisodesPanel(session: session, onPicked: onClose)
         case .chapters: ChaptersPanel(session: session, onPicked: onClose)
+        case .episodeInfo: EpisodeInfoPanel(session: session, onPicked: onClose)
+        case .subtitleStyle: SubtitleStyleControls()
+        case .subtitleDelay: SubtitleDelayControls(session: session)
         }
     }
 }
@@ -170,10 +180,18 @@ private struct AudioPanel: View {
 
 private struct SubtitlePanel: View {
     let session: PlayerSession
-    @Environment(AppModel.self) private var app
+    /// 面板内切换到「在线搜索字幕」。
+    @State private var isSearching = false
 
     var body: some View {
-        @Bindable var preferences = app.playerPreferences
+        if isSearching {
+            RemoteSubtitleSearch(session: session) { isSearching = false }
+        } else {
+            trackList
+        }
+    }
+
+    private var trackList: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: VelaTheme.Spacing.m) {
                 LazyVStack(alignment: .leading, spacing: 0) {
@@ -181,6 +199,9 @@ private struct SubtitlePanel: View {
                         label: TrackLabel(title: "关闭", details: [], flags: []),
                         isSelected: session.selectedSubtitleIndex == nil
                     ) { session.selectSubtitle(nil) }
+                    if let local = session.localSubtitleName {
+                        TrackRow(label: TrackLabel(title: local, details: ["本地文件"], flags: []), isSelected: true) {}
+                    }
                     ForEach(session.subtitleOptions) { option in
                         TrackRow(
                             label: option.label,
@@ -191,44 +212,201 @@ private struct SubtitlePanel: View {
                     }
                 }
 
+                // 在线字幕只对服务器条目可用（由服务器的字幕插件搜索并保存）。
+                if session.item != nil {
+                    Button("在线搜索字幕", systemImage: "magnifyingglass") { isSearching = true }
+                        .buttonStyle(.glass)
+                }
+
                 if session.hasActiveSubtitle {
                     Divider().overlay(.white.opacity(0.3))
-                    HStack {
-                        Text("延迟")
-                        Spacer()
-                        Button("提前 0.5 秒", systemImage: "minus") { session.adjustSubtitleDelay(by: -0.5) }
-                            .labelStyle(.iconOnly)
-                        Text(delayText)
-                            .monospacedDigit()
-                            .frame(minWidth: 64)
-                            .onTapGesture(count: 2) { session.adjustSubtitleDelay(by: -session.subtitleDelay) }
-                            .accessibilityHint("轻点两下重置")
-                        Button("延后 0.5 秒", systemImage: "plus") { session.adjustSubtitleDelay(by: 0.5) }
-                            .labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.circle)
-
-                    HStack {
-                        Text("字号")
-                        Slider(value: $preferences.subtitleScale, in: 0.6...2.0, step: 0.1)
-                        Text("\(Int(preferences.subtitleScale * 100))%").monospacedDigit().frame(width: 48, alignment: .trailing)
-                    }
-                    HStack {
-                        Text("位置")
-                        Slider(value: $preferences.subtitleBottomOffset, in: 0...200, step: 4)
-                        Text("+\(Int(preferences.subtitleBottomOffset))").monospacedDigit().frame(width: 48, alignment: .trailing)
-                    }
+                    SubtitleDelayControls(session: session)
+                    SubtitleStyleControls()
                 }
             }
         }
         .scrollIndicators(.hidden)
         .tint(.white)
     }
+}
+
+/// 字幕时间偏移（字幕面板内与「更多 → 字幕时间偏移」共用）。
+private struct SubtitleDelayControls: View {
+    let session: PlayerSession
+
+    var body: some View {
+        if session.hasActiveSubtitle {
+            HStack {
+                Text("延迟")
+                Spacer()
+                Button("提前 0.5 秒", systemImage: "minus") { session.adjustSubtitleDelay(by: -0.5) }
+                    .labelStyle(.iconOnly)
+                Text(delayText)
+                    .monospacedDigit()
+                    .frame(minWidth: 64)
+                    .onTapGesture(count: 2) { session.adjustSubtitleDelay(by: -session.subtitleDelay) }
+                    .accessibilityHint("轻点两下重置")
+                Button("延后 0.5 秒", systemImage: "plus") { session.adjustSubtitleDelay(by: 0.5) }
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+        } else {
+            // 时间偏移作用于客户端渲染的字幕（服务器 WebVTT / 本地文件），KSPlayer 读取的内嵌字幕不支持。
+            Text("当前没有可调整时间的字幕").foregroundStyle(.white.opacity(0.7))
+        }
+    }
 
     private var delayText: String {
         let delay = session.subtitleDelay
         return delay == 0 ? "0 秒" : String(format: "%+.1f 秒", delay)
+    }
+}
+
+/// 字幕字号与位置（全局设置，对所有字幕生效）。
+private struct SubtitleStyleControls: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        @Bindable var preferences = app.playerPreferences
+        VStack(spacing: VelaTheme.Spacing.m) {
+            HStack {
+                Text("字号")
+                Slider(value: $preferences.subtitleScale, in: 0.6...2.0, step: 0.1)
+                Text("\(Int(preferences.subtitleScale * 100))%").monospacedDigit().frame(width: 48, alignment: .trailing)
+            }
+            HStack {
+                Text("位置")
+                Slider(value: $preferences.subtitleBottomOffset, in: 0...200, step: 4)
+                Text("+\(Int(preferences.subtitleBottomOffset))").monospacedDigit().frame(width: 48, alignment: .trailing)
+            }
+        }
+        .tint(.white)
+    }
+}
+
+// MARK: - 在线字幕
+
+/// 在线搜索字幕：选语言（「字幕搜索记录」中的语言排在前面）→ 服务器搜索 → 点选后由服务器下载并自动选中。
+private struct RemoteSubtitleSearch: View {
+    let session: PlayerSession
+    let onBack: () -> Void
+    @Environment(AppModel.self) private var app
+
+    @State private var language = ""
+    @State private var results: [RemoteSubtitle]?
+    @State private var isLoading = false
+    @State private var downloadingID: String?
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: VelaTheme.Spacing.m) {
+            HStack {
+                Button("返回", systemImage: "chevron.backward", action: onBack)
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.circle)
+                Picker("语言", selection: $language) {
+                    ForEach(languageOptions, id: \.code) { Text($0.title).tag($0.code) }
+                }
+                .pickerStyle(.menu)
+                Spacer(minLength: 0)
+                Button("搜索") { search() }
+                    .buttonStyle(.glassProminent)
+                    .disabled(isLoading || language.isEmpty)
+            }
+            if isLoading {
+                ProgressView("正在通过服务器搜索…").tint(.white).frame(maxWidth: .infinity)
+            }
+            if let error {
+                Label(error, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.orange)
+            }
+            if let results {
+                if results.isEmpty {
+                    Text("没有找到字幕。确认服务器已安装字幕插件（如 OpenSubtitles），或换一种语言。")
+                        .font(.footnote).foregroundStyle(.white.opacity(0.7))
+                }
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(results) { row($0) }
+                    }
+                }
+                .scrollIndicators(.hidden)
+            }
+        }
+        .tint(.white)
+        .onAppear {
+            guard language.isEmpty else { return }
+            let preferences = app.playerPreferences
+            language = preferences.recentSubtitleSearchLanguages.first
+                ?? (preferences.preferredSubtitleLanguage.isEmpty ? "chi" : preferences.preferredSubtitleLanguage)
+        }
+    }
+
+    /// 最近搜索过的语言在前，其余按设置中的语言列表。
+    private var languageOptions: [(code: String, title: String)] {
+        let all = PlayerPreferences.languageOptions.filter { !$0.code.isEmpty }
+        let recent = app.playerPreferences.recentSubtitleSearchLanguages.compactMap { code in all.first { $0.code == code } }
+        return recent + all.filter { option in !recent.contains { $0.code == option.code } }
+    }
+
+    private func row(_ subtitle: RemoteSubtitle) -> some View {
+        Button {
+            download(subtitle)
+        } label: {
+            HStack(spacing: VelaTheme.Spacing.m) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(subtitle.name ?? subtitle.id).font(.body).lineLimit(2)
+                    let details = [
+                        subtitle.providerName, subtitle.format?.uppercased(),
+                        subtitle.downloadCount.map { "下载 \($0)" },
+                        subtitle.isHashMatch == true ? "文件匹配" : nil
+                    ].compactMap { $0 }
+                    Text(details.joined(separator: " · ")).font(.caption).foregroundStyle(.white.opacity(0.7))
+                }
+                Spacer(minLength: 0)
+                if downloadingID == subtitle.id { ProgressView().tint(.white) }
+            }
+            .padding(.vertical, 8)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .disabled(downloadingID != nil)
+    }
+
+    private func search() {
+        isLoading = true
+        error = nil
+        Task {
+            defer { isLoading = false }
+            do {
+                results = try await session.searchRemoteSubtitles(language: language)
+            } catch {
+                self.error = Self.message(for: error)
+            }
+        }
+    }
+
+    private func download(_ subtitle: RemoteSubtitle) {
+        downloadingID = subtitle.id
+        error = nil
+        Task {
+            defer { downloadingID = nil }
+            do {
+                try await session.downloadRemoteSubtitle(subtitle)
+                onBack()
+            } catch {
+                self.error = Self.message(for: error)
+            }
+        }
+    }
+
+    /// 403 多为账号没有「字幕管理」权限，给出可操作的提示。
+    private static func message(for error: Error) -> String {
+        if case APIError.http(let status, _) = error, status == 403 {
+            return "服务器拒绝：当前账号没有字幕管理权限（在服务器用户设置中开启）"
+        }
+        return error.localizedDescription
     }
 }
 
@@ -345,30 +523,56 @@ private struct ChaptersPanel: View {
 
 // MARK: - 播放信息
 
+/// 媒体信息：按 串流 / 视频 / 音频 / 字幕 / 文件 分区，键在左、值右对齐（与 Android 媒体信息对话框一致）。
 private struct PlaybackInfoPanel: View {
     let session: PlayerSession
+
+    /// 分区标题色，与 Android 媒体信息对话框的蓝色标题相同。
+    static let sectionTint = VelaTheme.accentLight
 
     var body: some View {
         ScrollView {
             if let stream = session.stream {
                 let source = stream.mediaSource
-                Grid(alignment: .topLeading, horizontalSpacing: VelaTheme.Spacing.m, verticalSpacing: 10) {
-                    row("播放方式", Self.methodTitle(stream))
-                    if !stream.transcodeReasons.isEmpty {
-                        row("转码原因", stream.transcodeReasons.map(Self.reasonTitle).joined(separator: "、"))
+                let engine = session.controller.engine
+                VStack(alignment: .leading, spacing: VelaTheme.Spacing.m) {
+                    section("串流") {
+                        row("容器", [source.container?.uppercased(), MediaFormat.bitrate(source.bitrate).map { "（\($0)）" }]
+                            .compactMap { $0 }.joined())
+                        row("播放方式", Self.methodTitle(stream))
+                        if !stream.transcodeReasons.isEmpty {
+                            row("转码原因", stream.transcodeReasons.map(Self.reasonTitle).joined(separator: "、"))
+                        }
+                        row("播放内核", engine.kind == .ksPlayer ? "KSPlayer（FFmpeg）" : "系统（AVPlayer）")
+                        row("网速", engine.networkThroughput.flatMap { MediaFormat.bitrate(Int($0)) })
+                        row("已缓冲", Self.bufferAhead(engine))
                     }
-                    row("播放内核", session.controller.engine.kind == .mpv ? "MPV（libmpv，直放原文件）" : "系统（AVPlayer）")
-                    row("容器", source.container?.uppercased())
-                    row("视频", Self.videoSummary(source.videoStream))
-                    row("音频", session.audioOptions.first { $0.index == session.selectedAudioIndex }.map(Self.trackSummary))
-                    row("字幕", session.selectedSubtitleIndex.flatMap { index in
-                        session.subtitleOptions.first { $0.index == index }.map(Self.trackSummary)
-                    } ?? "关闭")
-                    row("总码率", MediaFormat.bitrate(source.bitrate))
-                    row("网速", session.controller.engine.networkThroughput.flatMap { MediaFormat.bitrate(Int($0)) })
-                    row("已缓冲", Self.bufferAhead(session.controller.engine))
-                    row("文件大小", MediaFormat.size(source.size))
-                    row("文件", source.path)
+                    if let video = source.videoStream {
+                        section("视频") {
+                            row("格式", Self.videoFormat(video))
+                            row("参数", Self.videoParameters(video))
+                            row("解码器", engine.kind == .ksPlayer ? "FFmpeg + VideoToolbox" : "VideoToolbox")
+                            row("分辨率", video.width.flatMap { w in video.height.map { "\(w)×\($0)" } })
+                            row("动态范围", video.videoRangeType)
+                        }
+                    }
+                    if let audio = source.audioStreams.first(where: { $0.index == session.selectedAudioIndex }) {
+                        section("音频") {
+                            row("音轨", audio.displayTitle ?? audio.codec?.uppercased())
+                            row("采样率", audio.sampleRate.map { "\($0) Hz" })
+                            row("码率", MediaFormat.bitrate(audio.bitRate))
+                        }
+                    }
+                    section("字幕") {
+                        row("字幕", session.localSubtitleName.map { "\($0)（本地文件）" }
+                            ?? session.selectedSubtitleIndex.flatMap { index in
+                                session.subtitleOptions.first { $0.index == index }.map(Self.trackSummary)
+                            } ?? "关闭")
+                    }
+                    section("文件") {
+                        row("大小", MediaFormat.size(source.size))
+                        row("路径", source.path)
+                    }
                 }
                 .font(.subheadline)
                 .textSelection(.enabled)
@@ -379,14 +583,49 @@ private struct PlaybackInfoPanel: View {
         .scrollIndicators(.hidden)
     }
 
+    private func section(_ title: String, @ViewBuilder rows: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.subheadline.weight(.bold)).foregroundStyle(Self.sectionTint)
+            rows()
+        }
+    }
+
     @ViewBuilder
     private func row(_ key: String, _ value: String?) -> some View {
         if let value, !value.isEmpty {
-            GridRow {
-                Text(key).foregroundStyle(.white.opacity(0.6))
-                Text(value)
+            HStack(alignment: .firstTextBaseline, spacing: VelaTheme.Spacing.m) {
+                Text(key).foregroundStyle(.white.opacity(0.75))
+                Spacer(minLength: VelaTheme.Spacing.m)
+                Text(value).multilineTextAlignment(.trailing)
             }
         }
+    }
+
+    /// 「4K HEVC」式的简述：按宽度归档分辨率（宽银幕片源高度小于标准值）。
+    static func videoFormat(_ video: MediaStreamInfo) -> String? {
+        let tier: String? = video.width.map { width in
+            switch width {
+            case 7600...: "8K"
+            case 3800...: "4K"
+            case 2500...: "1440p"
+            case 1900...: "1080p"
+            case 1260...: "720p"
+            default: video.height.map { "\($0)p" } ?? "\(width)w"
+            }
+        }
+        let text = [tier, video.codec?.uppercased()].compactMap { $0 }.joined(separator: " ")
+        return text.isEmpty ? nil : text
+    }
+
+    /// 「Main 10 10bit 16 Mbps 60.000 fps」式的编码参数。
+    static func videoParameters(_ video: MediaStreamInfo) -> String? {
+        let parts = [
+            video.profile,
+            video.bitDepth.map { "\($0)bit" },
+            MediaFormat.bitrate(video.bitRate),
+            video.realFrameRate.map { String(format: "%.3f fps", $0) }
+        ].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
 
     static func methodTitle(_ stream: ResolvedStream) -> String {
@@ -427,16 +666,6 @@ private struct PlaybackInfoPanel: View {
         }
     }
 
-    static func videoSummary(_ video: MediaStreamInfo?) -> String? {
-        guard let video else { return nil }
-        let size = video.width.flatMap { w in video.height.map { "\(w)×\($0)" } }
-        let codec = [video.codec?.uppercased(), video.profile].compactMap { $0 }.joined(separator: " ")
-        let fps = video.realFrameRate.map { String(format: "%.3g fps", $0) }
-        return [size, codec.isEmpty ? nil : codec, video.videoRangeType, fps, MediaFormat.bitrate(video.bitRate)]
-            .compactMap { $0 }
-            .joined(separator: " · ")
-    }
-
     /// 当前位置之后已缓冲的时长；网速低于总码率且这里持续接近 0 即为带宽不足。
     static func bufferAhead(_ engine: any PlaybackEngine) -> String? {
         let ahead = engine.bufferedTime - engine.currentTime
@@ -446,6 +675,155 @@ private struct PlaybackInfoPanel: View {
 
     static func trackSummary(_ option: PlayerSession.TrackOption) -> String {
         [option.label.title, option.label.detailLine].compactMap { $0 }.joined(separator: "\n")
+    }
+}
+
+// MARK: - 单集信息
+
+/// 单集信息（点按底部标题块打开，对应 Android 的节目信息面板）：海报、标题、日期、简介、本季剧集与演职人员。
+private struct EpisodeInfoPanel: View {
+    let session: PlayerSession
+    let onPicked: () -> Void
+    @State private var people: [ItemDetails.Person] = []
+
+    var body: some View {
+        if let item = session.item {
+            ScrollView {
+                VStack(alignment: .leading, spacing: VelaTheme.Spacing.l) {
+                    header(item)
+                    if let overview = item.overview, !overview.isEmpty {
+                        Text(overview)
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.85))
+                            .lineSpacing(4)
+                    }
+                    if !session.seasonEpisodes.isEmpty {
+                        Text(item.parentIndexNumber.map { "来自第 \($0) 季" } ?? "本季剧集").font(.headline)
+                        episodes(current: item)
+                    }
+                    if !people.isEmpty {
+                        Text("演职人员").font(.headline)
+                        cast
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+            .task(id: item.id) { people = await session.loadPeople() }
+        }
+    }
+
+    private func header(_ item: MediaItem) -> some View {
+        HStack(alignment: .top, spacing: VelaTheme.Spacing.m) {
+            RemoteArtwork(url: session.posterURL, placeholderSymbol: "film")
+                .frame(width: 100, height: 150)
+                .clipShape(.rect(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 6) {
+                Text(Self.title(for: item))
+                    .font(.title3.weight(.bold))
+                    .lineLimit(3)
+                if let date = item.premiereDate {
+                    Text(date.formatted(.dateTime.year().month(.twoDigits).day(.twoDigits)))
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+                if let rating = item.communityRating {
+                    Label(String(format: "%.1f", rating), systemImage: "star.fill")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.8))
+                }
+            }
+        }
+    }
+
+    /// 本季单集横向列表：缩略图左下角显示剩余或总时长（与 Android 一致），当前集描边。
+    private func episodes(current: MediaItem) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: VelaTheme.Spacing.m) {
+                    ForEach(session.seasonEpisodes) { episode in
+                        let isCurrent = episode.id == current.id
+                        Button {
+                            session.playEpisode(episode)
+                            onPicked()
+                        } label: {
+                            VStack(alignment: .leading, spacing: 6) {
+                                RemoteArtwork(url: session.episodeImageURL(episode), placeholderSymbol: "play.rectangle")
+                                    .frame(width: 160, height: 90)
+                                    .overlay(alignment: .bottomLeading) {
+                                        if let badge = remainingBadge(episode, isCurrent: isCurrent) {
+                                            Text(badge)
+                                                .font(.caption2.weight(.semibold).monospacedDigit())
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 3)
+                                                .background(.black.opacity(0.55), in: .capsule)
+                                                .padding(6)
+                                        }
+                                    }
+                                    .clipShape(.rect(cornerRadius: 10))
+                                    .overlay {
+                                        if isCurrent { RoundedRectangle(cornerRadius: 10).stroke(.white, lineWidth: 2) }
+                                    }
+                                Text("\(episode.indexNumber.map { "\($0)." } ?? "")\(episode.name)")
+                                    .font(.caption)
+                                    .lineLimit(1)
+                                    .frame(width: 160, alignment: .leading)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isCurrent)
+                        .id(episode.id)
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+            .onAppear { proxy.scrollTo(current.id, anchor: .leading) }
+        }
+    }
+
+    private var cast: some View {
+        ScrollView(.horizontal) {
+            LazyHStack(alignment: .top, spacing: VelaTheme.Spacing.m) {
+                ForEach(people.prefix(30)) { person in
+                    VStack(spacing: 6) {
+                        RemoteArtwork(url: session.personImageURL(person), placeholderSymbol: "person.fill")
+                            .frame(width: 96, height: 128)
+                            .clipShape(.rect(cornerRadius: 10))
+                        Text(person.name)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .frame(width: 96)
+                    }
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    /// 当前集按播放位置算剩余；有进度的集按服务器进度算剩余；其余显示总时长。
+    private func remainingBadge(_ episode: MediaItem, isCurrent: Bool) -> String? {
+        let total = episode.runTimeTicks.map(Ticks.seconds)
+        if isCurrent {
+            let engine = session.controller.engine
+            guard engine.duration > 0 else { return total.map(Self.duration) }
+            return "剩余：" + Self.duration(engine.duration - engine.currentTime)
+        }
+        if let total, let position = episode.playbackPositionTicks.map(Ticks.seconds), position > 0, !episode.isPlayed {
+            return "剩余：" + Self.duration(total - position)
+        }
+        return total.map(Self.duration)
+    }
+
+    /// 「46分17秒」「1小时05分」式时长。
+    static func duration(_ seconds: TimeInterval) -> String {
+        let value = Int(max(0, seconds))
+        let hours = value / 3600, minutes = value % 3600 / 60, secs = value % 60
+        return hours > 0 ? String(format: "%d小时%02d分", hours, minutes) : "\(minutes)分\(String(format: "%02d", secs))秒"
+    }
+
+    static func title(for item: MediaItem) -> String {
+        guard item.kind == .episode, let episode = item.indexNumber else { return item.name }
+        let season = item.parentIndexNumber.map { "S\($0)" } ?? ""
+        return "\(season)E\(episode)：\(item.name)"
     }
 }
 

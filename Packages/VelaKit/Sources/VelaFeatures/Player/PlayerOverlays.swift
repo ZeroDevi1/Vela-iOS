@@ -17,22 +17,24 @@ struct SubtitleOverlay: View {
     /// 画面下方黑边至少要容纳约两行字幕，否则改为贴底。
     private static let minimumSpaceBelowVideo: CGFloat = 72
 
+    /// KSPlayer 从视频流读取的内嵌字幕；与 WebVTT 字幕互斥。
+    private var embeddedEngine: KSPlayerEngine? {
+        (controller.engine as? KSPlayerEngine).flatMap { $0.hasEmbeddedSubtitle ? $0 : nil }
+    }
+
     var body: some View {
-        if let track = controller.subtitleTrack {
+        let track = controller.subtitleTrack
+        let embedded = embeddedEngine
+        if track != nil || embedded != nil {
             GeometryReader { proxy in
                 let anchor = belowVideoAnchor(in: proxy)
                 let isPlaying = controller.engine.status == .playing
                 // 只在暂停时订阅进度，播放中由时间线驱动，避免两路同时刷新。
                 let pausedTime = isPlaying ? nil : controller.engine.currentTime
                 TimelineView(.animation(minimumInterval: 0.05, paused: !isPlaying)) { _ in
-                    if let text = track.text(at: pausedTime ?? controller.engine.preciseCurrentTime) {
-                        Text(text)
-                            .font(.system(size: 20 * preferences.subtitleScale, weight: .semibold))
-                            .multilineTextAlignment(.center)
-                            .foregroundStyle(.white)
-                            .shadow(color: .black.opacity(0.9), radius: 2, x: 0, y: 1)
-                            .shadow(color: .black.opacity(0.6), radius: 6)
-                            .padding(.horizontal, 32)
+                    let time = pausedTime ?? controller.engine.preciseCurrentTime
+                    if let text = track?.text(at: time) ?? embedded?.embeddedSubtitleText(at: time) {
+                        subtitleText(text)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: anchor == nil ? .bottom : .top)
@@ -44,6 +46,16 @@ struct SubtitleOverlay: View {
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }
+    }
+
+    private func subtitleText(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 20 * preferences.subtitleScale, weight: .semibold))
+            .multilineTextAlignment(.center)
+            .foregroundStyle(.white)
+            .shadow(color: .black.opacity(0.9), radius: 2, x: 0, y: 1)
+            .shadow(color: .black.opacity(0.6), radius: 6)
+            .padding(.horizontal, 32)
     }
 
     /// 竖屏时字幕顶部在本视图坐标系中的 y；不适用时返回 nil。

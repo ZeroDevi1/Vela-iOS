@@ -62,3 +62,11 @@ struct TrackTitleCleanupTests {
         #expect(TrackLabelFormatter.stripFlagSuffixes("Japanese (Default Forced) AAC") == "Japanese AAC")
     }
 }
+
+struct SubtitleCodecTitleTests {
+    /// Emby 给无标题字幕的显示标题只有编码名（「(SUBRIP)」），显示为 SRT。
+    @Test func codecOnlyTitleBecomesFormatName() {
+        let label = TrackLabelFormatter.label(for: TrackAttributes(kind: .subtitle, index: 3, language: "chi", displayTitle: "(SUBRIP)", codec: "subrip"))
+        #expect(label.title == "SRT")
+    }
+}

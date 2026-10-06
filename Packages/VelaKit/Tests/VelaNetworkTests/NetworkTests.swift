@@ -113,6 +113,23 @@ struct PlaybackBodyTests {
         #expect(object?["AudioStreamIndex"] == nil)
     }
 
+    /// 「服务器转码为 4K」：宽度上限编码为必需的 CodecProfile 条件，服务器据此不直放并缩放转码。
+    @Test func maxVideoWidthBecomesRequiredCodecCondition() throws {
+        var caps = PlaybackCapabilities(supportsAV1: false, supportsDolbyVision: true, supportsHDR10: true)
+        let unlimited = try JSONSerialization.jsonObject(with: JSONEncoder().encode(DeviceProfile.avFoundation(caps))) as? [String: Any]
+        #expect((unlimited?["CodecProfiles"] as? [Any])?.isEmpty == true)
+
+        caps.maxVideoWidth = 3840
+        let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(DeviceProfile.avFoundation(caps))) as? [String: Any]
+        let profile = try #require((object?["CodecProfiles"] as? [[String: Any]])?.first)
+        let condition = try #require((profile["Conditions"] as? [[String: Any]])?.first)
+        #expect(profile["Type"] as? String == "Video")
+        #expect(condition["Property"] as? String == "Width")
+        #expect(condition["Condition"] as? String == "LessThanEqual")
+        #expect(condition["Value"] as? String == "3840")
+        #expect(condition["IsRequired"] as? Bool == true)
+    }
+
     @Test func reportBodyUsesTicks() throws {
         let body = PlaybackReportBody(
             itemID: "i", mediaSourceID: "m", playSessionID: "p", positionTicks: Ticks.ticks(12.5),
@@ -136,9 +153,9 @@ struct DetailsDecodingTests {
 }
 
 struct MediaSelectionTests {
-    private func source(_ id: String, width: Int, height: Int, bitrate: Int, audio: [String] = []) throws -> MediaSourceInfo {
+    private func source(_ id: String, width: Int, height: Int, bitrate: Int, range: String = "SDR", audio: [String] = []) throws -> MediaSourceInfo {
         let audioJSON = audio.enumerated().map { #"{"Type":"Audio","Index":\#($0.offset + 1),"Language":"\#($0.element)"}"# }
-        let json = #"{"Id":"\#(id)","Bitrate":\#(bitrate),"MediaStreams":[{"Type":"Video","Index":0,"Width":\#(width),"Height":\#(height)}\#(audioJSON.isEmpty ? "" : "," + audioJSON.joined(separator: ","))]}"#
+        let json = #"{"Id":"\#(id)","Bitrate":\#(bitrate),"MediaStreams":[{"Type":"Video","Index":0,"Width":\#(width),"Height":\#(height),"VideoRangeType":"\#(range)"}\#(audioJSON.isEmpty ? "" : "," + audioJSON.joined(separator: ","))]}"#
         return try JSONDecoder().decode(MediaSourceInfo.self, from: Data(json.utf8))
     }
 
@@ -161,6 +178,41 @@ struct MediaSelectionTests {
         let uhd = try source("uhd", width: 3840, height: 2160, bitrate: 40_000_000)
         #expect(MediaSelection.preferredSource([hd, uhd], by: .serverDefault)?.id == "hd")
         #expect(MediaSelection.preferredSource([hd, uhd], by: .highestQuality)?.id == "uhd")
-        #expect(MediaSelection.preferredSource([uhd, hd], by: .lowestBitrate)?.id == "hd")
+        #expect(MediaSelection.preferredSource([uhd, hd], by: .highestBitrate)?.id == "uhd")
+    }
+
+    @Test func versionPreferenceByTierAndRange() throws {
+        let sd = try source("720", width: 1280, height: 720, bitrate: 3_000_000)
+        let hd = try source("1080", width: 1920, height: 800, bitrate: 8_000_000)
+        let uhd = try source("4k", width: 3840, height: 2160, bitrate: 40_000_000)
+        let dv = try source("dv", width: 1920, height: 1080, bitrate: 6_000_000, range: "DOVIWithHDR10")
+        #expect(MediaSelection.preferredSource([uhd, hd, sd], by: .fullHD1080)?.id == "1080")
+        #expect(MediaSelection.preferredSource([uhd, hd, sd], by: .hd720)?.id == "720")
+        #expect(MediaSelection.preferredSource([sd, hd], by: .uhd4K)?.id == "1080")
+        // 没有不超过目标的版本时取最小的一个。
+        #expect(MediaSelection.preferredSource([uhd, hd], by: .hd720)?.id == "1080")
+        #expect(MediaSelection.preferredSource([uhd, dv], by: .bestDynamicRange)?.id == "dv")
+        #expect(MediaVersionPreference.stored("lowestBitrate") == .hd720)
+        #expect(MediaVersionPreference.stored("highestQuality") == .highestQuality)
+    }
+}
+
+struct RemoteSubtitleTests {
+    @Test func decodesServerSearchResult() throws {
+        let json = #"[{"Id":"opensubtitles_123","ProviderName":"Open Subtitles","Name":"Movie.2024.1080p","Format":"srt","DownloadCount":42,"IsHashMatch":true,"ThreeLetterISOLanguageName":"chi"}]"#
+        let results = try JSONDecoder().decode([RemoteSubtitle].self, from: Data(json.utf8))
+        #expect(results.first?.id == "opensubtitles_123")
+        #expect(results.first?.isHashMatch == true)
+        #expect(results.first?.language == "chi")
+    }
+}
+
+struct SubtitleDecodingTests {
+    /// 服务器原样透传 GBK 编码的 SRT 时按 GB18030 解码，而不是 Latin-1 乱码。
+    @Test func decodesGBKSubtitle() throws {
+        let encoding = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)))
+        let data = try #require("沈家灭门".data(using: encoding))
+        #expect(MediaServerClient.decodeSubtitleText(data) == "沈家灭门")
+        #expect(MediaServerClient.decodeSubtitleText(Data("字幕".utf8)) == "字幕")
     }
 }

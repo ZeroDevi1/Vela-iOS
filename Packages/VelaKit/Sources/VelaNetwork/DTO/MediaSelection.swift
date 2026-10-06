@@ -30,13 +30,34 @@ public enum MediaSelection {
     public static func preferredSource(_ sources: [MediaSourceInfo], by preference: MediaVersionPreference) -> MediaSourceInfo? {
         guard sources.count > 1 else { return sources.first }
         func pixels(_ source: MediaSourceInfo) -> Int { (source.videoStream?.width ?? 0) * (source.videoStream?.height ?? 0) }
+        func bitrate(_ source: MediaSourceInfo) -> Int { source.bitrate ?? 0 }
         switch preference {
         case .serverDefault:
             return sources.first
         case .highestQuality:
-            return sources.max { (pixels($0), $0.bitrate ?? 0) < (pixels($1), $1.bitrate ?? 0) }
-        case .lowestBitrate:
-            return sources.min { ($0.bitrate ?? .max) < ($1.bitrate ?? .max) }
+            return sources.max { (pixels($0), bitrate($0)) < (pixels($1), bitrate($1)) }
+        case .highestBitrate:
+            return sources.max { (bitrate($0), pixels($0)) < (bitrate($1), pixels($1)) }
+        case .bestDynamicRange:
+            return sources.max {
+                (rangeRank($0.videoStream?.videoRangeType), pixels($0), bitrate($0))
+                    < (rangeRank($1.videoStream?.videoRangeType), pixels($1), bitrate($1))
+            }
+        case .uhd4K, .fullHD1080, .hd720:
+            // 宽度留 10% 余量：2.39:1 电影的 1080p 版本宽 1920，部分编码为 1998 / 2048。
+            let limit = Double(preference.targetWidth ?? 0) * 1.1
+            let fitting = sources.filter { Double($0.videoStream?.width ?? 0) <= limit }
+            if let best = fitting.max(by: { (pixels($0), bitrate($0)) < (pixels($1), bitrate($1)) }) { return best }
+            return sources.min { (pixels($0), bitrate($0)) < (pixels($1), bitrate($1)) }
         }
+    }
+
+    /// 服务器 `VideoRangeType` 的优先级：杜比视界 > HDR10+ > HDR10 / HLG > SDR / 未知。
+    static func rangeRank(_ range: String?) -> Int {
+        guard let range else { return 0 }
+        if range.hasPrefix("DOVI") { return 3 }
+        if range == "HDR10Plus" { return 2 }
+        if range == "HDR10" || range == "HLG" { return 1 }
+        return 0
     }
 }

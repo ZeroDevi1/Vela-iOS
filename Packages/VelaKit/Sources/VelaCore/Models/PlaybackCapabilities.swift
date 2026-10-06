@@ -16,6 +16,9 @@ public struct PlaybackCapabilities: Sendable, Hashable {
     public var supportsEAC3: Bool
     /// 直放与转码的码率上限，单位 bit/s。
     public var maxStreamingBitrate: Int
+    /// 视频宽度上限（像素）；nil 为不限制。超过时服务器缩小分辨率重新编码，用于本机解码器打不开的超高分辨率
+    /// 片源（如 8192 宽的 8K VR）。
+    public var maxVideoWidth: Int?
 
     public init(
         supportsAV1: Bool,
@@ -24,8 +27,10 @@ public struct PlaybackCapabilities: Sendable, Hashable {
         supportsHDR10: Bool,
         maxAudioChannels: Int = 8,
         supportsEAC3: Bool = true,
-        maxStreamingBitrate: Int = 160_000_000
+        maxStreamingBitrate: Int = 160_000_000,
+        maxVideoWidth: Int? = nil
     ) {
+        self.maxVideoWidth = maxVideoWidth
         self.supportsEAC3 = supportsEAC3
         self.supportsAV1 = supportsAV1
         self.supportsHEVC = supportsHEVC

@@ -89,7 +89,11 @@ public enum TrackLabelFormatter {
     public static func label(for track: TrackAttributes) -> TrackLabel {
         let fallback = track.kind == .audio ? "音轨 \(track.index)" : "字幕 \(track.index)"
         let rawTitle = track.displayTitle ?? track.title ?? track.language ?? fallback
-        let title = stripFlagSuffixes(rawTitle)
+        var title = stripFlagSuffixes(rawTitle)
+        // Emby 对没有标题的字幕给出「(SUBRIP)」这类只有编码名的显示标题，改成常见写法（SRT）。
+        if track.kind == .subtitle, let format = subtitleFormatName(title.trimmingCharacters(in: CharacterSet(charactersIn: "()[] "))) {
+            title = format
+        }
 
         var details: [String] = []
         if track.kind == .audio {
@@ -204,6 +208,21 @@ public enum TrackLabelFormatter {
     private static let flagSuffixes = [
         "default", "forced", "external", "默认", "强制", "外部", "外挂"
     ]
+
+    /// 字幕编码名 → 常见写法；不是已知编码名时返回 nil。
+    static func subtitleFormatName(_ codec: String) -> String? {
+        switch codec.lowercased() {
+        case "subrip", "srt": "SRT"
+        case "ass": "ASS"
+        case "ssa": "SSA"
+        case "webvtt", "vtt": "WebVTT"
+        case "pgssub", "hdmv_pgs_subtitle", "pgs": "PGS"
+        case "dvdsub", "dvd_subtitle", "vobsub": "VobSub"
+        case "mov_text", "tx3g": "MP4 文本"
+        case "ttml": "TTML"
+        default: nil
+        }
+    }
 
     static func stripFlagSuffixes(_ title: String) -> String {
         var result = title.trimmingCharacters(in: .whitespaces)

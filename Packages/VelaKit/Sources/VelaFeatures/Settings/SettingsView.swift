@@ -109,6 +109,13 @@ public struct SettingsView: View {
                             title: "Apple HLS 示例"
                         ))
                     }
+                    // 单文件直放：与服务器直放原文件的路径一致，用于验证 KSPlayer 内核（播放设置中切换内核）。
+                    Button("测试播放（MP4 单文件）", systemImage: "play.rectangle") {
+                        playMedia(PlaybackRequest(
+                            target: .url(URL(string: "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_10MB.mp4")!),
+                            title: "Big Buck Bunny"
+                        ))
+                    }
                 }
                 #endif
 

@@ -58,7 +58,8 @@ public struct PlaybackResolver: Sendable {
         versionPreference: MediaVersionPreference = .serverDefault,
         startTime: TimeInterval = 0,
         audioStreamIndex: Int? = nil,
-        burnSubtitleIndex: Int? = nil
+        burnSubtitleIndex: Int? = nil,
+        profile: DeviceProfile.Kind = .avFoundation
     ) async throws -> ResolvedStream {
         let info = try await client.playbackInfo(
             itemID: item.id,
@@ -66,7 +67,8 @@ public struct PlaybackResolver: Sendable {
             startTicks: Ticks.ticks(startTime),
             audioStreamIndex: audioStreamIndex,
             subtitleStreamIndex: burnSubtitleIndex,
-            capabilities: capabilities
+            capabilities: capabilities,
+            profile: profile
         )
         let source = info.mediaSources.first { $0.id == mediaSourceID } ?? MediaSelection.preferredSource(info.mediaSources, by: versionPreference)
         guard let source else { throw PlaybackResolveError.noMediaSource }

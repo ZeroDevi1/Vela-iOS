@@ -25,30 +25,18 @@ public final class PlayerLayerView: PlayerPlatformView {
         set { activeLayer.player = newValue }
     }
 
-    /// MPV 内核的渲染图层，铺满视图；系统内核时为 nil。
-    private(set) var metalLayer: CAMetalLayer?
+    /// KSPlayer 内核的视频视图容器，铺满视图；系统内核时为 nil。
+    private(set) var hostedView: PlayerPlatformView?
 
-    func host(_ layer: CAMetalLayer) {
-        metalLayer = layer
+    func host(_ view: PlayerPlatformView) {
+        hostedView = view
+        view.frame = bounds
         #if os(iOS)
-        self.layer.addSublayer(layer)
+        view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         #else
-        self.layer?.addSublayer(layer)
+        view.autoresizingMask = [.width, .height]
         #endif
-        layoutMetalLayer()
-    }
-
-    private func layoutMetalLayer() {
-        guard let metalLayer else { return }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        metalLayer.frame = bounds
-        #if os(iOS)
-        metalLayer.contentsScale = window?.screen.scale ?? traitCollection.displayScale
-        #else
-        metalLayer.contentsScale = window?.backingScaleFactor ?? 2
-        #endif
-        CATransaction.commit()
+        addSubview(view)
     }
 
     var activeLayer: AVPlayerLayer {
@@ -65,10 +53,6 @@ public final class PlayerLayerView: PlayerPlatformView {
         backgroundColor = .black
     }
 
-    public override func layoutSubviews() {
-        super.layoutSubviews()
-        layoutMetalLayer()
-    }
     #else
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -82,7 +66,6 @@ public final class PlayerLayerView: PlayerPlatformView {
     public override func layout() {
         super.layout()
         playerLayer.frame = bounds
-        layoutMetalLayer()
     }
     #endif
 
@@ -96,7 +79,7 @@ public final class PlayerLayerView: PlayerPlatformView {
 @MainActor
 final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureControllerDelegate {
     let view = PlayerLayerView()
-    /// 创建时的内核；内核替换后需要新建（AVPlayerLayer ↔ CAMetalLayer）。
+    /// 创建时的内核；内核替换后需要新建（AVPlayerLayer ↔ KSPlayer 视图）。
     let engineID: ObjectIdentifier
     private var pip: AVPictureInPictureController?
     private var lastToggleRequest: Int
@@ -121,14 +104,26 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
             pip?.canStartPictureInPictureAutomaticallyFromInline = controller.preferences.autoPictureInPicture
             #endif
             self.pip = pip
-        case .metalLayer(let layer):
-            view.host(layer)
+        case .view(let content):
+            view.host(content)
         }
+    }
+
+    /// KSPlayer 的画中画控制器在起播后才创建（内容源为其 `AVSampleBufferDisplayLayer`），首次请求时再接管。
+    private func adoptEnginePictureInPicture() {
+        guard pip == nil, let engine = controller?.engine as? KSPlayerEngine,
+              let controller = engine.pictureInPictureController else { return }
+        controller.delegate = self
+        #if os(iOS)
+        controller.canStartPictureInPictureAutomaticallyFromInline = self.controller?.preferences.autoPictureInPicture ?? false
+        #endif
+        pip = controller
     }
 
     func handleToggle(_ request: Int) {
         guard request != lastToggleRequest else { return }
         lastToggleRequest = request
+        adoptEnginePictureInPicture()
         guard let pip else { return }
         pip.isPictureInPictureActive ? pip.stopPictureInPicture() : pip.startPictureInPicture()
     }
@@ -189,7 +184,7 @@ public struct PlayerSurface: PlayerPlatformViewRepresentable {
         case .fill: .resizeAspectFill
         case .stretch: .resize
         }
-        (controller.engine as? MPVEngine)?.setGravity(fill: controller.videoGravity == .fill, stretch: controller.videoGravity == .stretch)
+        (controller.engine as? KSPlayerEngine)?.setGravity(controller.videoGravity)
         controller.surfaceHost().handleToggle(controller.pictureInPictureToggleRequest)
     }
 

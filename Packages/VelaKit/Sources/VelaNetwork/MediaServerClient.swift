@@ -81,33 +81,6 @@ public struct MediaServerClient: Sendable {
         return (items, result.totalRecordCount ?? items.count)
     }
 
-    /// 全库计数（首页底部统计）。
-    public struct ItemCounts: Decodable, Sendable {
-        public var movieCount: Int
-        public var seriesCount: Int
-        public var episodeCount: Int
-
-        enum CodingKeys: String, CodingKey {
-            case movieCount = "MovieCount", seriesCount = "SeriesCount", episodeCount = "EpisodeCount"
-        }
-
-        public init(from decoder: any Decoder) throws {
-            let c = try decoder.container(keyedBy: CodingKeys.self)
-            movieCount = try c.decodeIfPresent(Int.self, forKey: .movieCount) ?? 0
-            seriesCount = try c.decodeIfPresent(Int.self, forKey: .seriesCount) ?? 0
-            episodeCount = try c.decodeIfPresent(Int.self, forKey: .episodeCount) ?? 0
-        }
-    }
-
-    public func itemCounts() async throws -> ItemCounts {
-        try await http.decode(
-            ItemCounts.self,
-            APIRequest("/Items/Counts", query: [.init(name: "UserId", value: userID)]),
-            baseURL: baseURL,
-            headers: headers
-        )
-    }
-
     /// 用户头像；用户未设置头像时服务器返回 404，界面显示占位。
     public var userImageURL: URL? {
         try? HTTPClient.makeURL(baseURL: baseURL, path: "/Users/\(userID)/Images/Primary", query: [
@@ -198,7 +171,8 @@ public struct MediaServerClient: Sendable {
         startTicks: Int64 = 0,
         audioStreamIndex: Int? = nil,
         subtitleStreamIndex: Int? = nil,
-        capabilities: PlaybackCapabilities
+        capabilities: PlaybackCapabilities,
+        profile: DeviceProfile.Kind = .avFoundation
     ) async throws -> PlaybackInfoResponse {
         let body = PlaybackInfoBody(
             userID: userID,
@@ -207,7 +181,7 @@ public struct MediaServerClient: Sendable {
             mediaSourceID: mediaSourceID,
             audioStreamIndex: audioStreamIndex,
             subtitleStreamIndex: subtitleStreamIndex,
-            deviceProfile: .avFoundation(capabilities)
+            deviceProfile: .make(profile, capabilities)
         )
         return try await http.decode(
             PlaybackInfoResponse.self,
@@ -327,16 +301,40 @@ public struct MediaServerClient: Sendable {
         return try absoluteURL(forServerRelative: "/Videos/\(itemID)/\(mediaSourceID)/Subtitles/\(streamIndex)/Stream.\(format)")
     }
 
-    public func subtitleWebVTT(itemID: String, mediaSourceID: String, streamIndex: Int) async throws -> String {
+    /// 文本字幕原文。SRT / WebVTT 直接取原始格式，其余文本格式（ASS 等）请服务器转换为 WebVTT；两者都由 `WebVTTParser` 解析。
+    ///
+    /// 路径与 Android 版一致（`/Subtitles/{index}/0/Stream.{格式}`，`0` 为起始 tick），SRT 不需要服务器转换格式。
+    /// 内嵌字幕要服务器读完整个视频文件才能提取：文件在网盘挂载盘上时可能长达数分钟，超时放宽到 120 秒；
+    /// KSPlayer 内核直接从视频流读取内嵌字幕，不走这里。
+    public func subtitleText(itemID: String, mediaSourceID: String, streamIndex: Int, codec: String?) async throws -> String {
+        let format = switch codec?.lowercased() {
+        case "subrip", "srt": "srt"
+        default: "vtt"
+        }
         let (data, _) = try await http.data(
-            APIRequest("/Videos/\(itemID)/\(mediaSourceID)/Subtitles/\(streamIndex)/Stream.vtt", timeout: 30),
+            APIRequest("/Videos/\(itemID)/\(mediaSourceID)/Subtitles/\(streamIndex)/0/Stream.\(format)", timeout: 120),
             baseURL: baseURL,
             headers: headers
         )
-        guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
+        guard let text = Self.decodeSubtitleText(data) else {
             throw APIError.decoding("字幕不是文本")
         }
         return text
+    }
+
+    /// 字幕文本解码：服务器转换时通常输出 UTF-8，但部分服务器会原样透传字幕文件的编码。
+    /// 中文 SRT 常见 GBK / GB18030 或 Big5，按 Latin-1 解码会变成乱码，因此依次尝试，最后才退回 Latin-1。
+    public static func decodeSubtitleText(_ data: Data) -> String? {
+        if data.starts(with: [0xFF, 0xFE]) || data.starts(with: [0xFE, 0xFF]) {
+            return String(data: data, encoding: .utf16)
+        }
+        if let text = String(data: data, encoding: .utf8) { return text }
+        let candidates: [CFStringEncodings] = [.GB_18030_2000, .big5_HKSCS_1999, .big5]
+        for candidate in candidates {
+            let encoding = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(candidate.rawValue)))
+            if let text = String(data: data, encoding: encoding) { return text }
+        }
+        return String(data: data, encoding: .isoLatin1)
     }
 
     /// 剧集的全部单集（按播出顺序）。用于确定「下一集」；只请求必要字段以减小长篇番剧的响应体。

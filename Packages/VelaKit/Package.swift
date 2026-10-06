@@ -15,15 +15,15 @@ let package = Package(
         .library(name: "VelaFeatures", targets: ["VelaFeatures"])
     ],
     dependencies: [
-        // 第二播放内核（libmpv + FFmpeg，MPVKit 1.0.0 LGPL）。与本项目 GPLv3 兼容。
-        // 本地镜像：二进制由 scripts/fetch-mpvkit.sh 下载到 Packages/MPVKitLocal/Frameworks。
-        .package(path: "../MPVKitLocal")
+        // 第二播放内核 KSPlayer（FFmpeg + VideoToolbox + Metal，GPL-3.0），与本项目 GPLv3 兼容。
+        // 本地镜像：由 scripts/fetch-ksplayer.sh 拉取到 Packages/KSPlayer 与 Packages/FFmpegKit。
+        .package(path: "../KSPlayer")
     ],
     targets: [
         .target(name: "VelaCore"),
         .target(name: "VelaNetwork", dependencies: ["VelaCore"]),
         .target(name: "VelaData", dependencies: ["VelaCore", "VelaNetwork"]),
-        .target(name: "VelaPlayer", dependencies: ["VelaCore", .product(name: "MPVKit", package: "MPVKitLocal")]),
+        .target(name: "VelaPlayer", dependencies: ["VelaCore", .product(name: "KSPlayer", package: "KSPlayer")]),
         .target(name: "VelaDesignSystem", dependencies: ["VelaCore"]),
         .target(
             name: "VelaFeatures",
@@ -31,7 +31,7 @@ let package = Package(
         ),
         .testTarget(name: "VelaCoreTests", dependencies: ["VelaCore"]),
         .testTarget(name: "VelaNetworkTests", dependencies: ["VelaNetwork"]),
-        .testTarget(name: "VelaPlayerTests", dependencies: ["VelaPlayer"])
+        .testTarget(name: "VelaPlayerTests", dependencies: ["VelaPlayer"], resources: [.copy("Resources")])
     ],
     swiftLanguageModes: [.v6]
 )

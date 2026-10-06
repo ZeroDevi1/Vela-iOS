@@ -97,3 +97,58 @@ public struct SubtitleTrack: Sendable {
         return active.isEmpty ? nil : active.joined(separator: "\n")
     }
 }
+
+/// 本地字幕文件解析（「更多 → 添加本地字幕」）：按扩展名选择解析器。
+/// SRT 与 WebVTT 结构相同（时间行含 `-->`，SRT 用逗号小数），都交给 `WebVTTParser`。
+public enum SubtitleFileParser {
+    public static func parse(_ text: String, fileExtension: String) -> [SubtitleCue] {
+        switch fileExtension.lowercased() {
+        case "ass", "ssa": ASSParser.parse(text)
+        default: WebVTTParser.parse(text)
+        }
+    }
+}
+
+/// 精简的 ASS / SSA 解析器：只取 `[Events]` 中 Dialogue 的时间与纯文本，样式与特效全部丢弃。
+public enum ASSParser {
+    public static func parse(_ text: String) -> [SubtitleCue] {
+        // 缺少 Format 行时按 ASS v4+ 默认字段顺序。
+        var format = ["layer", "start", "end", "style", "name", "marginl", "marginr", "marginv", "effect", "text"]
+        var inEvents = false
+        var cues: [SubtitleCue] = []
+        for rawLine in text.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") {
+                inEvents = line.lowercased() == "[events]"
+                continue
+            }
+            guard inEvents, let colon = line.firstIndex(of: ":") else { continue }
+            let key = line[..<colon].lowercased()
+            let body = line[line.index(after: colon)...]
+            if key == "format" {
+                format = body.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+                continue
+            }
+            guard key == "dialogue",
+                  let startIndex = format.firstIndex(of: "start"),
+                  let endIndex = format.firstIndex(of: "end"),
+                  let textIndex = format.firstIndex(of: "text") else { continue }
+            // Text 是最后一个字段，其中可能含逗号，因此只切分前 count - 1 个。
+            let fields = body.split(separator: ",", maxSplits: format.count - 1, omittingEmptySubsequences: false).map(String.init)
+            guard fields.count == format.count,
+                  let start = WebVTTParser.timestamp(fields[startIndex]),
+                  let end = WebVTTParser.timestamp(fields[endIndex]),
+                  end > start else { continue }
+            let content = fields[textIndex]
+                .replacingOccurrences(of: "\\n", with: "\n")
+                .replacingOccurrences(of: "\\h", with: " ")
+            let lines = WebVTTParser.stripMarkup(content)
+                .components(separatedBy: "\n")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            guard !lines.isEmpty else { continue }
+            cues.append(SubtitleCue(start: start, end: end, text: lines.joined(separator: "\n")))
+        }
+        return cues.sorted { $0.start < $1.start }
+    }
+}

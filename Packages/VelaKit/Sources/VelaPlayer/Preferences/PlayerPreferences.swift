@@ -21,8 +21,6 @@ public final class PlayerPreferences {
     public static let decodeThreadOptions: [Int] = [0, 1, 2, 4, 6, 8]
     /// 控制栏自动隐藏秒数；0 为不自动隐藏。
     public static let autoHideOptions: [Int] = [3, 5, 8, 10, 0]
-    /// MPV 磁盘预缓存大小（MB）；0 为关闭（只用内存缓存）。
-    public static let diskCacheOptions: [Int] = [0, 250, 500, 1024, 2048]
     /// 预加载下一集的进度阈值（%）；0 为禁用。
     public static let preloadOptions: [Int] = [0, 50, 80, 90]
     /// 音轨 / 字幕首选语言（ISO 639-2，与服务器 `Language` 字段一致）；空串为服务器默认。
@@ -33,16 +31,13 @@ public final class PlayerPreferences {
 
     // MARK: - 内核与缓存
 
-    /// 播放内核：自动（系统优先）/ 系统 / MPV。
+    /// 播放内核：自动（系统优先）/ 系统 / KSPlayer。
     public var engineMode: PlaybackEngineMode { didSet { save(engineMode.rawValue, "player.engineMode") } }
-    /// 系统内核前向缓冲（秒），0 为自动。
+    /// 前向缓冲（秒），0 为自动。系统内核用作 `preferredForwardBufferDuration`，KSPlayer 用作最大缓冲时长。
     public var forwardBufferSeconds: Int { didSet { save(forwardBufferSeconds, "player.forwardBufferSeconds") } }
-    /// MPV 首选解码：硬解（VideoToolbox）/ 软解（FFmpeg CPU）。系统内核始终硬解。
+    /// KSPlayer 首选解码：硬解（VideoToolbox）/ 软解（FFmpeg CPU）。系统内核始终硬解。
     public var decodeMode: DecodeMode { didSet { save(decodeMode.rawValue, "player.decodeMode") } }
     public var softwareDecodeThreads: Int { didSet { save(softwareDecodeThreads, "player.softwareDecodeThreads") } }
-    /// MPV 磁盘预缓存（MB），按当前网络是否为蜂窝 / 低数据模式选择；0 关闭。
-    public var diskCacheWiFiMB: Int { didSet { save(diskCacheWiFiMB, "player.diskCacheWiFiMB") } }
-    public var diskCacheCellularMB: Int { didSet { save(diskCacheCellularMB, "player.diskCacheCellularMB") } }
 
     // MARK: - 视频截图
 
@@ -66,6 +61,13 @@ public final class PlayerPreferences {
 
     public var rememberSubtitle: Bool { didSet { save(rememberSubtitle, "player.rememberSubtitle") } }
     public var preferredSubtitleLanguage: String { didSet { save(preferredSubtitleLanguage, "player.preferredSubtitleLanguage") } }
+    /// 「字幕搜索记录」：最近在线搜索字幕用过的语言（ISO 639-2，最新在前，最多 5 个）。
+    public var recentSubtitleSearchLanguages: [String] { didSet { save(recentSubtitleSearchLanguages, "player.recentSubtitleSearchLanguages") } }
+
+    /// 记一次字幕搜索语言：移到最前并去重。
+    public func rememberSubtitleSearch(language: String) {
+        recentSubtitleSearchLanguages = Array(([language] + recentSubtitleSearchLanguages.filter { $0 != language }).prefix(5))
+    }
     /// 字幕字号倍率，0.6...2.0。
     public var subtitleScale: Double { didSet { save(subtitleScale, "player.subtitle.scale") } }
     /// 字幕距画面底部的额外距离（pt），0...200。
@@ -110,8 +112,6 @@ public final class PlayerPreferences {
     public var orientationOnEnter: PlayerOrientation { didSet { save(orientationOnEnter.rawValue, "player.orientationOnEnter") } }
     public var orientationOnSwitch: PlayerOrientation { didSet { save(orientationOnSwitch.rawValue, "player.orientationOnSwitch") } }
     public var landscapeSide: LandscapeSide { didSet { save(landscapeSide.rawValue, "player.landscapeSide") } }
-    /// 起播时短暂显示标题。
-    public var hintTitleOnStart: Bool { didSet { save(hintTitleOnStart, "player.hint.title") } }
     /// 自动跳过片头前先提示几秒（期间可取消）；关闭则直接跳过。
     public var hintBeforeSkip: Bool { didSet { save(hintBeforeSkip, "player.hint.skip") } }
 
@@ -149,12 +149,11 @@ public final class PlayerPreferences {
             defaults.data(forKey: key).flatMap { try? JSONDecoder().decode(T.self, from: $0) } ?? fallback
         }
 
-        engineMode = raw("player.engineMode", .auto)
+        // 1.x 的第二内核为 MPV，已由 KSPlayer 取代：沿用用户「使用第二内核」的选择。
+        engineMode = defaults.string(forKey: "player.engineMode") == "mpv" ? .ksPlayer : raw("player.engineMode", .auto)
         forwardBufferSeconds = value("player.forwardBufferSeconds", 0)
         decodeMode = raw("player.decodeMode", .hardware)
         softwareDecodeThreads = value("player.softwareDecodeThreads", 0)
-        diskCacheWiFiMB = value("player.diskCacheWiFiMB", 1024)
-        diskCacheCellularMB = value("player.diskCacheCellularMB", 500)
 
         screenshotFormat = raw("player.screenshotFormat", .jpg)
         screenshotQuality = value("player.screenshotQuality", 0.8)
@@ -167,6 +166,7 @@ public final class PlayerPreferences {
 
         rememberSubtitle = value("player.rememberSubtitle", true)
         preferredSubtitleLanguage = value("player.preferredSubtitleLanguage", "")
+        recentSubtitleSearchLanguages = value("player.recentSubtitleSearchLanguages", [String]())
         subtitleScale = value("player.subtitle.scale", 1)
         subtitleBottomOffset = value("player.subtitle.bottomOffset", 0)
 
@@ -199,7 +199,6 @@ public final class PlayerPreferences {
         orientationOnEnter = raw("player.orientationOnEnter", .unchanged)
         orientationOnSwitch = raw("player.orientationOnSwitch", .unchanged)
         landscapeSide = raw("player.landscapeSide", .auto)
-        hintTitleOnStart = value("player.hint.title", true)
         hintBeforeSkip = value("player.hint.skip", true)
 
         resumePlayback = value("player.resume", true)
@@ -353,7 +352,8 @@ public enum OSDTextSize: String, Codable, CaseIterable, Sendable {
 
 /// 控制栏中可隐藏的按钮。
 public struct PlayerButtons: Codable, Hashable, Sendable {
-    public var seek = false
+    /// 中央快退 / 快进；默认显示，与 Android 版布局一致。
+    public var seek = true
     public var switchMedia = true
     public var playPause = true
     public var zoom = true

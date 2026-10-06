@@ -3,8 +3,8 @@ import VelaCore
 
 /// 发给服务器的播放能力声明，服务器据此决定直放、转封装（remux）还是转码。
 ///
-/// 当前面向 AVPlayer：只声明 Apple 原生可解封装的容器；MKV 等交给服务器转封装为 HLS fMP4，
-/// 视频流原样复制，不损失 HDR / 杜比视界元数据。接入 MPV / KSPlayer 内核后，由内核提供各自的 profile。
+/// 面向 AVPlayer：只声明 Apple 原生可解封装的容器；MKV 等交给服务器转封装为 HLS fMP4，
+/// 视频流原样复制，不损失 HDR / 杜比视界元数据。KSPlayer 内核直接请求原文件，不依赖此声明。
 public struct DeviceProfile: Encodable, Sendable {
     struct DirectPlayProfile: Encodable, Sendable {
         var container: String
@@ -35,6 +35,25 @@ public struct DeviceProfile: Encodable, Sendable {
         }
     }
 
+    /// 编解码条件：不满足时服务器不直放 / 不复制视频流，并在转码时按条件缩放（如 `Width` ≤ 上限）。
+    struct CodecProfile: Encodable, Sendable {
+        struct Condition: Encodable, Sendable {
+            var condition: String
+            var property: String
+            var value: String
+            var isRequired: Bool
+
+            enum CodingKeys: String, CodingKey {
+                case condition = "Condition", property = "Property", value = "Value", isRequired = "IsRequired"
+            }
+        }
+
+        var type: String
+        var conditions: [Condition]
+
+        enum CodingKeys: String, CodingKey { case type = "Type", conditions = "Conditions" }
+    }
+
     struct SubtitleProfile: Encodable, Sendable {
         var format: String
         var method: String
@@ -48,6 +67,7 @@ public struct DeviceProfile: Encodable, Sendable {
     var directPlayProfiles: [DirectPlayProfile]
     var transcodingProfiles: [TranscodingProfile]
     var subtitleProfiles: [SubtitleProfile]
+    var codecProfiles: [CodecProfile] = []
 
     enum CodingKeys: String, CodingKey {
         case name = "Name"
@@ -68,8 +88,44 @@ public struct DeviceProfile: Encodable, Sendable {
         try c.encode(directPlayProfiles, forKey: .directPlayProfiles)
         try c.encode(transcodingProfiles, forKey: .transcodingProfiles)
         try c.encode(subtitleProfiles, forKey: .subtitleProfiles)
-        try c.encode([String](), forKey: .codecProfiles)
+        try c.encode(codecProfiles, forKey: .codecProfiles)
         try c.encode([String](), forKey: .containerProfiles)
+    }
+
+    /// 发给服务器的能力声明对应哪个内核。
+    public enum Kind: Sendable {
+        /// 系统内核：只直放 Apple 原生容器，其余由服务器转封装为 HLS。
+        case avFoundation
+        /// KSPlayer：FFmpeg 解封装，MKV 等直接播放原文件，内嵌字幕由播放器从视频流读取。
+        case ksPlayer
+    }
+
+    public static func make(_ kind: Kind, _ caps: PlaybackCapabilities) -> DeviceProfile {
+        switch kind {
+        case .avFoundation: avFoundation(caps)
+        case .ksPlayer: ksPlayer(caps)
+        }
+    }
+
+    /// KSPlayer 能力，容器与编码列表与 Android 版（MPV / ExoPlayer）一致：常见容器都直放原文件，
+    /// 文本字幕声明 Embed（播放器边播边从视频流读取，不让服务器读完整个文件去提取）与 External（外挂字幕文件）。
+    /// 图形字幕暂只声明 Encode（由服务器烧录）：Vela 的字幕层还不绘制 KSPlayer 解出的图形字幕。
+    public static func ksPlayer(_ caps: PlaybackCapabilities) -> DeviceProfile {
+        var profile = avFoundation(caps)
+        profile.name = "Vela KSPlayer"
+        profile.directPlayProfiles = [
+            DirectPlayProfile(
+                container: "mp4,m4v,mov,mkv,webm,ts,m2ts,avi",
+                type: "Video",
+                videoCodec: "h264,hevc,vp9,av1,mpeg4,mpeg2video,vp8",
+                audioCodec: "aac,mp3,ac3,eac3,dts,flac,opus,vorbis,truehd,pcm,alac"
+            )
+        ]
+        let textFormats = ["srt", "subrip", "ass", "ssa", "vtt", "webvtt", "mov_text", "ttml", "sub", "smi", "microdvd"]
+        profile.subtitleProfiles = textFormats.flatMap {
+            [SubtitleProfile(format: $0, method: "Embed"), SubtitleProfile(format: $0, method: "External")]
+        } + ["pgs", "pgssub", "dvdsub", "vobsub"].map { SubtitleProfile(format: $0, method: "Encode") }
+        return profile
     }
 
     /// AVPlayer 原生能力。
@@ -105,7 +161,12 @@ public struct DeviceProfile: Encodable, Sendable {
             // 图形字幕（PGS / VobSub）不声明，用户选择时服务器会烧录进画面。
             subtitleProfiles: ["vtt", "webvtt", "srt", "subrip", "ass", "ssa", "mov_text", "ttml", "sub"].map {
                 SubtitleProfile(format: $0, method: "External")
-            }
+            },
+            codecProfiles: caps.maxVideoWidth.map { width in
+                [CodecProfile(type: "Video", conditions: [
+                    CodecProfile.Condition(condition: "LessThanEqual", property: "Width", value: String(width), isRequired: true)
+                ])]
+            } ?? []
         )
     }
 }
