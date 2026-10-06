@@ -1,0 +1,37 @@
+Vela：恢复播放时重置 KSPlayer 时钟参照时刻。
+
+KSClock.getTime() 用「上次更新的时间 + 之后经过的真实时间」外推。暂停期间时钟不更新，恢复后在音频输出第一帧前，
+时钟会超前整段暂停时长，视频同步因此连续丢帧 / 冲刷视频队列，表现为恢复播放后有声音但画面卡住数秒。
+
+diff --git a/Sources/KSPlayer/MEPlayer/KSMEPlayer.swift b/Sources/KSPlayer/MEPlayer/KSMEPlayer.swift
+index 3850faa..9f01566 100644
+--- a/Sources/KSPlayer/MEPlayer/KSMEPlayer.swift
++++ b/Sources/KSPlayer/MEPlayer/KSMEPlayer.swift
+@@ -158,6 +158,7 @@ private extension KSMEPlayer {
+                 self.audioOutput.pause()
+                 self.videoOutput?.pause()
+             } else {
++                self.playerItem.resetClockReference()
+                 self.audioOutput.play()
+                 self.videoOutput?.play()
+             }
+diff --git a/Sources/KSPlayer/MEPlayer/MEPlayerItem.swift b/Sources/KSPlayer/MEPlayer/MEPlayerItem.swift
+index 811139c..9216c05 100644
+--- a/Sources/KSPlayer/MEPlayer/MEPlayerItem.swift
++++ b/Sources/KSPlayer/MEPlayer/MEPlayerItem.swift
+@@ -837,6 +837,15 @@ extension MEPlayerItem: OutputRenderSourceDelegate {
+         isAudioStalled ? videoClock : audioClock
+     }
+ 
++    /// Vela: re-anchor both clocks to "now" when playback resumes. `KSClock.getTime()` extrapolates with the
++    /// wall time elapsed since the last update, so after a pause it jumps ahead by the whole pause duration
++    /// until the audio output renders again; the video sync then drops / flushes frames for seconds
++    /// (audio plays, picture frozen).
++    func resetClockReference() {
++        audioClock.time = audioClock.time
++        videoClock.time = videoClock.time
++    }
++
+     public func setVideo(time: CMTime, position: Int64) {
+ //        print("[video] video interval \(CACurrentMediaTime() - videoClock.lastMediaTime) video diff \(time.seconds - videoClock.time.seconds)")
+         videoClock.time = time

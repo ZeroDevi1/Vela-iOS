@@ -5,12 +5,13 @@ import VelaDesignSystem
 import VelaNetwork
 import VelaPlayer
 
-/// 播放器面板（横屏贴右、iPhone 竖屏贴底）。打开时隐藏控制层，点击面板外关闭。
+/// 播放器面板（横屏 / iPad / Mac 贴右下角，iPhone 竖屏贴底）。打开时隐藏控制层，点击面板外关闭。
 enum PlayerPanel: String, Identifiable {
     case info, audio, subtitle, episodes, chapters
     /// 点按底部标题块打开：海报、简介、本季剧集与演职人员（Android 的节目信息面板）。
     case episodeInfo
     case subtitleStyle, subtitleDelay
+    case quality
 
     var id: String { rawValue }
 
@@ -25,6 +26,7 @@ enum PlayerPanel: String, Identifiable {
         case .episodeInfo: nil
         case .subtitleStyle: "字幕缩放与位置"
         case .subtitleDelay: "字幕时间偏移"
+        case .quality: "串流画质"
         }
     }
 }
@@ -50,7 +52,8 @@ struct PlayerPanelHost: View {
 
     var body: some View {
         GeometryReader { proxy in
-            ZStack(alignment: isBottomSheet ? .bottom : .topTrailing) {
+            // 侧边面板贴右下角：打开它的音轨 / 字幕 / 剧集按钮都在底部，手指不必移到屏幕顶部。
+            ZStack(alignment: isBottomSheet ? .bottom : .bottomTrailing) {
                 // 面板外区域：点击关闭，同时挡住下面的手势层。
                 Color.black.opacity(0.25)
                     .contentShape(.rect)
@@ -93,7 +96,7 @@ struct PlayerPanelHost: View {
         let width = isBottomSheet ? min(600, size.width - 24) : min(400, size.width - 24)
         let maxHeight = isBottomSheet ? size.height * 0.6 : size.height - 24
         switch panel {
-        case .audio, .subtitle, .subtitleStyle, .subtitleDelay:
+        case .audio, .subtitle, .subtitleStyle, .subtitleDelay, .quality:
             // 先限制最大高度，再按理想高度（内容高度）收缩。
             card
                 .frame(width: width)
@@ -117,6 +120,7 @@ struct PlayerPanelHost: View {
         case .episodeInfo: EpisodeInfoPanel(session: session, onPicked: onClose)
         case .subtitleStyle: SubtitleStyleControls()
         case .subtitleDelay: SubtitleDelayControls(session: session)
+        case .quality: QualityPanel(session: session, onPicked: onClose)
         }
     }
 }
@@ -553,7 +557,7 @@ private struct PlaybackInfoPanel: View {
                             row("参数", Self.videoParameters(video))
                             row("解码器", engine.kind == .ksPlayer ? "FFmpeg + VideoToolbox" : "VideoToolbox")
                             row("分辨率", video.width.flatMap { w in video.height.map { "\(w)×\($0)" } })
-                            row("动态范围", video.videoRangeType)
+                            row("动态范围", PlayerSession.dynamicRangeLabel(for: video) ?? video.videoRangeType)
                         }
                     }
                     if let audio = source.audioStreams.first(where: { $0.index == session.selectedAudioIndex }) {
@@ -675,6 +679,49 @@ private struct PlaybackInfoPanel: View {
 
     static func trackSummary(_ option: PlayerSession.TrackOption) -> String {
         [option.label.title, option.label.detailLine].compactMap { $0 }.joined(separator: "\n")
+    }
+}
+
+// MARK: - 串流画质
+
+/// 视频码率上限：选择低于片源的码率时服务器转码（会重新编码视频，画质与码率相应下降）。
+private struct QualityPanel: View {
+    let session: PlayerSession
+    let onPicked: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: VelaTheme.Spacing.s) {
+            Text("选择视频码率上限，高于上限的片源由服务器转码").font(.caption).foregroundStyle(.white.opacity(0.7))
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(PlayerSession.qualityOptions) { option in
+                        let isSelected = option.bitrate == session.maxBitrateOverride
+                        Button {
+                            session.setMaxBitrate(option.bitrate)
+                            onPicked()
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(option.label).font(.body.weight(isSelected ? .semibold : .regular))
+                                    if option.bitrate == nil {
+                                        Text("不限制码率").font(.caption).foregroundStyle(.white.opacity(0.6))
+                                    }
+                                }
+                                Spacer()
+                                if isSelected { Image(systemName: "checkmark").fontWeight(.semibold) }
+                            }
+                            .padding(.vertical, 10)
+                            .padding(.horizontal, 12)
+                            .background(isSelected ? .white.opacity(0.14) : .clear, in: .rect(cornerRadius: 12))
+                            .contentShape(.rect)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(session.isSwitchingStream)
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+        }
     }
 }
 

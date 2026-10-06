@@ -1,0 +1,37 @@
+Vela：送帧到显示图层前的变换钩子（KSOptions.displayFrameTransform）。
+
+画中画窗口只显示 AVSampleBufferDisplayLayer 的内容，播放页叠加的字幕不会进入小窗。Vela 在画中画期间通过该钩子把字幕画进视频帧。
+变换结果须保持原帧的像素格式与尺寸：格式变化会重建显示图层，导致画中画中断。
+
+diff --git a/Sources/KSPlayer/AVPlayer/KSOptions.swift b/Sources/KSPlayer/AVPlayer/KSOptions.swift
+index 9aab43e..d12deee 100644
+--- a/Sources/KSPlayer/AVPlayer/KSOptions.swift
++++ b/Sources/KSPlayer/AVPlayer/KSOptions.swift
+@@ -15,6 +15,11 @@ import OSLog
+ import UIKit
+ #endif
+ open class KSOptions {
++    /// Vela: transforms each frame right before it is enqueued to the display layer (e.g. burning subtitles into
++    /// Picture in Picture frames). Return nil to display the original frame. The result must keep the source's
++    /// pixel format and size: a format change recreates the display layer, which would interrupt PiP.
++    /// Called on the render (display link) thread.
++    public var displayFrameTransform: ((CVPixelBuffer) -> CVPixelBuffer?)?
+     /// 最低缓存视频时间
+     @Published
+     public var preferredForwardBufferDuration = KSOptions.preferredForwardBufferDuration
+diff --git a/Sources/KSPlayer/MEPlayer/MetalPlayView.swift b/Sources/KSPlayer/MEPlayer/MetalPlayView.swift
+index 242c238..4af40c0 100644
+--- a/Sources/KSPlayer/MEPlayer/MetalPlayView.swift
++++ b/Sources/KSPlayer/MEPlayer/MetalPlayView.swift
+@@ -191,8 +191,9 @@ extension MetalPlayView {
+                 if let dar = options.customizeDar(sar: sar, par: par) {
+                     pixelBuffer.aspectRatio = CGSize(width: dar.width, height: dar.height * par.width / par.height)
+                 }
+-                checkFormatDescription(pixelBuffer: pixelBuffer)
+-                set(pixelBuffer: pixelBuffer, time: cmtime)
++                let displayed = options.displayFrameTransform?(pixelBuffer) ?? pixelBuffer
++                checkFormatDescription(pixelBuffer: displayed)
++                set(pixelBuffer: displayed, time: cmtime)
+             } else {
+                 if !displayView.isHidden {
+                     displayView.isHidden = true

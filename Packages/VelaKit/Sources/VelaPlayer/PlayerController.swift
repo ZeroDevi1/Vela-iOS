@@ -151,6 +151,7 @@ public final class PlayerController {
     func surfaceHost() -> PlayerSurfaceHost {
         if let host, host.engineID == ObjectIdentifier(engine) { return host }
         host?.stopPictureInPicture()
+        host?.invalidate()
         let host = PlayerSurfaceHost(controller: self)
         self.host = host
         return host
@@ -167,6 +168,7 @@ public final class PlayerController {
 
     public func shutdown() {
         host?.stopPictureInPicture()
+        host?.invalidate()
         host = nil
         onPictureInPictureStart = nil
         onPictureInPictureRestore = nil
@@ -397,6 +399,17 @@ public final class PlayerController {
     /// 显示一次性提示（例如截图完成）。
     public func flash(_ message: String, symbol: String) {
         flashHUD(.message(message, symbol: symbol), delay: .seconds(1.2))
+    }
+
+    /// 当前应显示的字幕文字：WebVTT / 本地字幕优先，其次 KSPlayer 读取的内嵌字幕。画中画据此把字幕画进画面。
+    public func currentSubtitleText() -> String? {
+        let time = engine.preciseCurrentTime
+        return subtitleTrack?.text(at: time) ?? (engine as? KSPlayerEngine)?.embeddedSubtitleText(at: time)
+    }
+
+    /// 是否开着字幕（决定画中画是否需要带字幕的内容源）。
+    public var hasActiveSubtitle: Bool {
+        subtitleTrack != nil || (engine as? KSPlayerEngine)?.hasEmbeddedSubtitle == true
     }
 
     public func requestPictureInPictureToggle() {

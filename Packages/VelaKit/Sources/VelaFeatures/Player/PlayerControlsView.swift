@@ -450,9 +450,14 @@ struct PlayerControlsView: View {
         .accessibilityHint("查看单集信息")
     }
 
-    /// 剧集 / 音轨 / 字幕。
+    /// 串流画质 / 剧集 / 音轨 / 字幕（与 Android 版顺序一致）。
     private var bottomActions: some View {
         HStack(spacing: 12) {
+            // 串流画质只对服务器条目有意义（由服务器按码率上限转码）。
+            if session.item != nil {
+                circleButton(session.maxBitrateOverride == nil ? "sparkles.tv" : "sparkles.tv.fill", label: "串流画质", size: 44) { open(.quality) }
+                    .disabled(session.isSwitchingStream)
+            }
             if !session.seasonEpisodes.isEmpty {
                 circleButton("list.bullet", label: "剧集列表", size: 44) { open(.episodes) }
             }

@@ -53,13 +53,15 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine {
     /// 选中的内嵌文本字幕轨（KSPlayer 边播边从视频流解码，不需要服务器提取）；nil 为未开启。
     public private(set) var hasEmbeddedSubtitle = false
     @ObservationIgnored private var embeddedSubtitle: (any SubtitleInfo)?
-    /// 正在显示的内嵌字幕条目。KSPlayer 的 `search(for:)` 会把命中的条目从解码队列中取走（它自带的字幕界面也是
-    /// 取出后自行保留到结束时间），所以这里必须保留，否则每条字幕只在第一次查询时出现一帧。
+    /// 本次播放已读到的内嵌字幕条目（按开始时间排序）。KSPlayer 的 `search(for:)` 会把命中的条目从解码队列中取走
+    /// （它自带的字幕界面也是取出后自行保留），所以这里必须保留：否则每条字幕只在第一次查询时出现一帧。
+    /// 全部保留而不只是当前条目：往回拖动时已播放过的字幕可以立即显示，不必等解码器重新读到。
     @ObservationIgnored private var activeSubtitleParts: [SubtitlePart] = []
     /// 起播前选择的字幕序号：轨道在 `readyToPlay` 后才可用，届时再应用。
     @ObservationIgnored private var pendingSubtitleOrdinal: Int?
     /// 用户选择的内嵌字幕序号；重新加载（切换码流）后自动重新选中。
     @ObservationIgnored private var selectedSubtitleOrdinal: Int?
+    @ObservationIgnored private var pictureInPictureBurner: SubtitleBurner?
 
     public var surface: PlaybackSurface { .view(containerView) }
 
@@ -110,6 +112,7 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine {
         // 字幕由 Vela 统一渲染（服务器 WebVTT），不让内核解码内嵌字幕。
         options.autoSelectEmbedSubtitle = false
         options.registerRemoteControll = false
+        options.displayFrameTransform = Self.frameTransform(pictureInPictureBurner)
         if source.forwardBufferDuration > 0 {
             options.maxBufferDuration = max(source.forwardBufferDuration, options.preferredForwardBufferDuration)
         }
@@ -212,12 +215,12 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine {
     /// 当前时间应显示的内嵌字幕文字；没有字幕或此刻无字幕时为 nil。图形字幕（PGS）不在此显示。
     public func embeddedSubtitleText(at time: TimeInterval) -> String? {
         guard let embeddedSubtitle else { return nil }
-        for part in embeddedSubtitle.search(for: time) where !activeSubtitleParts.contains(where: { $0 == part }) {
-            activeSubtitleParts.append(part)
+        let found = embeddedSubtitle.search(for: time).filter { part in !activeSubtitleParts.contains { $0 == part } }
+        if !found.isEmpty {
+            activeSubtitleParts.append(contentsOf: found)
+            activeSubtitleParts.sort { $0.start < $1.start }
         }
-        // 只保留覆盖当前时刻的条目：到结束时间后移除；向后拖动时，晚于当前时刻的条目也一并移除。
-        activeSubtitleParts.removeAll { !($0 == time) }
-        let text = activeSubtitleParts.sorted { $0.start < $1.start }
+        let text = activeSubtitleParts.filter { $0 == time }
             .compactMap { $0.text?.string }
             .joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -226,6 +229,18 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine {
 
     private func embeddedSubtitleTracks(_ player: KSMEPlayer) -> [any MediaPlayerTrack] {
         player.tracks(mediaType: .subtitle).filter { !$0.description.lowercased().contains("eia_608") }
+    }
+
+    /// 画中画字幕：非 nil 时每帧送入显示图层前叠加字幕（保持原帧格式，见 `SubtitleBurner.burnPreservingFormat`）。
+    /// 重新加载（换码流）后沿用。
+    func setPictureInPictureSubtitles(_ burner: SubtitleBurner?) {
+        pictureInPictureBurner = burner
+        options?.displayFrameTransform = Self.frameTransform(burner)
+    }
+
+    private static func frameTransform(_ burner: SubtitleBurner?) -> ((CVPixelBuffer) -> CVPixelBuffer?)? {
+        guard let burner else { return nil }
+        return { burner.burnPreservingFormat($0) }
     }
 
     public func captureFrame() async -> CGImage? {

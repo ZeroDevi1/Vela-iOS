@@ -80,6 +80,8 @@ final class PlayerSession {
     static let sleepTimerPresets = [15, 30, 45, 60, 90]
     /// 「服务器转码为 4K」：本机解码器打不开超高分辨率片源时，让服务器缩小到该宽度重新编码；只对当前条目生效。
     @ObservationIgnored private var maxVideoWidthOverride: (itemID: String, width: Int)?
+    /// 「串流画质」选择的码率上限（bit/s）；nil 为原画（不限制）。对本次播放的后续剧集也生效。
+    private(set) var maxBitrateOverride: Int?
     /// 拖动预览独立转码会话的 PlaySessionId；切换条目或关闭时需要通知服务器结束转码。
     @ObservationIgnored private var previewPlaySessionID: String?
     /// 预加载的下一集码流（「预加载下一集」）；切到该集时直接使用，未使用则在关闭时结束其转码会话。
@@ -299,16 +301,38 @@ final class PlayerSession {
         return client.logoURL(for: item, maxWidth: 480)
     }
 
-    /// 标题旁的动态范围标记（服务器 `VideoRangeType`）；SDR 或未知时为 nil。
+    /// 标题旁的动态范围标记；SDR 或未知时为 nil。
     var dynamicRangeLabel: String? {
-        guard let range = stream?.mediaSource.videoStream?.videoRangeType else { return nil }
-        if range.hasPrefix("DOVI") { return "Dolby Vision" }
-        switch range {
-        case "HDR10Plus": return "HDR10+"
-        case "HDR10": return "HDR10"
-        case "HLG": return "HLG"
-        default: return nil
+        guard let video = stream?.mediaSource.videoStream else { return nil }
+        return Self.dynamicRangeLabel(for: video)
+    }
+
+    /// 依次使用 Jellyfin 的 `VideoRangeType`、Emby 的 `ExtendedVideoType`，最后按传递函数推断
+    /// （与 Android 版按解码色彩信息判断的结果一致：PQ 为 HDR10，HLG 为 HLG）。
+    static func dynamicRangeLabel(for video: MediaStreamInfo) -> String? {
+        if let range = video.videoRangeType {
+            if range.hasPrefix("DOVI") { return "Dolby Vision" }
+            switch range {
+            case "HDR10Plus": return "HDR10+"
+            case "HDR10": return "HDR10"
+            case "HLG": return "HLG"
+            case "SDR": return nil
+            default: break
+            }
         }
+        switch video.extendedVideoType?.lowercased() {
+        case "dolbyvision": return "Dolby Vision"
+        case "hdr10plus": return "HDR10+"
+        case "hdr10": return "HDR10"
+        case "hyperloggamma": return "HLG"
+        default: break
+        }
+        switch video.colorTransfer?.lowercased() {
+        case "smpte2084": return "HDR10"
+        case "arib-std-b67": return "HLG"
+        default: break
+        }
+        return video.videoRange?.uppercased() == "HDR" ? "HDR" : nil
     }
 
     /// 当前是多段文件中的第几段（从 1 开始）与总段数；非多段为 nil。
@@ -509,6 +533,7 @@ final class PlayerSession {
             controller.subtitleTrack = nil
             ksEngine.selectEmbeddedSubtitle(ordinal: ordinal)
             reporter?.flush(position: controller.engine.currentTime, audioStreamIndex: selectedAudioIndex, subtitleStreamIndex: index)
+            preloadFullSubtitle(index: index, stream: stream, item: item, client: client, replacing: ksEngine)
             return
         }
         ksEngine?.selectEmbeddedSubtitle(ordinal: nil)
@@ -548,6 +573,31 @@ final class PlayerSession {
                 Log.player.error("字幕 #\(index) 加载失败：\(error.localizedDescription, privacy: .public)")
                 trackError = "字幕加载失败：\(error.localizedDescription)"
                 selectedSubtitleIndex = nil
+            }
+        }
+    }
+
+    /// 后台向服务器取完整字幕，取到后替换 KSPlayer 边播边解码的内嵌字幕。
+    ///
+    /// KSPlayer 只能解码拖动点之后的字幕包：拖到一句字幕的中间（如 10–20 秒的字幕拖到 15 秒）要等下一句才有字幕。
+    /// 完整字幕按时间查询，任意位置都能立即显示当前这句（与 Android mpv 的字幕预读效果一致）。
+    /// 服务器首次提取内嵌字幕要读完整个文件（网盘上较慢），之后有缓存；期间仍由 KSPlayer 显示，失败时保持现状。
+    private func preloadFullSubtitle(index: Int, stream: ResolvedStream, item: MediaItem, client: MediaServerClient, replacing ksEngine: KSPlayerEngine) {
+        let codec = stream.mediaSource.subtitleStreams.first { $0.index == index }?.codec
+        let mediaSourceID = stream.mediaSource.id
+        subtitleTask = Task {
+            do {
+                let vtt = try await client.subtitleText(itemID: item.id, mediaSourceID: mediaSourceID, streamIndex: index, codec: codec)
+                let cues = WebVTTParser.parse(vtt)
+                guard !Task.isCancelled, selectedSubtitleIndex == index, controller.engine === ksEngine, !cues.isEmpty else { return }
+                var track = SubtitleTrack(cues: cues)
+                track.delay = controller.subtitleTrack?.delay ?? 0
+                controller.subtitleTrack = track
+                ksEngine.selectEmbeddedSubtitle(ordinal: nil)
+                Log.player.info("字幕 #\(index) 已换用服务器完整字幕（\(cues.count) 条）")
+            } catch {
+                guard !Task.isCancelled else { return }
+                Log.player.info("字幕 #\(index) 完整字幕预取失败，继续使用 KSPlayer 内嵌字幕：\(error.localizedDescription, privacy: .public)")
             }
         }
     }
@@ -711,7 +761,31 @@ final class PlayerSession {
     private func capabilities(for item: MediaItem) -> PlaybackCapabilities {
         var caps = app?.effectivePlaybackCapabilities ?? PlaybackCapabilityProbe.current()
         if let override = maxVideoWidthOverride, override.itemID == item.id { caps.maxVideoWidth = override.width }
+        if let maxBitrateOverride { caps.maxStreamingBitrate = min(caps.maxStreamingBitrate, maxBitrateOverride) }
         return caps
+    }
+
+    // MARK: - 串流画质
+
+    /// 「串流画质」选项（与 Android 版一致）。片源码率高于上限时由服务器转码，低于上限时仍直接播放。
+    struct QualityOption: Identifiable, Hashable {
+        var label: String
+        /// bit/s；nil 为原画。
+        var bitrate: Int?
+        var id: String { label }
+    }
+
+    static let qualityOptions: [QualityOption] = [QualityOption(label: "原画", bitrate: nil)]
+        + [200, 160, 140, 120, 100, 80, 60].map { QualityOption(label: "4K（\($0) Mbps）", bitrate: $0 * 1_000_000) }
+        + [40, 20, 15, 10, 8].map { QualityOption(label: "1080P（\($0) Mbps）", bitrate: $0 * 1_000_000) }
+        + [4, 3, 2].map { QualityOption(label: "720P（\($0) Mbps）", bitrate: $0 * 1_000_000) }
+        + [QualityOption(label: "480P（1.5 Mbps）", bitrate: 1_500_000)]
+
+    /// 切换码率上限，从当前位置重新向服务器请求码流（保留版本、音轨与字幕）。
+    func setMaxBitrate(_ bitrate: Int?) {
+        guard bitrate != maxBitrateOverride else { return }
+        maxBitrateOverride = bitrate
+        restart(with: engineOverride ?? app?.playerPreferences.engineMode ?? .auto)
     }
 
     /// 换内核从当前位置重新起播，保留当前版本、音轨与字幕选择。

@@ -181,17 +181,20 @@ public struct PlayerScreen: View {
             }
         }
         let app = app
+        // 收起 / 恢复播放页都不做动画：系统此时正在播放小窗的缩放动画，两段动画叠在一起会明显掉帧。
+        var instant = Transaction()
+        instant.disablesAnimations = true
         controller.onPictureInPictureStart = { [weak session] in
             guard let session else { return }
             app.pictureInPictureSession = session
-            app.presentedPlayback = nil
+            withTransaction(instant) { app.presentedPlayback = nil }
         }
         controller.onPictureInPictureRestore = { [weak session] completion in
             guard let session else { return completion(false) }
-            app.presentedPlayback = session.request
-            // 等全屏覆盖呈现动画走完再通知系统，小窗会动画回到画面位置。
+            withTransaction(instant) { app.presentedPlayback = session.request }
+            // 等播放页挂上画面视图（下一帧布局完成）再通知系统，小窗会动画回到画面位置。
             Task {
-                try? await Task.sleep(for: .milliseconds(450))
+                try? await Task.sleep(for: .milliseconds(120))
                 completion(true)
             }
         }

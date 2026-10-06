@@ -145,6 +145,12 @@ public struct MediaStreamInfo: Decodable, Sendable, Hashable {
     public var height: Int?
     /// `SDR` / `HDR10` / `HDR10Plus` / `DOVI` / `DOVIWithHDR10` / `HLG` 等（Jellyfin 10.9+）。
     public var videoRangeType: String?
+    /// Emby / 旧版 Jellyfin：`SDR` / `HDR`，不区分具体格式。
+    public var videoRange: String?
+    /// Emby：`Hdr10` / `Hdr10Plus` / `DolbyVision` / `HyperLogGamma` 等（Jellyfin 无此字段）。
+    public var extendedVideoType: String?
+    /// 传递函数：`smpte2084`（PQ，HDR10 / 杜比视界）、`arib-std-b67`（HLG）、`bt709`（SDR）。
+    public var colorTransfer: String?
     public var channels: Int?
     public var isDefault: Bool?
     public var isExternal: Bool?
@@ -173,6 +179,9 @@ public struct MediaStreamInfo: Decodable, Sendable, Hashable {
         case width = "Width"
         case height = "Height"
         case videoRangeType = "VideoRangeType"
+        case videoRange = "VideoRange"
+        case extendedVideoType = "ExtendedVideoType"
+        case colorTransfer = "ColorTransfer"
         case channels = "Channels"
         case isDefault = "IsDefault"
         case isExternal = "IsExternal"

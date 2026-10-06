@@ -47,6 +47,16 @@ if grep -q 'github.com/kingslay/FFmpegKit.git' "$manifest"; then
   sed -i '' 's#\.package(url: "https://github.com/kingslay/FFmpegKit.git", from: "[^"]*")#.package(path: "../FFmpegKit")#' "$manifest"
 fi
 grep -q '.package(path: "../FFmpegKit")' "$manifest" || { echo "✗ 未能改写 $manifest 的 FFmpegKit 依赖" >&2; exit 1; }
+# Vela 对 KSPlayer 的修正（见各补丁文件头部说明），幂等：已应用的补丁跳过。
+for patch in scripts/ksplayer-patches/*.patch; do
+  [[ -f "$patch" ]] || continue
+  if git -C Packages/KSPlayer apply --reverse --check "../../$patch" 2>/dev/null; then
+    echo "✓ 已应用 $(basename "$patch")"
+  else
+    git -C Packages/KSPlayer apply "../../$patch"
+    echo "↑ 应用 $(basename "$patch")"
+  fi
+done
 # FFmpegKit 的 macOS 切片是浅层框架包（Info.plist 在根目录），macOS 应用嵌入时校验要求
 # Versions/A/Resources/Info.plist 的深层结构，否则构建报 "does not use shallow bundles"。转换为深层结构（幂等）。
 for fw in Packages/FFmpegKit/Sources/*.xcframework/macos-*/*.framework; do

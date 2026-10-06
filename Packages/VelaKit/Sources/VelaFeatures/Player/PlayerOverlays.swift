@@ -40,7 +40,7 @@ struct SubtitleOverlay: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: anchor == nil ? .bottom : .top)
                 .padding(.top, anchor ?? 0)
                 // 控制层出现时上移，避免与进度条重叠。
-                .padding(.bottom, anchor == nil ? (controller.controlsVisible ? PlayerLayout.controlsBottomInset : 28) + preferences.subtitleBottomOffset : 0)
+                .padding(.bottom, anchor == nil ? (controller.controlsVisible ? PlayerLayout.controlsBottomInset(landscape: proxy.size.width > proxy.size.height) : 28) + preferences.subtitleBottomOffset : 0)
             }
             .animation(.easeInOut(duration: 0.25), value: controller.controlsVisible)
             .allowsHitTesting(false)
@@ -96,7 +96,7 @@ struct SkipSegmentButton: View {
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             .padding(.trailing, 24)
-            .padding(.bottom, controller.controlsVisible ? PlayerLayout.controlsBottomInset : 40)
+            .modifier(ControlsAwareBottomPadding(controlsVisible: controller.controlsVisible, hidden: 40))
             .transition(.move(edge: .trailing).combined(with: .opacity))
             .animation(.snappy, value: controller.controlsVisible)
         }
@@ -145,7 +145,7 @@ struct UpNextCard: View {
             .frame(maxWidth: 420)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             .padding(.trailing, 20)
-            .padding(.bottom, controller.controlsVisible ? PlayerLayout.controlsBottomInset : 32)
+            .modifier(ControlsAwareBottomPadding(controlsVisible: controller.controlsVisible, hidden: 32))
             .transition(.move(edge: .trailing).combined(with: .opacity))
             .animation(.snappy, value: upNext.countdown)
         }
@@ -154,8 +154,26 @@ struct UpNextCard: View {
 
 /// 播放器浮层的共享尺寸。
 enum PlayerLayout {
-    /// 控制层显示时，底部浮层（字幕、跳过片头、下一集）需要让出的高度：次级按钮行 + 进度行 + 传输行。
-    static let controlsBottomInset: CGFloat = 180
+    /// 控制层显示时，底部浮层（字幕、跳过片头、下一集）需要让出的高度。
+    /// 竖屏：标题行 + 进度行 + 下方按钮行；横屏按钮并入进度行，只有标题行 + 进度行，
+    /// 若沿用竖屏的高度，横屏字幕会被抬到画面约 1/4 处。
+    static func controlsBottomInset(landscape: Bool) -> CGFloat {
+        landscape ? 112 : 180
+    }
+}
+
+/// 底部浮层的下边距：控制层显示时按横竖屏让出控件高度，隐藏时用 `hidden`。
+/// 浮层视图铺满播放器，按自身尺寸判断横竖屏。
+struct ControlsAwareBottomPadding: ViewModifier {
+    let controlsVisible: Bool
+    let hidden: CGFloat
+    @State private var isLandscape = false
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.bottom, controlsVisible ? PlayerLayout.controlsBottomInset(landscape: isLandscape) : hidden)
+            .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { isLandscape = $0 }
+    }
 }
 
 /// 截图完成提示：缩略图 + 分享（可存入照片 / 文件）。不自动收起：分享面板打开期间移除视图会连带关闭面板。
