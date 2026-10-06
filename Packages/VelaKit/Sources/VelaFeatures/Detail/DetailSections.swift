@@ -243,12 +243,17 @@ struct SeasonDetailView: View {
     @State private var episodes: LoadState<[MediaItem]> = .idle
     @State private var rangeIndex = 0
 
-    private static let pageSize = 50
+    /// 每段集数，与 Android 一致（1-20、21-40 …）。
+    private static let pageSize = 20
 
     var body: some View {
         List {
             switch episodes {
             case .loaded(let all):
+                Section {
+                    header(all)
+                }
+                .listRowBackground(Color.clear)
                 if all.count > Self.pageSize {
                     Section {
                         ScrollView(.horizontal) {
@@ -284,6 +289,26 @@ struct SeasonDetailView: View {
         .task { await load() }
     }
 
+    /// 季名、集数与播放按钮（播放第一个未看完的单集，全部看完时从第一集开始）。
+    private func header(_ all: [MediaItem]) -> some View {
+        VStack(alignment: .leading, spacing: VelaTheme.Spacing.s) {
+            Text(route.season.name).font(.title2.weight(.bold))
+            Text("\(all.count) 集").foregroundStyle(.secondary)
+            if let target = all.first(where: { !$0.isPlayed }) ?? all.first {
+                Button { playMedia(.item(target)) } label: {
+                    Label(target.episodeLabel.map { "播放 \($0)" } ?? "播放", systemImage: "play.fill")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                }
+                .buttonStyle(.glassProminent)
+                .tint(.white)
+                .foregroundStyle(.black)
+                .controlSize(.large)
+            }
+        }
+    }
+
     private func pageCount(_ items: [MediaItem]) -> Int { (items.count + Self.pageSize - 1) / Self.pageSize }
 
     private func pageRange(_ index: Int, total: Int) -> Range<Int> {
@@ -308,6 +333,7 @@ private struct EpisodeRow: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
         HStack(alignment: .top, spacing: VelaTheme.Spacing.m) {
             RemoteArtwork(url: app.imageURL(for: episode, kind: .primary, maxWidth: 400), placeholderSymbol: "play.rectangle")
                 .frame(width: 150, height: 84)
@@ -323,14 +349,16 @@ private struct EpisodeRow: View {
                     .font(.headline)
                     .lineLimit(2)
                 if let runtime = MediaFormat.runtime(episode.runTimeTicks) {
-                    Text(runtime).font(.caption).foregroundStyle(.secondary)
-                }
-                if let overview = episode.overview {
-                    Text(overview).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    Text(runtime).font(.subheadline).foregroundStyle(.secondary)
                 }
             }
         }
         .padding(.vertical, 4)
+        // 简介放在缩略图下方整行显示（与 Android 一致），比挤在右侧能显示更多内容。
+        if let overview = episode.overview, !overview.isEmpty {
+            Text(overview).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
+        }
+        }
     }
 }
 
@@ -369,7 +397,7 @@ struct PartsShelf: View {
     }
 }
 
-// MARK: - 预告片与花絮
+// MARK: - 预告片和花絮
 
 /// 本地预告片、远程预告片（交给系统打开）与花絮。全部为空时不显示。
 struct ExtrasShelf: View {
@@ -386,7 +414,7 @@ struct ExtrasShelf: View {
         let remote = trailers.isEmpty ? remoteTrailers : []
         if !trailers.isEmpty || !remote.isEmpty || !features.isEmpty {
             VStack(alignment: .leading, spacing: VelaTheme.Spacing.s) {
-                Text("预告片与花絮").font(.title3.weight(.semibold)).padding(.horizontal, VelaTheme.Spacing.l)
+                Text("预告片和花絮").font(.title3.weight(.semibold)).padding(.horizontal, VelaTheme.Spacing.l)
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: VelaTheme.Spacing.m) {
                         ForEach(trailers) { card($0, badge: "预告片") }
@@ -527,6 +555,28 @@ struct MediaInfoSection: View {
         VStack(alignment: .leading, spacing: VelaTheme.Spacing.m) {
             Text("媒体信息").font(.title3.weight(.semibold)).padding(.horizontal, VelaTheme.Spacing.l)
 
+            // 与 Android 一致：条目标题、文件路径、日期、容器 / 大小 / 时长、入库时间逐行左对齐，下面是各媒体流卡片。
+            VStack(alignment: .leading, spacing: 6) {
+                Text(Self.title(for: details.item)).font(.headline)
+                if let path = source.path ?? details.path {
+                    Text(path).textSelection(.enabled)
+                }
+                if let date = details.item.premiereDate {
+                    Text(date.formatted(.dateTime.year().month(.twoDigits).day(.twoDigits)))
+                }
+                Text([
+                    source.container?.uppercased(),
+                    MediaFormat.size(source.size),
+                    MediaFormat.runtime(source.runTimeTicks ?? details.item.runTimeTicks)
+                ].compactMap { $0 }.joined(separator: "  "))
+                if let added = details.dateCreated {
+                    Text("添加于：" + added.formatted(date: .numeric, time: .shortened))
+                }
+            }
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, VelaTheme.Spacing.l)
+
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: VelaTheme.Spacing.m) {
                     ForEach(source.mediaStreams, id: \.index) { stream in
@@ -536,29 +586,13 @@ struct MediaInfoSection: View {
                 .padding(.horizontal, VelaTheme.Spacing.l)
             }
             .scrollIndicators(.hidden)
-
-            VStack(spacing: 4) {
-                if !details.studios.isEmpty {
-                    Text(details.studios.joined(separator: " · "))
-                }
-                if let path = source.path ?? details.path {
-                    Text(path).textSelection(.enabled)
-                }
-                Text([
-                    source.container?.uppercased(),
-                    MediaFormat.size(source.size),
-                    MediaFormat.runtime(source.runTimeTicks ?? details.item.runTimeTicks),
-                    details.dateCreated.map { "添加于 " + $0.formatted(date: .numeric, time: .shortened) }
-                ].compactMap { $0 }.joined(separator: "  "))
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
-            .padding(VelaTheme.Spacing.m)
-            .glassEffect(.regular, in: .rect(cornerRadius: VelaTheme.Radius.panel))
-            .padding(.horizontal, VelaTheme.Spacing.l)
         }
+    }
+
+    /// 单集「S01E01 - 标题」，其余为名称。
+    static func title(for item: MediaItem) -> String {
+        guard let label = item.episodeLabel else { return item.name }
+        return "\(label) - \(item.name)"
     }
 }
 

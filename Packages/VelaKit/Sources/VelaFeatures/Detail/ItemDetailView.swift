@@ -3,7 +3,8 @@ import VelaCore
 import VelaDesignSystem
 import VelaNetwork
 
-/// 条目详情（电影 / 剧集 / 单集 / 季）。沉浸式版式：模糊剧照铺底，Logo 居中，下方按内容类型展示分区。
+/// 条目详情（电影 / 剧集 / 单集 / 季）。版式与 Android 版一致：模糊剧照铺底，Logo 与元数据左对齐，
+/// 已看 / 收藏 / 更多放在导航栏（iOS 原生位置），下方按内容类型展示分区。
 struct ItemDetailView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.playMedia) private var playMedia
@@ -26,13 +27,17 @@ struct ItemDetailView: View {
                 DetailHero(item: item, client: client, isCompact: isCompact, details: model.details, style: prefs.detailHeaderStyle)
 
                 VStack(alignment: .leading, spacing: VelaTheme.Spacing.l) {
-                    actions
+                    // 与 Android 相同的顺序：播放源选择 → 播放按钮 → 简介 → 导演。
                     if item.kind.isPlayable, !model.sourceOptions.isEmpty {
                         SourceSelectionCard(model: model)
                     }
+                    actions
                     overview
+                    directorsLine
                     if let error = model.actionError ?? model.loadError {
                         Label(error, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.secondary)
+                    } else if let notice = model.actionNotice {
+                        Label(notice, systemImage: "checkmark.circle").font(.footnote).foregroundStyle(.secondary)
                     }
                 }
                 .padding(.horizontal, VelaTheme.Spacing.l)
@@ -53,6 +58,7 @@ struct ItemDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar(removing: .title)
+        .toolbar { toolbarActions }
         .navigationTitle(item.name)
         .task {
             guard let client else { return }
@@ -67,8 +73,9 @@ struct ItemDetailView: View {
         item.kind == .series ? model.nextUp : (item.kind.isPlayable ? item : nil)
     }
 
+    /// 播放按钮（续播时按进度填充，与 Android 一致）；电影 / 单集右侧附下载按钮。
     private var actions: some View {
-        VStack(spacing: VelaTheme.Spacing.m) {
+        HStack(spacing: VelaTheme.Spacing.m) {
             if let target = playTarget {
                 Button {
                     if target.id == item.id {
@@ -77,64 +84,86 @@ struct ItemDetailView: View {
                         playMedia(.item(target))
                     }
                 } label: {
-                    Label(playTitle(for: target), systemImage: "play.fill")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
+                    ProgressPlayLabel(title: playTitle(for: target), progress: resumeFraction(target))
                 }
-                // 深色沉浸背景上使用白底黑字的主按钮（与 Apple TV / Infuse 一致），对比度最高。
-                .buttonStyle(.glassProminent)
-                .tint(.white)
-                .foregroundStyle(.black)
-                .controlSize(.large)
+                .buttonStyle(.plain)
                 .frame(maxWidth: isCompact ? .infinity : 420)
-
-                if let fraction = target.playedFraction, fraction > 0, fraction < 0.95 {
-                    ProgressView(value: fraction).tint(.white).frame(maxWidth: isCompact ? .infinity : 420)
-                }
             }
+            if item.kind == .movie || item.kind == .episode {
+                DownloadButton(item: model.playbackItem)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 
-            HStack(spacing: VelaTheme.Spacing.xl) {
+    /// 只有看到一半的条目显示进度；未开始或已看完（≥ 95%）按「播放」处理。
+    private func resumeFraction(_ target: MediaItem) -> Double? {
+        guard let fraction = target.playedFraction, fraction > 0, fraction < 0.95 else { return nil }
+        return fraction
+    }
+
+    /// 「继续播放 15:18」：续播时附带位置；剧集页的目标是下一集时附带集号。
+    private func playTitle(for target: MediaItem) -> String {
+        guard resumeFraction(target) != nil else {
+            if target.id != item.id, let label = target.episodeLabel { return "播放 \(label)" }
+            return "播放"
+        }
+        let position = target.playbackPositionTicks.map { PlayerTime.format(Ticks.seconds($0)) }
+        let label = target.id != item.id ? target.episodeLabel : nil
+        return (["继续播放", label, position].compactMap { $0 }).joined(separator: " ")
+    }
+
+    /// 导航栏：已看、收藏、更多（从头播放、刷新元数据）。
+    @ToolbarContentBuilder
+    private var toolbarActions: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button(item.isPlayed ? "标记为未看" : "标记为已看", systemImage: item.isPlayed ? "checkmark.circle.fill" : "checkmark.circle") {
+                guard let client else { return }
+                Task { await model.togglePlayed(client: client) }
+            }
+            Button(item.isFavorite ? "取消收藏" : "收藏", systemImage: item.isFavorite ? "heart.fill" : "heart") {
+                guard let client else { return }
+                Task { await model.toggleFavorite(client: client) }
+            }
+            Menu("更多", systemImage: "ellipsis") {
                 if item.kind.isPlayable, item.playedFraction != nil {
-                    circleButton("arrow.counterclockwise", label: "从头播放") {
+                    Button("从头开始播放", systemImage: "arrow.counterclockwise") {
                         var options = model.playbackOptions
                         options.startFromBeginning = true
                         playMedia(.item(model.playbackItem, options: options))
                     }
                 }
-                circleButton(item.isPlayed ? "checkmark.circle.fill" : "checkmark.circle", label: item.isPlayed ? "标记为未看" : "标记为已看") {
-                    guard let client else { return }
-                    Task { await model.togglePlayed(client: client) }
-                }
-                circleButton(item.isFavorite ? "heart.fill" : "heart", label: item.isFavorite ? "取消收藏" : "收藏") {
-                    guard let client else { return }
-                    Task { await model.toggleFavorite(client: client) }
-                }
-                if item.kind == .movie || item.kind == .episode {
-                    DownloadButton(item: model.playbackItem)
+                // 单集的元数据随剧集刷新：在剧集入口操作可一次更新全部季与单集。
+                if item.kind != .episode {
+                    Button(item.kind == .series ? "刷新元数据（全部剧集）" : "刷新元数据", systemImage: "arrow.clockwise") {
+                        guard let client else { return }
+                        Task { await model.refreshMetadata(client: client) }
+                    }
                 }
             }
         }
-        .frame(maxWidth: .infinity)
     }
 
-    private func playTitle(for target: MediaItem) -> String {
-        let resume = target.playedFraction.map { $0 > 0 && $0 < 0.95 } ?? false
-        let verb = resume ? "继续播放" : "播放"
-        if target.id != item.id, let label = target.episodeLabel { return "\(verb) \(label)" }
-        return verb
-    }
-
-    private func circleButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.title3)
-                .frame(width: 30, height: 30)
-                .contentTransition(.symbolEffect(.replace))
+    /// 「导演：A, B」，点按进入人物页。
+    @ViewBuilder
+    private var directorsLine: some View {
+        let directors = (model.details?.people ?? []).filter { $0.type == "Director" }
+        if !directors.isEmpty {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("导演：").font(.subheadline.weight(.semibold))
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(directors) { person in
+                            NavigationLink(value: PersonRoute(serverID: item.serverID, person: person)) {
+                                Text(person.name).font(.subheadline).foregroundStyle(VelaTheme.accentLight)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .scrollIndicators(.hidden)
+            }
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
-        .accessibilityLabel(label)
     }
 
     @ViewBuilder
@@ -151,6 +180,7 @@ struct ItemDetailView: View {
 
     // MARK: - 分区
 
+    /// 分区顺序与 Android 一致：季 / 同季单集 → 章节 → 演职人员 → 外部链接 → 媒体信息 → 预告片 → 由 X 执导 → 推荐。
     @ViewBuilder
     private var sections: some View {
         if prefs.showEpisodeIndicator, item.kind == .series, !model.seasons.isEmpty {
@@ -158,12 +188,12 @@ struct ItemDetailView: View {
                 NavigationLink(value: SeasonRoute(series: item, season: season)) {
                     PosterCard(
                         title: season.name,
-                        subtitle: season.childCount.map { "\($0) 集" },
+                        subtitle: nil,
                         imageURL: app.imageURL(for: season, kind: .primary, maxWidth: 400)
                             ?? app.imageURL(for: item, kind: .primary, maxWidth: 400),
                         width: VelaTheme.posterWidth(compact: isCompact)
                     )
-                    .overlay(alignment: .topTrailing) { UnplayedBadge(count: season.unplayedItemCount) }
+                    .overlay(alignment: .top) { EpisodeCountBadge(count: season.childCount) }
                 }
                 .buttonStyle(.plain)
             }
@@ -174,7 +204,7 @@ struct ItemDetailView: View {
         }
 
         if prefs.showEpisodeIndicator, item.kind == .episode, model.siblingEpisodes.count > 1 {
-            EpisodeShelf(title: "更多来自 \(model.siblingEpisodes.first.flatMap { _ in item.parentIndexNumber.map { "第 \($0) 季" } } ?? "本季")",
+            EpisodeShelf(title: "更多来自 \(item.parentIndexNumber.map { "第 \($0) 季" } ?? "本季")",
                          episodes: model.siblingEpisodes, currentID: item.id)
         }
 
@@ -185,31 +215,22 @@ struct ItemDetailView: View {
             }
         }
 
-        ExtrasShelf(trailers: model.trailers, remoteTrailers: model.details?.remoteTrailers ?? [], features: model.specialFeatures)
-
-        if prefs.showSimilar, !model.similar.isEmpty {
-            MediaShelf("类似作品", items: model.similar) { other in
-                NavigationLink(value: other) {
-                    PosterCard(
-                        title: other.name,
-                        subtitle: other.productionYear.map(String.init),
-                        imageURL: app.imageURL(for: other, kind: .primary, maxWidth: 400),
-                        width: VelaTheme.posterWidth(compact: isCompact)
-                    )
-                }
-                .buttonStyle(.plain)
-            }
-        }
-
         let links = ExternalLink.links(for: item).filter { prefs.showDoubanLink || $0.name != "豆瓣" }
         if !links.isEmpty {
             VStack(alignment: .leading, spacing: VelaTheme.Spacing.s) {
-                Text("链接").font(.title3.weight(.semibold)).padding(.horizontal, VelaTheme.Spacing.l)
+                Text("外部链接").font(.title3.weight(.semibold)).padding(.horizontal, VelaTheme.Spacing.l)
                 ScrollView(.horizontal) {
                     HStack(spacing: VelaTheme.Spacing.s) {
                         ForEach(links) { link in
-                            Button { openURL(link.url) } label: { Label(link.name, systemImage: "link") }
-                                .buttonStyle(.glass)
+                            Button { openURL(link.url) } label: {
+                                Text(link.name)
+                                    .font(.subheadline.weight(.semibold))
+                                    .padding(.horizontal, 18)
+                                    .padding(.vertical, 10)
+                                    .overlay(Capsule().stroke(.white.opacity(0.35), lineWidth: 1))
+                                    .contentShape(.capsule)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                     .padding(.horizontal, VelaTheme.Spacing.l)
@@ -220,6 +241,77 @@ struct ItemDetailView: View {
 
         if prefs.showMediaInfo, let details = model.details, let source = model.selectedSource {
             MediaInfoSection(details: details, source: source)
+        }
+
+        ExtrasShelf(trailers: model.trailers, remoteTrailers: model.details?.remoteTrailers ?? [], features: model.specialFeatures)
+
+        ForEach(model.directorWorks) { works in
+            posterShelf("由 \(works.director.name) 执导", items: works.items)
+        }
+
+        if prefs.showSimilar, !model.similar.isEmpty {
+            posterShelf("推荐", items: model.similar)
+        }
+    }
+
+    private func posterShelf(_ title: String, items: [MediaItem]) -> some View {
+        MediaShelf(title, items: items) { other in
+            NavigationLink(value: other) {
+                PosterCard(
+                    title: other.name,
+                    subtitle: other.productionYear.map(String.init),
+                    imageURL: app.imageURL(for: other, kind: .primary, maxWidth: 400),
+                    width: VelaTheme.posterWidth(compact: isCompact),
+                    badges: PosterBadges(other)
+                )
+            }
+            .buttonStyle(.plain)
+            .itemContextMenu(other)
+        }
+    }
+}
+
+/// 播放按钮：续播时左侧按进度填充白色，其余为深色（与 Android 一致）；文字用差值混合，在两种底色上都清晰。
+/// 未开始播放时整个按钮为白底。
+private struct ProgressPlayLabel: View {
+    let title: String
+    let progress: Double?
+
+    var body: some View {
+        Label(title, systemImage: "play.fill")
+            .font(.headline)
+            .foregroundStyle(.white)
+            .blendMode(.difference)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 15)
+            .background {
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Color.white.opacity(0.14)
+                        Color.white.frame(width: proxy.size.width * (progress ?? 1))
+                    }
+                }
+            }
+            .compositingGroup()
+            .clipShape(.capsule)
+            .contentShape(.capsule)
+            .accessibilityElement(children: .combine)
+    }
+}
+
+/// 季海报顶部的「41 集」标记（与 Android 一致）。
+private struct EpisodeCountBadge: View {
+    let count: Int?
+
+    var body: some View {
+        if let count, count > 0 {
+            Text("\(count) 集")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(.black.opacity(0.55), in: .capsule)
+                .padding(.top, 8)
         }
     }
 }
@@ -282,35 +374,62 @@ private struct DetailHero: View {
     }
 
     private var titleBlock: some View {
-        VStack(spacing: VelaTheme.Spacing.s) {
+        VStack(alignment: .leading, spacing: VelaTheme.Spacing.s) {
             if let logo = client?.logoURL(for: item, maxWidth: 800) {
                 CachedImage(url: logo, contentMode: .fit) { titleText }
-                .frame(maxWidth: isCompact ? 280 : 420, maxHeight: isCompact ? 110 : 150)
+                .frame(maxWidth: isCompact ? 280 : 420, maxHeight: isCompact ? 110 : 150, alignment: .leading)
                 .accessibilityLabel(item.seriesName ?? item.name)
             } else {
                 titleText
             }
 
-            if item.kind == .episode || item.kind == .season {
-                Text([item.episodeLabel, item.name].compactMap { $0 }.joined(separator: " · "))
-                    .font(.headline)
-                    .multilineTextAlignment(.center)
+            if let subtitle = episodeTitle {
+                Text(subtitle).font(.headline)
             }
 
             metadata
-            if !item.genres.isEmpty {
-                Text(item.genres.prefix(4).joined(separator: " · "))
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.8))
-            }
+            tags
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// 单集「S1:E1 - 标题」、季「第 1 季」（与 Android 一致）。
+    private var episodeTitle: String? {
+        switch item.kind {
+        case .episode:
+            guard let episode = item.indexNumber else { return item.name }
+            let season = item.parentIndexNumber.map { "S\($0):" } ?? ""
+            return "\(season)E\(episode) - \(item.name)"
+        case .season:
+            return item.name
+        default:
+            return nil
+        }
+    }
+
+    /// 类型与制片公司标签（单集不显示，与 Android 一致）。
+    @ViewBuilder
+    private var tags: some View {
+        let values = item.kind == .episode ? [] : Array(item.genres.prefix(4)) + Array((details?.studios ?? []).prefix(3))
+        if !values.isEmpty {
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    ForEach(values, id: \.self) { value in
+                        Text(value)
+                            .font(.subheadline)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(VelaTheme.accentDeep.opacity(0.35), in: .rect(cornerRadius: 8))
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+        }
     }
 
     private var titleText: some View {
         Text(item.seriesName ?? item.name)
             .font(.largeTitle.bold())
-            .multilineTextAlignment(.center)
             .lineLimit(3)
     }
 

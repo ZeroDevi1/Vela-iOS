@@ -109,8 +109,9 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
         }
     }
 
-    /// KSPlayer 的画中画控制器在起播后才创建（内容源为其 `AVSampleBufferDisplayLayer`），首次请求时再接管。
-    private func adoptEnginePictureInPicture() {
+    /// KSPlayer 的画中画控制器在起播后才创建（内容源为其 `AVSampleBufferDisplayLayer`）：起播后或首次请求时接管。
+    /// 须在切后台之前接管，否则「切到后台自动画中画」对 KSPlayer 不生效。
+    func adoptEnginePictureInPicture() {
         guard pip == nil, let engine = controller?.engine as? KSPlayerEngine,
               let controller = engine.pictureInPictureController else { return }
         controller.delegate = self
@@ -184,7 +185,11 @@ public struct PlayerSurface: PlayerPlatformViewRepresentable {
         case .fill: .resizeAspectFill
         case .stretch: .resize
         }
-        (controller.engine as? KSPlayerEngine)?.setGravity(controller.videoGravity)
+        if let engine = controller.engine as? KSPlayerEngine {
+            engine.setGravity(controller.videoGravity)
+            // 读取状态以便起播（readyToPlay）后再次更新，此时 KSPlayer 的画中画控制器已创建，可以接管。
+            if engine.status != .loading { controller.surfaceHost().adoptEnginePictureInPicture() }
+        }
         controller.surfaceHost().handleToggle(controller.pictureInPictureToggleRequest)
     }
 

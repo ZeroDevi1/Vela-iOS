@@ -1130,7 +1130,11 @@ final class PlayerSession {
         guard let preferences = app?.playerPreferences, !closed else { return }
         PlayerBrightness.leave()
         if controller.isPictureInPictureActive { return }
-        if preferences.autoPictureInPicture, controller.engine.kind == .avFoundation, AVPictureInPictureController.isPictureInPictureSupported() {
+        // 即将自动进入画中画：此时小窗还没启动（isPictureInPictureActive 仍为 false），不能当作普通切后台暂停。
+        // 两种内核都支持：系统内核用 AVPlayerLayer，KSPlayer 用其 AVSampleBufferDisplayLayer 内容源。
+        let canAutoPictureInPicture = AVPictureInPictureController.isPictureInPictureSupported()
+            && (controller.engine.kind == .avFoundation || (controller.engine as? KSPlayerEngine)?.pictureInPictureController != nil)
+        if preferences.autoPictureInPicture, canAutoPictureInPicture {
             return
         }
         if preferences.backgroundAudio {

@@ -15,14 +15,24 @@ final class DetailModel {
     private(set) var nextUp: MediaItem?
     private(set) var siblingEpisodes: [MediaItem] = []
     private(set) var similar: [MediaItem] = []
+    /// 「由 X 执导」：每位导演（最多两位）的其他作品，不含本条目所属的作品。
+    private(set) var directorWorks: [DirectorWorks] = []
     /// 本地预告片与花絮（幕后、删减片段等）。
     private(set) var trailers: [MediaItem] = []
     private(set) var specialFeatures: [MediaItem] = []
     /// 多段文件的全部段（第一段为本条目）；单文件为空。
     private(set) var parts: [MediaItem] = []
     private(set) var actionError: String?
+    /// 操作已提交的提示（如刷新元数据）；与 `actionError` 互斥。
+    private(set) var actionNotice: String?
     /// 客户端合并进来的同一部电影的其他条目（见 `MediaItemMerger`），其媒体源作为额外版本供选择。
     private(set) var alternates: [ItemDetails] = []
+
+    struct DirectorWorks: Identifiable, Sendable {
+        var director: ItemDetails.Person
+        var items: [MediaItem]
+        var id: String { director.id }
+    }
 
     /// 一个可选版本：媒体源及其所属条目。合并条目的版本播放时要用所属条目的 id。
     struct SourceOption: Identifiable {
@@ -77,6 +87,8 @@ final class DetailModel {
         // 各分区相互独立：并发请求，哪个先返回先显示；单个失败只缺对应分区。
         let item = item
         let details = details
+        // 页面重新出现时 `.task` 会再次加载：按追加方式填充的分区先清空，避免重复。
+        directorWorks = []
         await withTaskGroup(of: Section.self) { group in
             switch item.kind {
             case .series:
@@ -98,8 +110,17 @@ final class DetailModel {
                 }
                 group.addTask { .features((try? await client.specialFeatures(itemID: item.id)) ?? []) }
             }
-            if item.kind != .episode {
-                group.addTask { .similar((try? await client.similarItems(itemID: item.id)) ?? []) }
+            // 单集本身没有推荐数据，使用所属剧集的推荐（与 Android 一致）。
+            if let similarID = item.kind == .episode ? item.seriesID : item.id {
+                group.addTask { .similar((try? await client.similarItems(itemID: similarID)) ?? []) }
+            }
+            let ownWorkID = item.kind == .episode ? item.seriesID : item.id
+            for director in (details?.people ?? []).filter({ $0.type == "Director" }).prefix(2) {
+                group.addTask {
+                    let query = ItemQuery(includeItemTypes: ["Movie", "Series"], recursive: true, limit: 20, personIDs: [director.id])
+                    let works = ((try? await client.items(query).items) ?? []).filter { $0.id != ownWorkID }
+                    return .directorWorks(DirectorWorks(director: director, items: works))
+                }
             }
             for await section in group { apply(section) }
         }
@@ -108,6 +129,7 @@ final class DetailModel {
     private enum Section: Sendable {
         case seasons([MediaItem]), nextUp(MediaItem?), siblings([MediaItem]), parts([MediaItem])
         case trailers([MediaItem]), features([MediaItem]), similar([MediaItem])
+        case directorWorks(DirectorWorks)
     }
 
     private func apply(_ section: Section) {
@@ -119,6 +141,9 @@ final class DetailModel {
         case .trailers(let value): trailers = value
         case .features(let value): specialFeatures = value
         case .similar(let value): similar = value
+        case .directorWorks(let value):
+            guard !value.items.isEmpty else { return }
+            directorWorks.append(value)
         }
     }
 
@@ -167,6 +192,19 @@ final class DetailModel {
     func toggleFavorite(client: MediaServerClient) async {
         let target = !item.isFavorite
         await mutate { try await client.setFavorite(itemID: self.item.id, target) } apply: { $0.isFavorite = target }
+    }
+
+    /// 让服务器刷新元数据。剧集会递归刷新全部季与单集，因此「刷新」与「识别」类操作放在剧集入口而不是单集上。
+    /// 服务器在后台执行，完成时间不确定：只提示已提交，不等待结果。
+    func refreshMetadata(client: MediaServerClient) async {
+        do {
+            try await client.refreshMetadata(itemID: item.id)
+            actionError = nil
+            actionNotice = "已提交刷新，服务器完成后重新打开本页即可看到更新"
+        } catch {
+            actionNotice = nil
+            actionError = "刷新失败：\(error.localizedDescription)"
+        }
     }
 
     /// 先请求服务器，成功后再更新界面，不做乐观更新以免失败时状态错乱。

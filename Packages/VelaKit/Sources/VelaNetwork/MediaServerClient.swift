@@ -104,6 +104,7 @@ public struct MediaServerClient: Sendable {
         ]
         if startIndex > 0 { query.append(.init(name: "StartIndex", value: String(startIndex))) }
         if let parentID { query.append(.init(name: "ParentId", value: parentID)) }
+        query += nextUpCompatibilityQuery
         let result = try await http.decode(
             QueryResult<BaseItemDTO>.self,
             APIRequest("/Shows/NextUp", query: query),
@@ -112,6 +113,15 @@ public struct MediaServerClient: Sendable {
         )
         let items = result.items.map { $0.toMediaItem(serverID: serverID) }
         return (items, result.totalRecordCount ?? items.count)
+    }
+
+    /// NextUp 的公共参数（与 Android 版一致）。Emby 新版的 NextUp 默认算法不返回看了一半的单集，「接下来」常为空；
+    /// `LegacyNextUp=true` 恢复旧算法，Jellyfin 不认识该参数，不发送。显式要求图片与用户数据：旧算法下缺省时
+    /// 可能不带单集图片 tag 与播放进度，卡片会显示占位图、没有剩余时长。
+    var nextUpCompatibilityQuery: [URLQueryItem] {
+        var query: [URLQueryItem] = [.init(name: "EnableImages", value: "true"), .init(name: "EnableUserData", value: "true")]
+        if kind == .emby { query.append(.init(name: "LegacyNextUp", value: "true")) }
+        return query
     }
 
     /// 最新入库。注意该接口直接返回数组，不是 `QueryResult`。

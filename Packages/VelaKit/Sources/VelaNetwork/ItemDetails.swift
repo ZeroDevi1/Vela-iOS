@@ -193,7 +193,7 @@ extension MediaServerClient {
                 .init(name: "SeriesId", value: seriesID),
                 .init(name: "Limit", value: "1"),
                 .init(name: "Fields", value: Self.listFields)
-            ]),
+            ] + nextUpCompatibilityQuery),
             baseURL: baseURL,
             headers: requestHeaders
         )
