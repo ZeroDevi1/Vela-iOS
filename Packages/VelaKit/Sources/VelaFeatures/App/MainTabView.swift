@@ -1,6 +1,7 @@
 import SwiftUI
 import VelaCore
 import VelaDesignSystem
+import VelaNetwork
 
 public enum AppTab: String, Hashable, Sendable {
     case home, media, favorites, settings, discover, subscriptions, search
@@ -22,6 +23,18 @@ struct MainTabView: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.playMedia) private var playMedia
     @SceneStorage("selectedTab") private var selection: AppTab = .home
+    @State private var counts = SidebarCounts()
+
+    /// 数量角标（侧边栏条目右侧的数字，参考 Forward「在看 78」）只在 macOS 显示：Mac 侧边栏常驻，角标是灰色数字；
+    /// iOS 的标签栏（iPhone 底栏、iPad 侧边栏收起后的顶部胶囊栏）会画成红色通知角标，像「78 条未读」，含义不对，
+    /// 而 SwiftUI 没有接口判断 iPad 侧边栏是否展开。0 不显示。
+    private func badge(_ value: Int?) -> Int {
+        #if os(macOS)
+        value ?? 0
+        #else
+        0
+        #endif
+    }
 
     var body: some View {
         // 不用 TabSection 分组：iPad 侧边栏收起后，顶部胶囊栏会只显示分组名（「媒体」「探索」），
@@ -30,12 +43,15 @@ struct MainTabView: View {
             Tab("首页", systemImage: "house", value: AppTab.home) {
                 PrivacyGate { HomeView() }.measuresVelaLayout()
             }
+            .badge(badge(counts.resume))
             Tab("我的媒体", systemImage: "play.square.stack", value: AppTab.media) {
                 PrivacyGate { MyMediaView() }.measuresVelaLayout()
             }
+            .badge(badge(counts.libraries))
             Tab("收藏", systemImage: "heart", value: AppTab.favorites) {
                 PrivacyGate { FavoritesView() }.measuresVelaLayout()
             }
+            .badge(badge(counts.favorites))
             if sizeClass != .compact {
                 Tab("发现", systemImage: "safari", value: AppTab.discover) {
                     DiscoverView().measuresVelaLayout()
@@ -92,6 +108,23 @@ struct MainTabView: View {
             #endif
         }
         .onChange(of: sizeClass) { if !isAvailable(selection) { selection = .home } }
+        #if os(macOS)
+        // 切换服务器或标签时刷新（例如在详情页收藏后回到侧边栏）。
+        .task(id: CountsKey(server: app.servers.activeServer?.id, accessible: app.isActiveServerAccessible, tab: selection)) {
+            // 私密服务器未解锁时不在侧边栏透露内容数量（与 `PrivacyGate` 一致）。
+            guard app.isActiveServerAccessible, let client = app.activeClient else {
+                counts = SidebarCounts()
+                return
+            }
+            counts = await SidebarCounts.load(client: client)
+        }
+        #endif
+    }
+
+    private struct CountsKey: Hashable {
+        var server: SavedServer.ID?
+        var accessible: Bool
+        var tab: AppTab
     }
 
     private func isAvailable(_ tab: AppTab) -> Bool {
@@ -176,5 +209,21 @@ private struct ServerRow: View {
         .buttonStyle(.plain)
         .accessibilityAddTraits(isActive ? .isSelected : [])
         .accessibilityHint(isActive ? "" : "切换到该服务器")
+    }
+}
+
+/// 侧边栏条目右侧的数量：继续观看、媒体库、收藏。单项请求失败时该项不显示（nil），不影响其他项。
+private struct SidebarCounts {
+    var resume: Int?
+    var libraries: Int?
+    var favorites: Int?
+
+    static func load(client: MediaServerClient) async -> SidebarCounts {
+        async let resume = try? client.resume(limit: 1).total
+        async let libraries = try? client.userViews().count
+        async let favorites = try? client.items(ItemQuery(
+            includeItemTypes: ["Movie", "Series", "Episode"], recursive: true, limit: 1, isFavorite: true
+        )).total
+        return await SidebarCounts(resume: resume, libraries: libraries, favorites: favorites)
     }
 }
