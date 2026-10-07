@@ -32,7 +32,12 @@ struct ItemDetailView: View {
             .task { await scrollToDebugAnchor(proxy) }
             #endif
         }
-        .background { DetailBackdrop(url: app.imageURL(for: item, kind: .backdrop, maxWidth: 800)) }
+        .background {
+            DetailBackdrop(
+                url: app.imageURL(for: item, kind: .backdrop, maxWidth: 800),
+                posterURL: app.imageURL(for: item, kind: .primary, maxWidth: 200)
+            )
+        }
         .environment(\.colorScheme, .dark)
         .ignoresSafeArea(edges: .top)
         #if os(iOS)
@@ -467,18 +472,46 @@ struct SeasonRoute: Hashable {
 // MARK: - 背景与头图
 
 /// 整页背景：低分辨率剧照大半径模糊 + 暗化，营造沉浸感且不干扰文字。
+/// 详情页底色：海报主色推出的深色调渐变（见 `BackdropTone`）上叠模糊剧照。取不到主色（无海报、灰色海报）时为纯黑。
 private struct DetailBackdrop: View {
     let url: URL?
+    let posterURL: URL?
+    @State private var tone: Color?
 
     var body: some View {
         ZStack {
             Color.black
+            if let tone {
+                LinearGradient(colors: [tone, .black], startPoint: .top, endPoint: .bottom)
+                    .transition(.opacity)
+            }
             RemoteArtwork(url: url, placeholderSymbol: "")
                 .blur(radius: 60)
-                .opacity(0.55)
+                .opacity(0.45)
             LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .top, endPoint: .bottom)
         }
         .ignoresSafeArea()
+        .task(id: posterURL) {
+            guard let posterURL, let image = await ImagePipeline.shared.image(for: posterURL),
+                  let average = Self.averageColor(of: image),
+                  let hsb = BackdropTone.darkTone(red: average.red, green: average.green, blue: average.blue) else { return }
+            withAnimation(.easeInOut(duration: 0.4)) {
+                tone = Color(hue: hsb.hue, saturation: hsb.saturation, brightness: hsb.brightness)
+            }
+        }
+    }
+
+    /// 把图片缩绘到 1×1 像素取平均色（sRGB，0–1）。
+    private static func averageColor(of image: CGImage) -> (red: Double, green: Double, blue: Double)? {
+        var pixel = [UInt8](repeating: 0, count: 4)
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(
+                data: &pixel, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4, space: space,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else { return nil }
+        context.interpolationQuality = .medium
+        context.draw(image, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        return (Double(pixel[0]) / 255, Double(pixel[1]) / 255, Double(pixel[2]) / 255)
     }
 }
 
