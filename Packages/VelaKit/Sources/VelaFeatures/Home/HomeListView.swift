@@ -22,6 +22,7 @@ struct HomeListView: View {
     let route: HomeListRoute
     @Environment(AppModel.self) private var app
     @Environment(\.isCompactLayout) private var isCompact
+    @Environment(\.velaLayout) private var layout
     @State private var items: [MediaItem] = []
     @State private var total = 0
     @State private var isLoading = false
@@ -65,7 +66,7 @@ struct HomeListView: View {
     private var landscapeWidth: CGFloat { isCompact ? 170 : 260 }
 
     private var columns: [GridItem] {
-        let minimum = usesLandscape ? landscapeWidth : VelaTheme.posterWidth(compact: isCompact)
+        let minimum = usesLandscape ? landscapeWidth : layout.posterWidth
         return [GridItem(.adaptive(minimum: minimum), spacing: VelaTheme.Spacing.m, alignment: .top)]
     }
 
@@ -88,7 +89,7 @@ struct HomeListView: View {
                 title: item.kind == .episode ? (item.seriesName ?? item.name) : item.name,
                 subtitle: item.kind == .episode ? HomeView.episodeSubtitle(item) : item.productionYear.map(String.init),
                 imageURL: app.imageURL(for: item, kind: .primary, maxWidth: 400),
-                width: VelaTheme.posterWidth(compact: isCompact),
+                width: layout.posterWidth,
                 badges: PosterBadges(item)
             )
         }

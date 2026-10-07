@@ -38,7 +38,7 @@ struct CatalogDetailView: View {
                         Label(detailError, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.secondary)
                     }
                 }
-                .padding(.horizontal, VelaTheme.Spacing.l)
+                .velaPageMargin()
                 .frame(maxWidth: 900)
                 .frame(maxWidth: .infinity)
 
@@ -112,7 +112,7 @@ struct CatalogDetailView: View {
                         }
                     }
                 }
-                .padding(.horizontal, VelaTheme.Spacing.l)
+                .velaPageMargin()
             }
     }
 

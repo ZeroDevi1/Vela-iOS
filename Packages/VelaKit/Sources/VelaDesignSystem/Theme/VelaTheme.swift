@@ -27,9 +27,7 @@ public enum VelaTheme {
         public static let panel: CGFloat = 20
     }
 
-    /// 海报宽度按尺寸类别区分：iPhone 一屏约 3 张，iPad / Mac 更多。
-    public static func posterWidth(compact: Bool) -> CGFloat { compact ? 116 : 150 }
-    public static func landscapeCardWidth(compact: Bool) -> CGFloat { compact ? 260 : 320 }
+    // 卡片宽度、页面边距等随容器宽度变化的度量见 `VelaLayout`。
 }
 
 extension Color {

@@ -238,6 +238,13 @@ extension MediaServerClient {
         return imageURL(itemID: person.id, path: "Primary", tag: tag, maxWidth: maxWidth)
     }
 
+    /// 条目自己的全部背景图（剧照），按服务器顺序；不回退到父级。用于详情页「剧照」分区。
+    public func backdropImageURLs(for item: MediaItem, maxWidth: Int) -> [URL] {
+        item.backdropImageTags.enumerated().compactMap { index, tag in
+            imageURL(itemID: item.id, path: "Backdrop/\(index)", tag: tag, maxWidth: maxWidth)
+        }
+    }
+
     public func chapterImageURL(itemID: String, index: Int, chapter: MediaChapter, maxWidth: Int) -> URL? {
         guard let tag = chapter.imageTag else { return nil }
         return imageURL(itemID: itemID, path: "Chapter/\(index)", tag: tag, maxWidth: maxWidth)

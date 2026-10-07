@@ -113,7 +113,7 @@ private struct VersionSelectionMenu: View {
 /// 与播放器面板共用 `TrackLabelFormatter`。
 ///
 /// 不用 `Picker`：菜单式 Picker 的选项只显示第一个 `Text`，副标题会被丢掉；`Toggle` 菜单项支持标题 + 副标题并带勾选。
-private struct TrackSelectionMenu: View {
+struct TrackSelectionMenu: View {
     let title: String
     let streams: [MediaStreamInfo]
     @Binding var selection: Int?
@@ -185,7 +185,7 @@ struct EpisodeShelf: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: VelaTheme.Spacing.s) {
-            Text(title).font(.title3.weight(.semibold)).padding(.horizontal, VelaTheme.Spacing.l)
+            Text(title).font(.title3.weight(.semibold)).velaPageMargin()
             ScrollViewReader { proxy in
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: VelaTheme.Spacing.m) {
@@ -211,7 +211,7 @@ struct EpisodeShelf: View {
                             .id(episode.id)
                         }
                     }
-                    .padding(.horizontal, VelaTheme.Spacing.l)
+                    .velaPageMargin()
                 }
                 .scrollIndicators(.hidden)
                 .onAppear { proxy.scrollTo(currentID, anchor: .center) }
@@ -414,7 +414,7 @@ struct ExtrasShelf: View {
         let remote = trailers.isEmpty ? remoteTrailers : []
         if !trailers.isEmpty || !remote.isEmpty || !features.isEmpty {
             VStack(alignment: .leading, spacing: VelaTheme.Spacing.s) {
-                Text("预告片和花絮").font(.title3.weight(.semibold)).padding(.horizontal, VelaTheme.Spacing.l)
+                Text("预告片和花絮").font(.title3.weight(.semibold)).velaPageMargin()
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: VelaTheme.Spacing.m) {
                         ForEach(trailers) { card($0, badge: "预告片") }
@@ -423,7 +423,7 @@ struct ExtrasShelf: View {
                                 LandscapeCard(
                                     title: trailer.name ?? "预告片",
                                     subtitle: trailer.url.host().map { "在线预告片 · \($0)" } ?? "在线预告片",
-                                    imageURL: nil,
+                                    imageURL: Self.youTubeThumbnail(trailer.url),
                                     width: cardWidth
                                 )
                             }
@@ -431,7 +431,7 @@ struct ExtrasShelf: View {
                         }
                         ForEach(features) { card($0, badge: "花絮") }
                     }
-                    .padding(.horizontal, VelaTheme.Spacing.l)
+                    .velaPageMargin()
                 }
                 .scrollIndicators(.hidden)
             }
@@ -439,6 +439,26 @@ struct ExtrasShelf: View {
     }
 
     private var cardWidth: CGFloat { isCompact ? 220 : 280 }
+
+    /// YouTube 预告片的封面图（`img.youtube.com/vi/<id>/hqdefault.jpg`）；其他站点没有可推导的封面，返回 nil。
+    /// 支持 `youtube.com/watch?v=`、`youtu.be/<id>`、`youtube.com/embed/<id>` 三种链接。
+    static func youTubeThumbnail(_ url: URL) -> URL? {
+        guard let host = url.host()?.lowercased() else { return nil }
+        let id: String?
+        if host.hasSuffix("youtu.be") {
+            id = url.pathComponents.dropFirst().first
+        } else if host.hasSuffix("youtube.com") {
+            if url.pathComponents.count > 2, ["embed", "shorts"].contains(url.pathComponents[1]) {
+                id = url.pathComponents[2]
+            } else {
+                id = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "v" }?.value
+            }
+        } else {
+            id = nil
+        }
+        guard let id, !id.isEmpty, id.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }) else { return nil }
+        return URL(string: "https://img.youtube.com/vi/\(id)/hqdefault.jpg")
+    }
 
     private func card(_ item: MediaItem, badge: String) -> some View {
         Button { playMedia(.item(item)) } label: {
@@ -456,42 +476,63 @@ struct ExtrasShelf: View {
 
 // MARK: - 章节 / 演职员
 
+/// 章节：16:9 缩略图叠「章节名 / 起始时间」与播放图标（与 Forward 一致），点按从该章节起播。
 struct ChapterShelf: View {
     let item: MediaItem
     let client: MediaServerClient?
-    @Environment(\.playMedia) private var playMedia
+    /// 从指定秒数起播；由详情页提供，沿用已选的版本 / 音轨 / 字幕。
+    let play: (TimeInterval) -> Void
+    @Environment(\.velaLayout) private var layout
 
     private var chapters: [(offset: Int, element: MediaChapter)] {
         Array(item.chapters.enumerated()).filter { $0.element.marker == .chapter }
     }
 
+    private var cardWidth: CGFloat { layout.isWide ? 250 : 200 }
+
     var body: some View {
         if chapters.count > 1 {
             VStack(alignment: .leading, spacing: VelaTheme.Spacing.s) {
-                Text("章节").font(.title3.weight(.semibold)).padding(.horizontal, VelaTheme.Spacing.l)
+                Text("章节").font(.title3.weight(.semibold)).velaPageMargin()
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: VelaTheme.Spacing.m) {
                         ForEach(chapters, id: \.offset) { index, chapter in
-                            VStack(alignment: .leading, spacing: 4) {
-                                RemoteArtwork(
-                                    url: client?.chapterImageURL(itemID: item.id, index: index, chapter: chapter, maxWidth: 400),
-                                    placeholderSymbol: "list.bullet.rectangle"
-                                )
-                                .frame(width: 200, height: 112)
-                                .clipShape(.rect(cornerRadius: VelaTheme.Radius.card))
-                                Text(chapter.name ?? "章节 \(index + 1)").font(.subheadline).lineLimit(1)
-                                Text(Duration.seconds(chapter.start).formatted(.time(pattern: chapter.start >= 3600 ? .hourMinuteSecond : .minuteSecond)))
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                            }
-                            .frame(width: 200, alignment: .leading)
+                            Button { play(chapter.start) } label: { card(index: index, chapter: chapter) }
+                                .buttonStyle(.plain)
                         }
                     }
-                    .padding(.horizontal, VelaTheme.Spacing.l)
+                    .velaPageMargin()
                 }
                 .scrollIndicators(.hidden)
             }
         }
+    }
+
+    private func card(index: Int, chapter: MediaChapter) -> some View {
+        RemoteArtwork(
+            url: client?.chapterImageURL(itemID: item.id, index: index, chapter: chapter, maxWidth: 480),
+            placeholderSymbol: "list.bullet.rectangle"
+        )
+        .frame(width: cardWidth, height: cardWidth * 9 / 16)
+        .overlay {
+            LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .center, endPoint: .bottom)
+        }
+        .overlay(alignment: .bottomLeading) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(chapter.name ?? "章节 \(index + 1)").font(.caption.weight(.semibold)).lineLimit(1)
+                Text(Duration.seconds(chapter.start).formatted(.time(pattern: chapter.start >= 3600 ? .hourMinuteSecond : .minuteSecond)))
+                    .font(.caption2.monospacedDigit())
+            }
+            .foregroundStyle(.white)
+            .padding(8)
+        }
+        .overlay(alignment: .bottomTrailing) {
+            Image(systemName: "play.fill").font(.caption).foregroundStyle(.white).padding(10)
+        }
+        .clipShape(.rect(cornerRadius: VelaTheme.Radius.card))
+        .velaCardHover()
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("从该章节开始播放")
     }
 }
 
@@ -503,7 +544,7 @@ struct CastShelf: View {
     var body: some View {
         if !people.isEmpty {
             VStack(alignment: .leading, spacing: VelaTheme.Spacing.s) {
-                Text("演职人员").font(.title3.weight(.semibold)).padding(.horizontal, VelaTheme.Spacing.l)
+                Text("演职人员").font(.title3.weight(.semibold)).velaPageMargin()
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: VelaTheme.Spacing.m) {
                         ForEach(people.prefix(40)) { person in
@@ -525,7 +566,7 @@ struct CastShelf: View {
                             .buttonStyle(.plain)
                         }
                     }
-                    .padding(.horizontal, VelaTheme.Spacing.l)
+                    .velaPageMargin()
                 }
                 .scrollIndicators(.hidden)
             }
@@ -553,7 +594,7 @@ struct MediaInfoSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: VelaTheme.Spacing.m) {
-            Text("媒体信息").font(.title3.weight(.semibold)).padding(.horizontal, VelaTheme.Spacing.l)
+            Text("媒体信息").font(.title3.weight(.semibold)).velaPageMargin()
 
             // 与 Android 一致：条目标题、文件路径、日期、容器 / 大小 / 时长、入库时间逐行左对齐，下面是各媒体流卡片。
             VStack(alignment: .leading, spacing: 6) {
@@ -575,7 +616,7 @@ struct MediaInfoSection: View {
             }
             .font(.subheadline)
             .foregroundStyle(.secondary)
-            .padding(.horizontal, VelaTheme.Spacing.l)
+            .velaPageMargin()
 
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: VelaTheme.Spacing.m) {
@@ -583,7 +624,7 @@ struct MediaInfoSection: View {
                         StreamCard(stream: stream)
                     }
                 }
-                .padding(.horizontal, VelaTheme.Spacing.l)
+                .velaPageMargin()
             }
             .scrollIndicators(.hidden)
         }
@@ -596,7 +637,8 @@ struct MediaInfoSection: View {
     }
 }
 
-private struct StreamCard: View {
+/// 单条媒体流卡片；`title` / `symbol` / `rows` 也供宽屏三列媒体信息复用。
+struct StreamCard: View {
     let stream: MediaStreamInfo
 
     var body: some View {
@@ -617,7 +659,7 @@ private struct StreamCard: View {
         .glassEffect(.regular, in: .rect(cornerRadius: VelaTheme.Radius.panel))
     }
 
-    private var title: String {
+    var title: String {
         switch stream.type {
         case "Video": "视频"
         case "Audio": "音频"
@@ -626,7 +668,7 @@ private struct StreamCard: View {
         }
     }
 
-    private var symbol: String {
+    var symbol: String {
         switch stream.type {
         case "Video": "video"
         case "Audio": "speaker.wave.2"
@@ -635,7 +677,7 @@ private struct StreamCard: View {
         }
     }
 
-    private var rows: [(String, String)] {
+    var rows: [(String, String)] {
         var rows: [(String, String?)] = [
             ("标题", stream.displayTitle),
             ("内嵌标题", stream.title),
@@ -648,7 +690,9 @@ private struct StreamCard: View {
                 ("分辨率", stream.width.flatMap { w in stream.height.map { "\(w)x\($0)" } }),
                 ("帧率", stream.realFrameRate.map { String(format: "%.3f", $0) }),
                 ("码率", MediaFormat.bitrate(stream.bitRate)),
-                ("动态范围", stream.videoRangeType),
+                // Emby 不返回 VideoRangeType，与播放器信息面板共用推断（ExtendedVideoType / ColorTransfer）。
+                ("动态范围", PlayerSession.dynamicRangeLabel(for: stream) ?? stream.videoRangeType),
+                ("传递函数", stream.colorTransfer),
                 ("配置", stream.profile),
                 ("等级", stream.level.map { String(format: "%.1f", $0) }),
                 ("长宽比", stream.aspectRatio),

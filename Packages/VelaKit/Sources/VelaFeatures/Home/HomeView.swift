@@ -12,12 +12,14 @@ import AVKit
 struct HomeView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.isCompactLayout) private var isCompact
+    @Environment(\.velaLayout) private var layout
     @Environment(\.playMedia) private var playMedia
     @State private var model = HomeModel()
     @SceneStorage("home.category") private var category: HomeModel.Category = .home
+    @State private var path = NavigationPath()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: VelaTheme.Spacing.xl) {
                     // 与 Android 版一致：顶部栏属于轮播区，随内容滚走，不遮挡下方分区。
@@ -50,8 +52,25 @@ struct HomeView: View {
                 guard let client = app.activeClient else { return }
                 await model.loadGenres(category, client: client)
             }
+            #if DEBUG
+            .task(id: app.servers.activeServer?.baseURL) { await openDebugLaunchItem() }
+            #endif
         }
     }
+
+    #if DEBUG
+    /// 仅 Debug 构建：启动环境变量 `VELA_DEBUG_OPEN_ITEM=<名称>` 时，在当前服务器搜索该名称并直接推入第一个结果的详情页。
+    /// 真机无法注入点击，用于命令行启动后截图验收详情页版式（`devicectl device process launch --environment-variables`）。
+    private func openDebugLaunchItem() async {
+        guard path.isEmpty,
+              let term = ProcessInfo.processInfo.environment["VELA_DEBUG_OPEN_ITEM"], !term.isEmpty,
+              let client = app.activeClient else { return }
+        let query = ItemQuery(searchTerm: term, includeItemTypes: ["Movie", "Series", "Episode"], recursive: true, limit: 1)
+        if let item = try? await client.items(query).items.first {
+            path.append(item)
+        }
+    }
+    #endif
 
     private struct TaskKey: Hashable {
         var category: HomeModel.Category
@@ -143,7 +162,7 @@ struct HomeView: View {
             Label("\(name)加载失败：\(message)", systemImage: "exclamationmark.triangle")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, VelaTheme.Spacing.l)
+                .velaPageMargin()
         }
     }
 
@@ -169,7 +188,7 @@ struct HomeView: View {
             Label("\(category.title)加载失败：\(message)", systemImage: "exclamationmark.triangle")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, VelaTheme.Spacing.l)
+                .velaPageMargin()
         case .idle, .loading, nil:
             ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
         }
@@ -182,7 +201,7 @@ struct HomeView: View {
             title: item.name,
             subtitle: item.productionYear.map(String.init),
             imageURL: app.imageURL(for: item, kind: .primary, maxWidth: 400),
-            width: VelaTheme.posterWidth(compact: isCompact),
+            width: layout.posterWidth,
             badges: PosterBadges(item)
         )
     }
@@ -554,7 +573,7 @@ private struct HomeTopBar: View {
             .buttonStyle(.plain)
             .accessibilityLabel("服务器：\(app.servers.activeServer?.displayName ?? "")")
         }
-        .padding(.horizontal, VelaTheme.Spacing.l)
+        .velaPageMargin()
         .padding(.top, 4)
         .sheet(isPresented: $isAddingServer) { AddServerView() }
     }

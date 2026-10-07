@@ -49,7 +49,7 @@ struct DiscoverPage: View {
                     ForEach(CatalogCategory.allCases) { Text($0.title).tag($0) }
                 }
                 .pickerStyle(.segmented)
-                .padding(.horizontal, VelaTheme.Spacing.l)
+                .velaPageMargin()
 
                 if category == .recommended, !model.resume.isEmpty {
                     FederatedResumeShelf(matches: model.resume)
@@ -101,6 +101,7 @@ private struct CatalogShelfView: View {
     let shelf: CatalogShelf
     let state: LoadState<[CatalogTitle]>
     @Environment(\.isCompactLayout) private var isCompact
+    @Environment(\.velaLayout) private var layout
 
     var body: some View {
         switch state {
@@ -122,7 +123,7 @@ private struct CatalogShelfView: View {
             Label("\(shelf.title)加载失败：\(message)", systemImage: "exclamationmark.triangle")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, VelaTheme.Spacing.l)
+                .velaPageMargin()
         case .loaded:
             EmptyView()
         default:
@@ -130,7 +131,7 @@ private struct CatalogShelfView: View {
                 Text(shelf.title).font(.title3.weight(.semibold))
                 ProgressView().frame(maxWidth: .infinity, minHeight: 120)
             }
-            .padding(.horizontal, VelaTheme.Spacing.l)
+            .velaPageMargin()
         }
     }
 }
@@ -139,13 +140,14 @@ struct CatalogPosterCard: View {
     let title: CatalogTitle
     var width: CGFloat?
     @Environment(\.isCompactLayout) private var isCompact
+    @Environment(\.velaLayout) private var layout
 
     var body: some View {
         PosterCard(
             title: title.title,
             subtitle: title.year.map(String.init),
             imageURL: CatalogImage.url(title.posterPath, size: .poster),
-            width: width ?? VelaTheme.posterWidth(compact: isCompact),
+            width: width ?? layout.posterWidth,
             badges: PosterBadges(rating: title.voteAverage)
         )
     }
@@ -156,6 +158,7 @@ private struct FederatedResumeShelf: View {
     let matches: [CatalogService.Match]
     @Environment(AppModel.self) private var app
     @Environment(\.isCompactLayout) private var isCompact
+    @Environment(\.velaLayout) private var layout
 
     var body: some View {
         MediaShelf("跨服务器继续观看", items: matches) { match in
@@ -168,7 +171,7 @@ private struct FederatedResumeShelf: View {
                         ? app.imageURL(for: item, kind: .primary, maxWidth: 640)
                         : (app.imageURL(for: item, kind: .backdrop, maxWidth: 640) ?? app.imageURL(for: item, kind: .primary, maxWidth: 640)),
                     progress: item.playedFraction,
-                    width: VelaTheme.landscapeCardWidth(compact: isCompact),
+                    width: layout.landscapeCardWidth,
                     caption: HomeView.remainingCaption(item)
                 )
             }
@@ -184,6 +187,7 @@ struct CatalogBrowseView: View {
     let shelf: CatalogShelf
     @Environment(AppModel.self) private var app
     @Environment(\.isCompactLayout) private var isCompact
+    @Environment(\.velaLayout) private var layout
     @State private var titles: [CatalogTitle] = []
     @State private var page = 0
     @State private var totalPages = 1
@@ -200,7 +204,7 @@ struct CatalogBrowseView: View {
     var body: some View {
         ScrollView {
             LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: VelaTheme.posterWidth(compact: isCompact)), spacing: VelaTheme.Spacing.m, alignment: .top)],
+                columns: [GridItem(.adaptive(minimum: layout.posterWidth), spacing: VelaTheme.Spacing.m, alignment: .top)],
                 spacing: VelaTheme.Spacing.l
             ) {
                 ForEach(titles) { title in

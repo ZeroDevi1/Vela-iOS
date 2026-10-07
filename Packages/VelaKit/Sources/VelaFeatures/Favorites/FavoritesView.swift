@@ -7,6 +7,7 @@ import VelaNetwork
 struct FavoritesView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.isCompactLayout) private var isCompact
+    @Environment(\.velaLayout) private var layout
     @State private var favorites: LoadState<[MediaItem]> = .idle
 
     /// 首屏取的收藏数量；超过时在完整网格中分页查看。
@@ -50,7 +51,7 @@ struct FavoritesView: View {
                         title: item.name,
                         subtitle: item.productionYear.map(String.init),
                         imageURL: app.imageURL(for: item, kind: .primary, maxWidth: 400),
-                        width: VelaTheme.posterWidth(compact: isCompact),
+                        width: layout.posterWidth,
                         badges: PosterBadges(item)
                     )
                 }

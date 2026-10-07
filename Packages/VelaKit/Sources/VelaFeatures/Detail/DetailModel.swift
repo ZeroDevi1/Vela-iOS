@@ -27,6 +27,9 @@ final class DetailModel {
     private(set) var actionNotice: String?
     /// 客户端合并进来的同一部电影的其他条目（见 `MediaItemMerger`），其媒体源作为额外版本供选择。
     private(set) var alternates: [ItemDetails] = []
+    /// 宽屏剧集页内嵌显示的季（`selectedSeasonID`）及其单集；iPhone 版式走季页面，不加载。
+    var selectedSeasonID: String?
+    private(set) var seasonEpisodes: LoadState<[MediaItem]> = .idle
 
     struct DirectorWorks: Identifiable, Sendable {
         var director: ItemDetails.Person
@@ -124,6 +127,10 @@ final class DetailModel {
             }
             for await section in group { apply(section) }
         }
+        // 季与下一集都返回后再定默认季，避免季先到时选错（用户已手动切换过则保留）。
+        if item.kind == .series, selectedSeasonID == nil {
+            selectedSeasonID = defaultSeasonID
+        }
     }
 
     private enum Section: Sendable {
@@ -145,6 +152,22 @@ final class DetailModel {
             guard !value.items.isEmpty else { return }
             directorWorks.append(value)
         }
+    }
+
+    /// 宽屏剧集页默认显示的季：下一集所在季，否则第一个正片季（跳过「特别季」，季号 0）。
+    var defaultSeasonID: String? {
+        if let id = nextUp?.seasonID, seasons.contains(where: { $0.id == id }) { return id }
+        return (seasons.first { ($0.indexNumber ?? 0) > 0 } ?? seasons.first)?.id
+    }
+
+    /// 加载 `selectedSeasonID` 的单集。切换季时调用；返回前季已被再次切换则丢弃结果。
+    func loadSeasonEpisodes(client: MediaServerClient) async {
+        guard item.kind == .series, let seasonID = selectedSeasonID else { return }
+        seasonEpisodes = .loading
+        let seriesID = item.id
+        let result = await capture { try await client.episodes(seriesID: seriesID, seasonID: seasonID) }
+        guard selectedSeasonID == seasonID else { return }
+        seasonEpisodes = LoadState(result)
     }
 
     /// 合并条目逐个取详情；单个失败只是少一个版本，不影响页面。

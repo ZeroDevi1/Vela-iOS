@@ -8,6 +8,7 @@ import VelaNetwork
 struct SearchView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.isCompactLayout) private var isCompact
+    @Environment(\.velaLayout) private var layout
     @State private var query = ""
     @State private var sections: [FederatedSearchSection] = []
     @State private var isSearching = false
@@ -55,7 +56,7 @@ struct SearchView: View {
                                     subtitle: item.episodeLabel ?? item.productionYear.map(String.init),
                                     imageURL: app.imageURL(for: item, kind: .primary, maxWidth: 400),
                                     progress: item.playedFraction,
-                                    width: VelaTheme.posterWidth(compact: isCompact)
+                                    width: layout.posterWidth
                                 )
                             }
                             .buttonStyle(.plain)
@@ -64,7 +65,7 @@ struct SearchView: View {
                         Label("\(section.sourceName)：\(error.message)", systemImage: "exclamationmark.triangle")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
-                            .padding(.horizontal, VelaTheme.Spacing.l)
+                            .velaPageMargin()
                     default:
                         EmptyView()
                     }
@@ -95,7 +96,7 @@ struct SearchView: View {
                         title: title.title,
                         subtitle: title.year,
                         imageURL: title.posterURL,
-                        width: VelaTheme.posterWidth(compact: isCompact),
+                        width: layout.posterWidth,
                         badges: PosterBadges(rating: title.rating)
                     )
                 }
@@ -112,7 +113,7 @@ struct SearchView: View {
         Label("\(name)：\(error.localizedDescription)", systemImage: "exclamationmark.triangle")
             .font(.footnote)
             .foregroundStyle(.secondary)
-            .padding(.horizontal, VelaTheme.Spacing.l)
+            .velaPageMargin()
     }
 
     private var catalogEmpty: Bool {
@@ -235,7 +236,7 @@ private struct SearchSuggestionsView: View {
                             .padding(.horizontal, 16)
                             .frame(height: 36)
                             .glassEffect(.regular, in: .capsule)
-                            .padding(.horizontal, VelaTheme.Spacing.l)
+                            .velaPageMargin()
                         carousel(cardWidth: cardWidth, height: min(cardWidth * 1.5, proxy.size.height * 0.62))
                         if let currentItem {
                             info(currentItem).frame(maxWidth: .infinity)

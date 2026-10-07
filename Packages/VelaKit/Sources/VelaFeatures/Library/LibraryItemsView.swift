@@ -50,7 +50,7 @@ struct LibraryItemsView: View {
     var body: some View {
         VStack(spacing: 0) {
             TabPills(tabs: tabs, selection: $tab)
-                .padding(.horizontal, VelaTheme.Spacing.l)
+                .velaPageMargin()
                 .padding(.bottom, VelaTheme.Spacing.s)
 
             switch tab {
@@ -298,6 +298,7 @@ struct PagedItemGrid<Header: View>: View {
 
     @Environment(AppModel.self) private var app
     @Environment(\.isCompactLayout) private var isCompact
+    @Environment(\.velaLayout) private var layout
     @State private var items: [MediaItem] = []
     @State private var total = 0
     /// 已取到的原始条目数（合并前），分页偏移与「是否还有下一页」都以它为准。
@@ -317,13 +318,13 @@ struct PagedItemGrid<Header: View>: View {
     }
 
     private var cardWidth: CGFloat {
-        style == .poster ? VelaTheme.posterWidth(compact: isCompact) : HomeView.landscapeWidth(compact: isCompact) - 20
+        style == .poster ? layout.posterWidth : HomeView.landscapeWidth(compact: isCompact) - 20
     }
 
     var body: some View {
         ScrollView {
             header()
-                .padding(.horizontal, VelaTheme.Spacing.l)
+                .velaPageMargin()
             // iPhone 竖屏要放下三列海报（与 Android 版一致），列间距与边距比其他页面略紧。
             LazyVGrid(
                 columns: [GridItem(.adaptive(minimum: cardWidth), spacing: isCompact ? 10 : VelaTheme.Spacing.m, alignment: .top)],
@@ -435,6 +436,7 @@ private struct FacetGrid: View {
     let facet: MediaServerClient.Facet
     @Environment(AppModel.self) private var app
     @Environment(\.isCompactLayout) private var isCompact
+    @Environment(\.velaLayout) private var layout
     @State private var facets: LoadState<[MediaItem]> = .idle
 
     var body: some View {
@@ -522,6 +524,7 @@ private struct FolderContentsView: View {
     let serverID: String
     @Environment(AppModel.self) private var app
     @Environment(\.isCompactLayout) private var isCompact
+    @Environment(\.velaLayout) private var layout
     @State private var content: LoadState<[MediaItem]> = .idle
 
     private static let limit = 500
@@ -533,7 +536,7 @@ private struct FolderContentsView: View {
                 ContentUnavailableView("空文件夹", systemImage: "folder")
             case .loaded(let list):
                 LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: VelaTheme.posterWidth(compact: isCompact)), spacing: VelaTheme.Spacing.m, alignment: .top)],
+                    columns: [GridItem(.adaptive(minimum: layout.posterWidth), spacing: VelaTheme.Spacing.m, alignment: .top)],
                     spacing: VelaTheme.Spacing.l
                 ) {
                     ForEach(list) { item in
@@ -546,7 +549,7 @@ private struct FolderContentsView: View {
                                     subtitle: item.productionYear.map(String.init),
                                     imageURL: app.imageURL(for: item, kind: .primary, maxWidth: 400),
                                     progress: item.playedFraction,
-                                    width: VelaTheme.posterWidth(compact: isCompact),
+                                    width: layout.posterWidth,
                                     badges: PosterBadges(item)
                                 )
                             }
@@ -565,7 +568,7 @@ private struct FolderContentsView: View {
     }
 
     private func folderCard(_ item: MediaItem) -> some View {
-        let width = VelaTheme.posterWidth(compact: isCompact)
+        let width = layout.posterWidth
         return VStack(alignment: .leading, spacing: VelaTheme.Spacing.xs) {
             CachedImage(url: app.imageURL(for: item, kind: .primary, maxWidth: 400)) {
                 ZStack {
@@ -602,6 +605,7 @@ private struct LibraryRecommendationsView: View {
 
     @Environment(AppModel.self) private var app
     @Environment(\.isCompactLayout) private var isCompact
+    @Environment(\.velaLayout) private var layout
     @State private var rows: [Row] = []
     @State private var hasLoaded = false
 
@@ -651,7 +655,7 @@ private struct LibraryRecommendationsView: View {
                 title: item.name,
                 subtitle: item.productionYear.map(String.init),
                 imageURL: app.imageURL(for: item, kind: .primary, maxWidth: 400),
-                width: VelaTheme.posterWidth(compact: isCompact),
+                width: layout.posterWidth,
                 badges: PosterBadges(item)
             )
         }

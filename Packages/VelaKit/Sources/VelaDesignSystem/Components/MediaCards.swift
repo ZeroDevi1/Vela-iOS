@@ -132,6 +132,7 @@ public struct PosterCard: View {
                 .overlay(alignment: .bottomTrailing) { ratingBadge }
                 .overlay(alignment: .topLeading) { versionBadge }
                 .clipShape(.rect(cornerRadius: VelaTheme.Radius.card))
+                .velaCardHover()
                 .padding(.bottom, VelaTheme.Spacing.xs)
             Text(title)
                 .font(.subheadline.weight(.semibold))
@@ -234,6 +235,7 @@ public struct LandscapeCard: View {
                 }
                 .overlay(alignment: .bottom) { ProgressStrip(progress: progress) }
                 .clipShape(.rect(cornerRadius: VelaTheme.Radius.card))
+                .velaCardHover()
                 .padding(.bottom, VelaTheme.Spacing.xs)
             Text(title)
                 .font(.subheadline.weight(.semibold))
@@ -276,6 +278,7 @@ public struct MediaShelf<Item: Identifiable, Card: View, Accessory: View>: View 
     let items: [Item]
     let card: (Item) -> Card
     let accessory: Accessory
+    @Environment(\.velaLayout) private var layout
 
     public init(
         _ title: String,
@@ -297,13 +300,13 @@ public struct MediaShelf<Item: Identifiable, Card: View, Accessory: View>: View 
                 Spacer(minLength: VelaTheme.Spacing.s)
                 accessory
             }
-            .padding(.horizontal, VelaTheme.Spacing.l)
+            .padding(.horizontal, layout.pageMargin)
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: VelaTheme.Spacing.m) {
                     ForEach(items) { item in card(item) }
                 }
                 .scrollTargetLayout()
-                .padding(.horizontal, VelaTheme.Spacing.l)
+                .padding(.horizontal, layout.pageMargin)
             }
             .scrollIndicators(.hidden)
             .scrollTargetBehavior(.viewAligned)

@@ -14,9 +14,15 @@ struct VelaApp: App {
         WindowGroup {
             VelaRootView()
                 .environment(app)
+                #if os(macOS)
+                // 侧边栏约 220pt + 内容区至少 compact 档的一屏海报；再窄会挤压侧边栏与卡片。
+                .frame(minWidth: 800, minHeight: 560)
+                #endif
         }
         #if os(macOS)
         .defaultSize(width: 1200, height: 780)
+        .windowResizability(.contentMinSize)
+        .commands { VelaCommands() }
         #endif
 
         #if os(macOS)

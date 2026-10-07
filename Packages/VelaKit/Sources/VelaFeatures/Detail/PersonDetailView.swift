@@ -14,6 +14,7 @@ struct PersonDetailView: View {
     let route: PersonRoute
     @Environment(AppModel.self) private var app
     @Environment(\.isCompactLayout) private var isCompact
+    @Environment(\.velaLayout) private var layout
     @State private var details: ItemDetails?
     @State private var works: LoadState<[MediaItem]> = .idle
     @State private var filter: Filter = .all
@@ -118,7 +119,7 @@ struct PersonDetailView: View {
                     Text("本服务器上没有该人物的作品").foregroundStyle(.secondary).padding(.horizontal, VelaTheme.Spacing.l)
                 } else {
                     LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: VelaTheme.posterWidth(compact: isCompact)), spacing: VelaTheme.Spacing.m, alignment: .top)],
+                        columns: [GridItem(.adaptive(minimum: layout.posterWidth), spacing: VelaTheme.Spacing.m, alignment: .top)],
                         spacing: VelaTheme.Spacing.l
                     ) {
                         ForEach(shown) { item in
@@ -127,7 +128,7 @@ struct PersonDetailView: View {
                                     title: item.name,
                                     subtitle: item.productionYear.map(String.init),
                                     imageURL: app.imageURL(for: item, kind: .primary, maxWidth: 400),
-                                    width: VelaTheme.posterWidth(compact: isCompact),
+                                    width: layout.posterWidth,
                                     badges: PosterBadges(item)
                                 )
                             }
