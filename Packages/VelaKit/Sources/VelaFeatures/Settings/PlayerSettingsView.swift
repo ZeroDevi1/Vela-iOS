@@ -18,6 +18,67 @@ struct PlaybackSettingsLinks: View {
 
 // MARK: - 播放设置
 
+/// 播放内核选项卡片：名称、测试标签、能力说明与选中对勾（参考 Forward 的内核设置）。
+private struct EngineOptionRow: View {
+    let mode: PlaybackEngineMode
+    let isSelected: Bool
+    let select: () -> Void
+
+    var body: some View {
+        Button(action: select) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(mode.title).font(.body.weight(.semibold))
+                        if mode.isExperimental {
+                            Text("Beta")
+                                .font(.caption2.weight(.bold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(.orange.opacity(0.2)))
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                    Text(mode.summary)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "checkmark")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.tint)
+                    .opacity(isSelected ? 1 : 0)
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+private extension PlaybackEngineMode {
+    /// mpv / VLC 为对比测试接入，能力尚未补齐（见 docs/PLAN.md 第 5.0 节能力矩阵）。
+    var isExperimental: Bool { self == .mpv || self == .vlc }
+
+    /// 与能力矩阵一致的简要说明；矩阵变化时同步修改。
+    var summary: String {
+        switch self {
+        case .auto:
+            "推荐。优先系统内核（硬件解码、最省电），MKV 等格式由服务器转封装；需要读取内嵌字幕时自动改用 KSPlayer。系统内核播放失败时可选择「用 KSPlayer 内核重试」。"
+        case .system:
+            "始终使用 AVPlayer：原生 HDR / 杜比视界、空间音频、画中画、AirPlay 与 VR 转平面。不能直放的格式交给服务器处理。"
+        case .ksPlayer:
+            "基于 FFmpeg 直放原文件，同样硬件解码，支持画中画与 VR 转平面；不支持 AirPlay 视频，杜比视界按 HDR10 显示。"
+        case .mpv:
+            "与 Android 版默认内核相同，直放原文件，字幕（含 ASS 特效）由 libass 渲染，应用字幕样式不生效。暂不支持画中画、VR 转平面与 AirPlay 视频。"
+        case .vlc:
+            "直放原文件，字幕（含 ASS 特效）由 libvlc 渲染。支持画中画（仅 iPhone / iPad，不能切后台自动进入），暂不支持 VR 转平面、AirPlay 视频与网速统计。"
+        }
+    }
+}
+
 /// 内核、续播、前后台行为、定位、预览、缓存与剧集。修改即时保存，多数选项在播放中即时生效。
 struct PlayerSettingsView: View {
     @Environment(AppModel.self) private var app
@@ -26,11 +87,15 @@ struct PlayerSettingsView: View {
         @Bindable var prefs = app.playerPreferences
         Form {
             Section {
-                Picker("播放内核", selection: $prefs.engineMode) {
-                    ForEach(PlaybackEngineMode.allCases, id: \.self) { Text($0.title).tag($0) }
+                ForEach(PlaybackEngineMode.allCases, id: \.self) { mode in
+                    EngineOptionRow(mode: mode, isSelected: prefs.engineMode == mode) {
+                        prefs.engineMode = mode
+                    }
                 }
+            } header: {
+                Text("播放内核")
             } footer: {
-                Text("自动：始终使用系统内核（硬件解码，最省电；支持 HDR / 杜比视界 / 画中画 / AirPlay / VR 转平面），MKV 等格式由服务器转封装。系统内核播放失败时可选择「用 KSPlayer 内核重试」。KSPlayer 仅作备选：基于 FFmpeg 直放原文件（同样硬件解码，支持画中画与 VR 转平面），不支持 AirPlay 视频，杜比视界按 HDR10 显示。mpv / VLC 为测试内核：直放原文件、字幕（含 ASS 特效）由内核自行渲染，暂不支持画中画、VR 转平面与 AirPlay 视频。播放中可在「更多 → 切换内核」随时换用。")
+                Text("切换后重新进入播放器生效；播放中可在「更多 → 切换内核」立即换用。")
             }
 
             Section {
