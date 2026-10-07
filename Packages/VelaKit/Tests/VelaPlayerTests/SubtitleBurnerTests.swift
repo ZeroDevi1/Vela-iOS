@@ -14,7 +14,9 @@ struct SubtitleBurnerTests {
         if CVPixelBufferIsPlanar(frame) {
             // 视频范围的黑色：Y = 16，CbCr = 128。
             memset(CVPixelBufferGetBaseAddressOfPlane(frame, 0), 16, CVPixelBufferGetBytesPerRowOfPlane(frame, 0) * height)
-            memset(CVPixelBufferGetBaseAddressOfPlane(frame, 1), 128, CVPixelBufferGetBytesPerRowOfPlane(frame, 1) * height / 2)
+            for plane in 1..<CVPixelBufferGetPlaneCount(frame) {
+                memset(CVPixelBufferGetBaseAddressOfPlane(frame, plane), 128, CVPixelBufferGetBytesPerRowOfPlane(frame, plane) * height / 2)
+            }
         } else {
             memset(CVPixelBufferGetBaseAddress(frame), 0, CVPixelBufferGetBytesPerRow(frame) * height)
         }
@@ -65,5 +67,35 @@ struct SubtitleBurnerTests {
         #expect(CVPixelBufferGetWidth(output) == 1920)
         #expect(CVPixelBufferGetHeight(output) == 1080)
         #expect(brightestNearBottom(output) > 180, "字幕应画进亮度平面")
+    }
+
+    /// 回归：KSPlayer 软解输出三平面 `y420`，CoreImage 不支持读写该格式，曾导致小窗绿屏且没有字幕。
+    /// 现改为在 CPU 上把字幕混合进亮度 / 色度平面，格式、尺寸不变，字幕区域以外保持原样。
+    @Test func threePlanarFramesGetSubtitleWithoutCoreImage() throws {
+        let burner = SubtitleBurner()
+        let format = kCVPixelFormatType_420YpCbCr8Planar
+        let source = try blackFrame(width: 1280, height: 720, format: format)
+        burner.setText("三平面字幕")
+        let output = try #require(burner.burnPreservingFormat(source))
+        #expect(CVPixelBufferGetPixelFormatType(output) == format)
+        #expect(CVPixelBufferGetWidth(output) == 1280)
+        #expect(CVPixelBufferGetHeight(output) == 720)
+        #expect(brightestNearBottom(output) > 180, "字幕应画进亮度平面")
+
+        CVPixelBufferLockBaseAddress(output, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(output, .readOnly) }
+        // 画面上半部分没有字幕：亮度保持视频范围的黑（16），色度保持 128，不能出现全 0 的「绿屏」。
+        let luma = CVPixelBufferGetBaseAddressOfPlane(output, 0)!.assumingMemoryBound(to: UInt8.self)
+        let cb = CVPixelBufferGetBaseAddressOfPlane(output, 1)!.assumingMemoryBound(to: UInt8.self)
+        #expect(luma[100 * CVPixelBufferGetBytesPerRowOfPlane(output, 0) + 640] == 16)
+        #expect(cb[50 * CVPixelBufferGetBytesPerRowOfPlane(output, 1) + 320] == 128)
+    }
+
+    /// CoreImage 与 CPU 混合都不支持的格式：返回 nil（显示原帧、不叠字幕），而不是送出空白帧。
+    @Test func unsupportedFormatFallsBackToOriginalFrame() throws {
+        let burner = SubtitleBurner()
+        burner.setText("Subtitle")
+        let source = try blackFrame(width: 640, height: 360, format: kCVPixelFormatType_422YpCbCr8)
+        #expect(burner.burnPreservingFormat(source) == nil)
     }
 }
