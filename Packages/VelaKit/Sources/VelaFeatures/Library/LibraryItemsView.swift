@@ -318,7 +318,8 @@ struct PagedItemGrid<Header: View>: View {
     }
 
     private var cardWidth: CGFloat {
-        style == .poster ? layout.posterWidth : HomeView.landscapeWidth(compact: isCompact) - 20
+        // 宽屏横卡随分档放大（260 / 320 / 360 减去网格间距余量），与首页横卡观感一致。
+        style == .poster ? layout.posterWidth : (isCompact ? HomeView.landscapeWidth(compact: true) : layout.landscapeCardWidth) - 20
     }
 
     var body: some View {
@@ -339,7 +340,8 @@ struct PagedItemGrid<Header: View>: View {
                         }
                 }
             }
-            .padding(.horizontal, isCompact ? VelaTheme.Spacing.m : VelaTheme.Spacing.l)
+            // 宽屏与页头同用页面边距左对齐；iPhone 保持较紧的边距以放下三列海报。
+            .padding(.horizontal, isCompact ? VelaTheme.Spacing.m : layout.pageMargin)
             .padding(.vertical, VelaTheme.Spacing.s)
 
             if isLoading { ProgressView().padding() }
@@ -453,7 +455,8 @@ private struct FacetGrid: View {
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(VelaTheme.Spacing.l)
+                .padding(.vertical, VelaTheme.Spacing.l)
+                .velaPageMargin()
             case .failed(let message):
                 LoadFailureView(message: message) { Task { await load() } }
             default:
