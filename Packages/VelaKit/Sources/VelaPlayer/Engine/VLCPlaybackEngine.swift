@@ -12,7 +12,8 @@ import VelaCore
 /// - 直放 MKV 等任意容器；内嵌字幕（含 ASS 特效）由 libvlc 直接画进画面，所以 `embeddedSubtitleText` 恒为 nil
 /// - 画中画（仅 iOS）：经 `VLCVideoContainerView` 接 VLCKit 4 的窗口控制协议（不支持切后台自动进入，见 `WindowPictureInPictureProviding`）。
 ///   macOS 的 libvlc 视频输出为 OpenGL（`vout_macosx`），不创建画中画控制器
-/// - 不实现：VR 取帧、网速与帧率统计
+/// - 网速 / 帧率：由 libvlc 媒体统计的累计计数按时间差折算（`VLCRateMeter`）
+/// - 不实现：VR 取帧
 /// - HTTP 请求头：libvlc 只支持 User-Agent / Referer，其余请求头无法注入，依赖 URL 鉴权（Jellyfin / Emby 的 api_key）
 /// 线程：VLCMediaPlayer 的属性在主线程读写；进度由 4 Hz 定时器轮询，与其他内核一致。
 @MainActor
@@ -46,6 +47,7 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
     @ObservationIgnored private var pendingSubtitleOrdinal: Int??
     /// 曾经进入过播放：libvlc 在播放结束与主动停止时都报告 `stopped`，用它区分「结束」与「尚未起播」。
     @ObservationIgnored private var didStartPlaying = false
+    @ObservationIgnored private var rates = VLCRateMeter()
 
     public var surface: PlaybackSurface { .view(containerView) }
 
@@ -86,6 +88,8 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
         wantsPlay = true
         didStartPlaying = false
         progress.reset()
+        rates = VLCRateMeter()
+        networkThroughput = nil
         startTime = source.startTime
         activateAudioSession()
 
@@ -137,7 +141,7 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
         player.time = VLCTime(int: Int32(clamping: Int(target * 1000)))
     }
 
-    public func currentFrameRate() -> Double? { nil }
+    public func currentFrameRate() -> Double? { rates.frameRate }
 
     public func setRate(_ rate: Float) {
         self.rate = rate
@@ -287,6 +291,10 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
         }
         updateStatus(time: time)
         publishSnapshot()
+        if let stats = player.media?.statistics {
+            rates.record(readBytes: stats.readBytes, displayedPictures: stats.displayedPictures, at: .now)
+            if let throughput = rates.throughput, throughput != networkThroughput { networkThroughput = throughput }
+        }
     }
 
     @ObservationIgnored private var progress = VLCProgressTracker()
@@ -380,5 +388,33 @@ struct VLCProgressTracker {
     mutating func reset() {
         lastTime = nil
         lastAdvance = nil
+    }
+}
+
+/// 把 libvlc 媒体统计的累计计数（已读字节、已显示帧）折算为速率。
+///
+/// 不用统计里的 `inputBitrate`：其单位未在头文件中说明，且缓冲区满时为 0。累计计数为 Int32，
+/// 超过 2 GB 会回绕成负数，出现回退时丢弃这一段重新开始。每满 1 秒结算一次，避免 4 Hz 轮询带来的抖动。
+struct VLCRateMeter {
+    /// 最近一次测得的下载速度（bit/s）。缓冲区已满、暂时没有下载时保留上一次的值。
+    private(set) var throughput: Double?
+    /// 最近 1 秒实际显示的帧率；暂停或未出画面时为 nil。
+    private(set) var frameRate: Double?
+    private var window: (date: Date, bytes: Int32, pictures: Int32)?
+    static let interval: TimeInterval = 1
+
+    mutating func record(readBytes: Int32, displayedPictures: Int32, at date: Date) {
+        guard let start = window else {
+            window = (date, readBytes, displayedPictures)
+            return
+        }
+        let elapsed = date.timeIntervalSince(start.date)
+        guard elapsed >= Self.interval else { return }
+        window = (date, readBytes, displayedPictures)
+        let bytes = Int64(readBytes) - Int64(start.bytes)
+        let pictures = Int64(displayedPictures) - Int64(start.pictures)
+        guard bytes >= 0, pictures >= 0 else { return }
+        if bytes > 0 { throughput = Double(bytes) * 8 / elapsed }
+        frameRate = pictures > 0 ? Double(pictures) / elapsed : nil
     }
 }

@@ -74,7 +74,7 @@ private extension PlaybackEngineMode {
         case .mpv:
             "与 Android 版默认内核相同，直放原文件，字幕（含 ASS 特效）由 libass 渲染，应用字幕样式不生效。暂不支持画中画、VR 转平面与 AirPlay 视频。"
         case .vlc:
-            "直放原文件，字幕（含 ASS 特效）由 libvlc 渲染。支持画中画（仅 iPhone / iPad，不能切后台自动进入），暂不支持 VR 转平面、AirPlay 视频与网速统计。"
+            "直放原文件，字幕（含 ASS 特效）由 libvlc 渲染。支持画中画（仅 iPhone / iPad，不能切后台自动进入），暂不支持 VR 转平面与 AirPlay 视频。"
         }
     }
 }
