@@ -22,8 +22,10 @@ struct HomeView: View {
         NavigationStack(path: $path) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: VelaTheme.Spacing.xl) {
+                    #if os(iOS)
                     // 与 Android 版一致：顶部栏属于轮播区，随内容滚走，不遮挡下方分区。
                     HomeTopBar(category: $category)
+                    #endif
                     let featured = featuredItems
                     if prefs.showHero, !featured.isEmpty {
                         HomeCarousel(items: featured, compact: isCompact, layout: layout, style: prefs.heroStyle, size: prefs.heroSize)
@@ -38,6 +40,9 @@ struct HomeView: View {
             }
             #if os(iOS)
             .toolbar(.hidden, for: .navigationBar)
+            #else
+            // Mac 用窗口工具栏承载分类与服务器操作（原生位置），不在内容里画浮动按钮。
+            .toolbar { HomeToolbar(category: $category) }
             #endif
             .navigationTitle(app.servers.activeServer?.displayName ?? "首页")
             .navigationDestination(for: HomeListRoute.self) { route in
@@ -644,18 +649,9 @@ private struct HomeTopBar: View {
             Spacer()
 
             if let server = app.servers.activeServer, server.lines.count > 1 {
-                Menu {
-                    Picker("线路", selection: Binding(
-                        get: { server.activeLine.id },
-                        set: { app.lineRouter.switchManually(serverID: server.id, lineID: $0) }
-                    )) {
-                        ForEach(server.lines) { Text(LineRouting.displayName(of: $0)).tag($0.id) }
-                    }
-                } label: {
-                    circleIcon("bolt.fill")
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("切换线路")
+                Menu { LineMenuContent(server: server) } label: { circleIcon("bolt.fill") }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("切换线路")
             }
 
             #if os(iOS)
@@ -665,18 +661,7 @@ private struct HomeTopBar: View {
             #endif
 
             Menu {
-                Picker("当前服务器", selection: Binding(
-                    get: { app.servers.activeServer?.id },
-                    set: { if let id = $0 { app.servers.activate(id) } }
-                )) {
-                    ForEach(app.servers.servers) { server in
-                        Label(server.displayName, systemImage: server.isPrivate ? "lock" : "server.rack")
-                            .tag(Optional(server.id))
-                    }
-                }
-                Divider()
-                NavigationLink(value: HomeListRoute.downloads) { Label("下载", systemImage: "arrow.down.circle") }
-                Button("添加服务器…", systemImage: "plus") { isAddingServer = true }
+                ServerMenuContent { isAddingServer = true }
             } label: {
                 CachedImage(url: app.activeClient?.userImageURL) {
                     Image(systemName: "person.crop.circle.fill").resizable().foregroundStyle(.secondary)
@@ -701,6 +686,74 @@ private struct HomeTopBar: View {
             .glassEffect(.regular.interactive(), in: .circle)
     }
 }
+
+/// 线路切换菜单的内容（iOS 顶部栏与 Mac 工具栏共用）。
+private struct LineMenuContent: View {
+    let server: SavedServer
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        Picker("线路", selection: Binding(
+            get: { server.activeLine.id },
+            set: { app.lineRouter.switchManually(serverID: server.id, lineID: $0) }
+        )) {
+            ForEach(server.lines) { Text(LineRouting.displayName(of: $0)).tag($0.id) }
+        }
+    }
+}
+
+/// 服务器菜单的内容：切换服务器、下载、添加服务器（iOS 顶部栏与 Mac 工具栏共用）。
+private struct ServerMenuContent: View {
+    let addServer: () -> Void
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        Picker("当前服务器", selection: Binding(
+            get: { app.servers.activeServer?.id },
+            set: { if let id = $0 { app.servers.activate(id) } }
+        )) {
+            ForEach(app.servers.servers) { server in
+                Label(server.displayName, systemImage: server.isPrivate ? "lock" : "server.rack")
+                    .tag(Optional(server.id))
+            }
+        }
+        Divider()
+        NavigationLink(value: HomeListRoute.downloads) { Label("下载", systemImage: "arrow.down.circle") }
+        Button("添加服务器…", systemImage: "plus", action: addServer)
+    }
+}
+
+#if os(macOS)
+/// Mac 首页工具栏：左侧分类分段控件，右侧线路与服务器菜单。
+private struct HomeToolbar: ToolbarContent {
+    @Binding var category: HomeModel.Category
+    @Environment(AppModel.self) private var app
+    @State private var isAddingServer = false
+
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Picker("分类", selection: $category) {
+                ForEach(HomeModel.Category.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .fixedSize()
+        }
+        ToolbarItemGroup(placement: .primaryAction) {
+            if let server = app.servers.activeServer, server.lines.count > 1 {
+                Menu { LineMenuContent(server: server) } label: { Label("线路", systemImage: "bolt.fill") }
+                    .help("切换线路")
+            }
+            Menu {
+                ServerMenuContent { isAddingServer = true }
+            } label: {
+                Label(app.servers.activeServer?.displayName ?? "服务器", systemImage: "server.rack")
+            }
+            .help("切换服务器")
+            .sheet(isPresented: $isAddingServer) { AddServerView() }
+        }
+    }
+}
+#endif
 
 #if os(iOS)
 /// 系统 AirPlay 投屏选择器。
