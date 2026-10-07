@@ -26,7 +26,7 @@ struct HomeView: View {
                     HomeTopBar(category: $category)
                     let featured = featuredItems
                     if prefs.showHero, !featured.isEmpty {
-                        HomeCarousel(items: featured, compact: isCompact, style: prefs.heroStyle, size: prefs.heroSize)
+                        HomeCarousel(items: featured, compact: isCompact, layout: layout, style: prefs.heroStyle, size: prefs.heroSize)
                     }
                     if category == .home {
                         homeContent
@@ -310,9 +310,14 @@ private struct GenreItemsView: View {
 /// 因此第一张左侧也有卡片，末尾翻到开头也只滑一格。
 /// 当前卡片按可见度判断（完全可见的那一张），不用 `scrollPosition(id:)` 的回写：动画滚动途中它会写入经过的卡片，
 /// 自动翻页以此为起点会一次跳过好几张。拖动期间不自动翻页。
+///
+/// 宽屏（`VelaLayout.isWide`）且选择「背景图」样式时改为沉浸式大头图（与宽屏详情页头图同风格）：
+/// 每页铺满宽度、无间隙与圆角，左下为 Logo、元数据与两行简介，循环与自动翻页逻辑不变。
+/// 「海报」样式保持卡片轮播，尊重用户设置。
 private struct HomeCarousel: View {
     let items: [MediaItem]
     let compact: Bool
+    let layout: VelaLayout
     /// 海报（竖版，露出更多相邻卡片）或背景图（横版）。
     let style: LibraryPreferences.ArtworkStyle
     let size: LibraryPreferences.HeroSize
@@ -335,9 +340,10 @@ private struct HomeCarousel: View {
 
     private static let interval: Duration = .seconds(8)
 
-    init(items: [MediaItem], compact: Bool, style: LibraryPreferences.ArtworkStyle, size: LibraryPreferences.HeroSize) {
+    init(items: [MediaItem], compact: Bool, layout: VelaLayout, style: LibraryPreferences.ArtworkStyle, size: LibraryPreferences.HeroSize) {
         self.items = items
         self.compact = compact
+        self.layout = layout
         self.style = style
         self.size = size
         _position = State(initialValue: ScrollPosition(id: Slot(copy: items.count > 1 ? 1 : 0, index: 0), anchor: .center))
@@ -347,21 +353,45 @@ private struct HomeCarousel: View {
     private var copies: Int { items.count > 1 ? 3 : 1 }
     private var middle: Int { copies / 2 }
 
+    private var immersive: Bool { layout.isWide && style == .backdrop }
+
+    /// 轮播高度（pt）：「大号」为基准，按 `HeroSize.scale` 缩放。
+    private var height: CGFloat {
+        let base: CGFloat = if immersive {
+            layout == .expanded ? 600 : 500
+        } else if style == .poster {
+            compact ? 360 : 460
+        } else {
+            compact ? 260 : 380
+        }
+        return base * size.scale
+    }
+
     private var slots: [Slot] {
         (0..<copies).flatMap { copy in items.indices.map { Slot(copy: copy, index: $0) } }
     }
 
     var body: some View {
         GeometryReader { proxy in
-            let cardWidth = style == .poster
-                ? min(proxy.size.width * 0.8, proxy.size.height * 2 / 3)
-                : proxy.size.width * (compact ? 0.8 : 0.62)
+            let cardWidth = if immersive {
+                proxy.size.width
+            } else if style == .poster {
+                min(proxy.size.width * 0.8, proxy.size.height * 2 / 3)
+            } else {
+                proxy.size.width * (compact ? 0.8 : 0.62)
+            }
             ScrollView(.horizontal) {
-                LazyHStack(spacing: 10) {
+                LazyHStack(spacing: immersive ? 0 : 10) {
                     ForEach(slots, id: \.self) { slot in
                         NavigationLink(value: items[slot.index]) {
-                            CarouselCard(item: items[slot.index], style: style)
-                                .frame(width: cardWidth, height: proxy.size.height)
+                            Group {
+                                if immersive {
+                                    ImmersiveHeroCard(item: items[slot.index], margin: layout.pageMargin)
+                                } else {
+                                    CarouselCard(item: items[slot.index], style: style)
+                                }
+                            }
+                            .frame(width: cardWidth, height: proxy.size.height)
                         }
                         .buttonStyle(.plain)
                     }
@@ -381,7 +411,14 @@ private struct HomeCarousel: View {
                 if phase == .idle { recenter() }
             }
         }
-        .frame(height: (style == .poster ? (compact ? 360 : 460) : (compact ? 260 : 380)) * size.scale)
+        .frame(height: height)
+        .overlay(alignment: .bottomTrailing) {
+            if immersive, items.count > 1 {
+                PageDots(count: items.count, current: visible?.index ?? 0)
+                    .padding(.trailing, layout.pageMargin)
+                    .padding(.bottom, VelaTheme.Spacing.l)
+            }
+        }
         .task(id: AdvanceKey(visible: visible, isScrolling: isScrolling, itemIDs: items.map(\.id))) {
             try? await Task.sleep(for: Self.interval)
             guard !Task.isCancelled, !isScrolling, items.count > 1 else { return }
@@ -405,6 +442,85 @@ private struct HomeCarousel: View {
         transaction.disablesAnimations = true
         withTransaction(transaction) { position.scrollTo(id: target, anchor: .center) }
         self.visible = target
+    }
+}
+
+/// 宽屏沉浸式头图的一页：背景图铺满，左侧与底部压暗，左下为 Logo / 标题、元数据与两行简介（与页面边距对齐）。
+private struct ImmersiveHeroCard: View {
+    let item: MediaItem
+    let margin: CGFloat
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        Color.clear
+            .overlay {
+                RemoteArtwork(url: app.imageURL(for: item, kind: .backdrop, maxWidth: 1920), placeholderSymbol: "film")
+            }
+            .overlay {
+                // 左侧与底部两道渐变：文字区域足够暗，右上方保留画面。
+                ZStack {
+                    LinearGradient(colors: [.black.opacity(0.65), .clear], startPoint: .leading, endPoint: .init(x: 0.6, y: 0.5))
+                    LinearGradient(
+                        stops: [.init(color: .clear, location: 0.45), .init(color: .black.opacity(0.75), location: 1)],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                }
+            }
+            .overlay(alignment: .bottomLeading) {
+                info
+                    .frame(maxWidth: 560, alignment: .leading)
+                    .padding(.leading, margin)
+                    .padding(.trailing, margin + 120)
+                    .padding(.bottom, VelaTheme.Spacing.xl)
+            }
+            .clipped()
+            .contentShape(.rect)
+    }
+
+    private var info: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let logo = app.client(forServerID: item.serverID)?.logoURL(for: item, maxWidth: 800) {
+                CachedImage(url: logo, contentMode: .fit) { title }
+                    .frame(maxWidth: 360, maxHeight: 110, alignment: .leading)
+                    .accessibilityLabel(item.name)
+            } else {
+                title
+            }
+            CarouselMetadataRow(item: item)
+            if let overview = item.overview?.trimmingCharacters(in: .whitespacesAndNewlines), !overview.isEmpty {
+                Text(overview)
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.85))
+                    .lineLimit(2)
+                    .shadow(color: .black.opacity(0.5), radius: 3)
+            }
+        }
+        .foregroundStyle(.white)
+    }
+
+    private var title: some View {
+        Text(item.name)
+            .font(.largeTitle.weight(.bold))
+            .lineLimit(2)
+            .shadow(color: .black.opacity(0.6), radius: 4)
+    }
+}
+
+/// 沉浸式头图右下角的页码点：当前页为加长胶囊。
+private struct PageDots: View {
+    let count: Int
+    let current: Int
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(0..<count, id: \.self) { index in
+                Capsule()
+                    .fill(index == current ? Color.white : Color.white.opacity(0.4))
+                    .frame(width: index == current ? 18 : 7, height: 7)
+            }
+        }
+        .animation(.snappy, value: current)
+        .accessibilityHidden(true)
     }
 }
 
