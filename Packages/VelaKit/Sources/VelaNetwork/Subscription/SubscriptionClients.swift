@@ -6,7 +6,10 @@ public struct MoviePilotClient: Sendable {
     public enum MoviePilotError: LocalizedError {
         case invalidURL
         case loginRequired
-        case http(Int)
+        /// 账号开启了二次验证，登录时必须填写验证码（后端返回 401 +「需要二次验证」）。
+        case mfaRequired
+        /// 非 2xx；`detail` 为后端 FastAPI 错误体中的 `detail`（可能为空）。
+        case http(Int, detail: String?)
         case rejected(String)
         case malformed
 
@@ -14,7 +17,9 @@ public struct MoviePilotClient: Sendable {
             switch self {
             case .invalidURL: "MoviePilot 地址无效"
             case .loginRequired: "MoviePilot 登录已失效，请重新连接"
-            case .http(let status): "MoviePilot 返回错误（HTTP \(status)）"
+            case .mfaRequired: "该账号已开启二次验证，请填写两步验证码后再连接"
+            case .http(let status, let detail):
+                detail.map { "MoviePilot 返回错误（HTTP \(status)）：\($0)" } ?? "MoviePilot 返回错误（HTTP \(status)）"
             case .rejected(let message): message
             case .malformed: "无法解析 MoviePilot 响应"
             }
@@ -160,6 +165,17 @@ public struct MoviePilotClient: Sendable {
         }
     }
 
+    /// FastAPI 错误体的 `detail`：字符串，或校验错误的 `[{"msg": …}]` 列表；取不到时为 nil。
+    static func errorDetail(_ data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        if let text = JSONValue.string(object["detail"]) { return text }
+        if let items = object["detail"] as? [[String: Any]] {
+            let messages = items.compactMap { JSONValue.string($0["msg"]) }
+            return messages.isEmpty ? nil : messages.joined(separator: "；")
+        }
+        return JSONValue.string(object["message"])
+    }
+
     // MARK: - 请求
 
     private func get(_ path: String, _ query: [String: String] = [:]) async throws -> Any {
@@ -178,11 +194,19 @@ public struct MoviePilotClient: Sendable {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw MoviePilotError.http(-1) }
+        guard let http = response as? HTTPURLResponse else { throw MoviePilotError.http(-1, detail: nil) }
         switch http.statusCode {
         case 200..<300: break
-        case 401, 403: throw authorized ? MoviePilotError.loginRequired : MoviePilotError.rejected("用户名或密码错误")
-        default: throw MoviePilotError.http(http.statusCode)
+        case 401, 403:
+            if authorized { throw MoviePilotError.loginRequired }
+            // 登录接口：密码正确但需要二次验证时同样是 401，靠响应头 / detail 区分，不能一律报「密码错误」。
+            let detail = Self.errorDetail(data)
+            if http.value(forHTTPHeaderField: "X-MFA-Required") == "true" || detail == "需要二次验证" {
+                throw MoviePilotError.mfaRequired
+            }
+            throw MoviePilotError.rejected(detail ?? "用户名或密码错误")
+        default:
+            throw MoviePilotError.http(http.statusCode, detail: Self.errorDetail(data))
         }
         do {
             return try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
@@ -229,7 +253,7 @@ public struct BangumiClient: Sendable {
         request.setValue("VelaCalendar/1.0 (https://github.com/ZeroDevi1/Vela)", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw MoviePilotClient.MoviePilotError.http((response as? HTTPURLResponse)?.statusCode ?? -1)
+            throw MoviePilotClient.MoviePilotError.http((response as? HTTPURLResponse)?.statusCode ?? -1, detail: nil)
         }
         guard let days = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             throw MoviePilotClient.MoviePilotError.malformed

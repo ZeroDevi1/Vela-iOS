@@ -102,3 +102,61 @@ struct MoviePilotParsingTests {
         #expect(record?.season == nil)
     }
 }
+
+/// MoviePilot 登录响应桩：固定状态码、响应头与响应体。
+final class MoviePilotStubProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var status = 200
+    nonisolated(unsafe) static var headers: [String: String] = [:]
+    nonisolated(unsafe) static var body = Data()
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let response = HTTPURLResponse(url: request.url!, statusCode: Self.status, httpVersion: nil, headerFields: Self.headers)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Self.body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+@Suite(.serialized)
+struct MoviePilotLoginTests {
+    private func client() throws -> MoviePilotClient {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MoviePilotStubProtocol.self]
+        return try MoviePilotClient(baseURL: "https://mp.example.com", session: URLSession(configuration: configuration))
+    }
+
+    /// 后端开启二次验证时登录返回 401 +「需要二次验证」，不能误报成密码错误。
+    @Test func mfaRequiredIsNotReportedAsWrongPassword() async throws {
+        MoviePilotStubProtocol.status = 401
+        MoviePilotStubProtocol.headers = ["X-MFA-Required": "true"]
+        MoviePilotStubProtocol.body = Data(#"{"detail":"需要二次验证","mfa_methods":["otp"]}"#.utf8)
+        await #expect {
+            _ = try await client().login(username: "u", password: "p")
+        } throws: { error in
+            if case MoviePilotClient.MoviePilotError.mfaRequired = error { return true }
+            return false
+        }
+    }
+
+    @Test func wrongPasswordUsesBackendDetail() async throws {
+        MoviePilotStubProtocol.status = 401
+        MoviePilotStubProtocol.headers = [:]
+        MoviePilotStubProtocol.body = Data(#"{"detail":"用户名或密码错误"}"#.utf8)
+        await #expect {
+            _ = try await client().login(username: "u", password: "p")
+        } throws: { error in
+            (error as? LocalizedError)?.errorDescription == "用户名或密码错误"
+        }
+    }
+
+    @Test func errorDetailReadsStringAndValidationList() {
+        #expect(MoviePilotClient.errorDetail(Data(#"{"detail":"无权限"}"#.utf8)) == "无权限")
+        #expect(MoviePilotClient.errorDetail(Data(#"{"detail":[{"msg":"缺少 tmdbid"},{"msg":"类型错误"}]}"#.utf8)) == "缺少 tmdbid；类型错误")
+        #expect(MoviePilotClient.errorDetail(Data("<html>".utf8)) == nil)
+    }
+}

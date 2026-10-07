@@ -5,7 +5,8 @@ import VelaNetwork
 
 /// 订阅与日历。MoviePilot 为订阅真相源（每次从服务端读取，不缓存副本）；未连接或失败时日历回退到 Bangumi 公开放送。
 ///
-/// 地址与用户名存 UserDefaults；access token 存 Keychain（按地址区分账号），不落普通存储。
+/// 地址与用户名存 UserDefaults；access token 与密码存 Keychain（按地址区分账号），不落普通存储。
+/// token 过期（MoviePilot 默认 8 天）后用保存的密码自动重新登录一次；开启二次验证的账号不保存密码，过期后需重新连接。
 @MainActor
 @Observable
 public final class SubscriptionService {
@@ -40,12 +41,28 @@ public final class SubscriptionService {
     }
 
     private static func account(_ url: String) -> String { "moviepilot:\(url)" }
+    private static func passwordAccount(_ url: String) -> String { "moviepilot-password:\(url)" }
 
     private func client() throws -> MoviePilotClient {
         guard isConnected, let token = try keychain.string(for: Self.account(url)) else {
             throw MoviePilotClient.MoviePilotError.loginRequired
         }
         return try MoviePilotClient(baseURL: url, token: token)
+    }
+
+    /// 以当前 token 执行请求；返回「登录已失效」时用保存的密码重新登录一次并重试。
+    /// 没有保存密码（旧版本连接、开启二次验证）或重新登录失败时，抛出原错误 / 登录错误，由界面提示重新连接。
+    private func withClient<T>(_ operation: (MoviePilotClient) async throws -> T) async throws -> T {
+        do {
+            return try await operation(try client())
+        } catch MoviePilotClient.MoviePilotError.loginRequired {
+            guard isConnected, let password = try keychain.string(for: Self.passwordAccount(url)) else {
+                throw MoviePilotClient.MoviePilotError.loginRequired
+            }
+            let token = try await MoviePilotClient(baseURL: url).login(username: username, password: password)
+            try keychain.set(token, for: Self.account(url))
+            return try await operation(try MoviePilotClient(baseURL: url, token: token))
+        }
     }
 
     // MARK: - 连接
@@ -56,8 +73,17 @@ public final class SubscriptionService {
         let normalized = anonymous.baseURL.absoluteString
         let token = try await anonymous.login(username: username.trimmingCharacters(in: .whitespaces), password: password, otp: otp)
         _ = try await MoviePilotClient(baseURL: normalized, token: token).subscriptions()
-        if !url.isEmpty, url != normalized { try? keychain.remove(Self.account(url)) }
+        if !url.isEmpty, url != normalized {
+            try? keychain.remove(Self.account(url))
+            try? keychain.remove(Self.passwordAccount(url))
+        }
         try keychain.set(token, for: Self.account(normalized))
+        // 二次验证码一次性有效，存密码也无法自动重新登录，因此不保存。
+        if otp.isEmpty {
+            try keychain.set(password, for: Self.passwordAccount(normalized))
+        } else {
+            try? keychain.remove(Self.passwordAccount(normalized))
+        }
         url = normalized
         self.username = username.trimmingCharacters(in: .whitespaces)
         defaults.set(normalized, forKey: Key.url)
@@ -67,13 +93,14 @@ public final class SubscriptionService {
 
     public func disconnect() {
         try? keychain.remove(Self.account(url))
+        try? keychain.remove(Self.passwordAccount(url))
         isConnected = false
     }
 
     // MARK: - 订阅
 
     public func subscriptions() async throws -> [SubscriptionRecord] {
-        try await client().subscriptions()
+        try await withClient { try await $0.subscriptions() }
     }
 
     /// 目录条目已订阅的季（电影用 0 表示已订阅）。
@@ -87,27 +114,29 @@ public final class SubscriptionService {
         guard title.mediaType == .movie || (season ?? 0) > 0 else {
             throw MoviePilotClient.MoviePilotError.rejected("请选择要订阅的季")
         }
-        let client = try client()
-        let matches = try await client.subscriptions().filter {
-            $0.tmdbID == title.tmdbID && $0.mediaType == title.mediaType && $0.season == (title.mediaType == .movie ? nil : season)
-        }
-        if subscribed {
-            guard matches.isEmpty else { return }
-            try await client.addSubscription(title, season: title.mediaType == .movie ? nil : season)
-        } else {
-            guard allowsRemoval else { throw MoviePilotClient.MoviePilotError.rejected("已关闭同步删除订阅") }
-            guard matches.count == 1 else { throw MoviePilotClient.MoviePilotError.rejected("订阅已在服务端变化，请到「我的订阅」中单独管理") }
-            try await client.removeSubscription(id: matches[0].id)
+        let allowsRemoval = allowsRemoval
+        try await withClient { client in
+            let matches = try await client.subscriptions().filter {
+                $0.tmdbID == title.tmdbID && $0.mediaType == title.mediaType && $0.season == (title.mediaType == .movie ? nil : season)
+            }
+            if subscribed {
+                guard matches.isEmpty else { return }
+                try await client.addSubscription(title, season: title.mediaType == .movie ? nil : season)
+            } else {
+                guard allowsRemoval else { throw MoviePilotClient.MoviePilotError.rejected("已关闭同步删除订阅") }
+                guard matches.count == 1 else { throw MoviePilotClient.MoviePilotError.rejected("订阅已在服务端变化，请到「我的订阅」中单独管理") }
+                try await client.removeSubscription(id: matches[0].id)
+            }
         }
     }
 
     public func remove(_ record: SubscriptionRecord) async throws {
         guard allowsRemoval else { throw MoviePilotClient.MoviePilotError.rejected("已关闭同步删除订阅") }
-        try await client().removeSubscription(id: record.id)
+        try await withClient { try await $0.removeSubscription(id: record.id) }
     }
 
     public func searchDouban(_ query: String) async throws -> [DoubanTitle] {
-        try await client().searchDouban(query)
+        try await withClient { try await $0.searchDouban(query) }
     }
 
     // MARK: - 日历
@@ -129,8 +158,9 @@ public final class SubscriptionService {
     }
 
     private func moviePilotCalendar(today: Date) async throws -> CalendarFeed {
+        // 先经 withClient 取订阅列表（必要时自动重新登录），再用最新 token 查各订阅的播出信息。
+        let records = try await withClient { try await $0.subscriptions() }
         let client = try client()
-        let records = try await client.subscriptions()
         let results = await withTaskGroup(of: Result<[CalendarEntry], any Error>.self) { group in
             var iterator = records.makeIterator()
             func enqueue() {
