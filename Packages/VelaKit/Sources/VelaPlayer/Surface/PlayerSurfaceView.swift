@@ -203,6 +203,9 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
             if controller?.isPictureInPictureActive == true {
                 stopPictureInPicture()
             } else if windowEngine.isPictureInPictureReady {
+                if controller?.hasActiveSubtitle == true, !windowEngine.showsSubtitlesInPictureInPicture {
+                    controller?.showMessage("\(windowEngine.kind.title) 画中画不显示字幕，需要字幕可换用系统或 KSPlayer 内核", symbol: "captions.bubble", duration: .seconds(3))
+                }
                 windowEngine.startPictureInPicture()
             } else {
                 controller?.showMessage("画面尚未就绪，起播后再试", symbol: "pip", duration: .seconds(2))
@@ -251,11 +254,20 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
             return
         }
         guard controller.isPictureInPictureActive else { return }
+        // 内核不实现「先恢复界面再结束」：小窗结束时播放页还没回来，视频视图不在屏幕上，系统会暂停播放。
+        // 记下结束前是否在播放，播放页恢复后再继续（等系统的暂停先到达，再判断）。
+        let wasPlaying = controller.isPlaying
         let finish = { [weak controller] (restored: Bool) in
             guard let controller else { return }
             controller.isPictureInPictureActive = false
             controller.isRestoringPictureInPicture = false
             controller.onPictureInPictureStop?(restored)
+            guard restored, wasPlaying else { return }
+            Task { @MainActor [weak controller] in
+                try? await Task.sleep(for: .milliseconds(400))
+                guard let controller, !controller.isPlaying, controller.engine.status != .ended else { return }
+                controller.engine.play()
+            }
         }
         if windowStopRequestedByApp {
             windowStopRequestedByApp = false

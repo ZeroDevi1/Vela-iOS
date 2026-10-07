@@ -30,6 +30,17 @@ final class VLCVideoContainerView: PlayerPlatformView, VLCPictureInPictureDrawab
     }
 
     var handlers: Handlers?
+    /// libvlc 创建画中画控制器时读取（`canStartPictureInPictureAutomaticallyFromInline`）；未实现时 VLCKit 默认允许，
+    /// 会与播放器「后台自动画中画」设置不一致。
+    private nonisolated let automaticPictureInPicture = OSAllocatedUnfairLock(initialState: false)
+
+    func setAutomaticPictureInPictureAllowed(_ allowed: Bool) {
+        automaticPictureInPicture.withLock { $0 = allowed }
+    }
+
+    @objc nonisolated func canStartPictureInPictureAutomaticallyFromInline() -> Bool {
+        automaticPictureInPicture.withLock { $0 }
+    }
     private nonisolated let snapshotLock = OSAllocatedUnfairLock(initialState: Snapshot())
 
     func update(_ snapshot: Snapshot) {

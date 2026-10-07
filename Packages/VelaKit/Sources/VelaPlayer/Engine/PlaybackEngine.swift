@@ -73,12 +73,16 @@ public protocol EnginePictureInPictureProviding: PlaybackEngine {
 
 /// 自己管理画中画窗口、不暴露 `AVPictureInPictureController` 的内核（VLC：libvlc 的视频输出内部创建控制器）。
 ///
-/// 限制：不支持「切后台自动进入」；内核只报告开始 / 结束，无法区分小窗上的「恢复」与「关闭」，
-/// 由用户在小窗上结束时一律按恢复处理（回到播放页，不丢失会话）。
+/// 限制：内核只报告开始 / 结束，无法区分小窗上的「恢复」与「关闭」，由用户在小窗上结束时一律按恢复处理
+/// （回到播放页，不丢失会话）；也不会先回调「恢复界面」再结束，系统可能在播放页回来之前就暂停播放。
 @MainActor
 public protocol WindowPictureInPictureProviding: PlaybackEngine {
     /// 视频输出已就绪、可以进入画中画（起播并创建视频输出后才为 true）。
     var isPictureInPictureReady: Bool { get }
+    /// 是否允许切后台时自动进入画中画；须在视频输出创建（起播）前设置才生效。
+    var allowsAutomaticPictureInPicture: Bool { get set }
+    /// 画中画里能否显示字幕（VLC：字幕画在独立的叠加视图上，不进入送往小窗的帧）。
+    var showsSubtitlesInPictureInPicture: Bool { get }
     /// 画中画开始（true）/ 结束（false）时调用，在主线程。
     var onPictureInPictureStateChange: ((Bool) -> Void)? { get set }
     func startPictureInPicture()

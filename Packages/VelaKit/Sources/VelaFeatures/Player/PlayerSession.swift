@@ -1222,9 +1222,12 @@ final class PlayerSession {
         PlayerBrightness.leave()
         if controller.isPictureInPictureActive { return }
         // 即将自动进入画中画：此时小窗还没启动（isPictureInPictureActive 仍为 false），不能当作普通切后台暂停。
-        // 两种内核都支持：系统内核用 AVPlayerLayer，KSPlayer 用其 AVSampleBufferDisplayLayer 内容源。
+        // 系统内核用 AVPlayerLayer，KSPlayer 用其 AVSampleBufferDisplayLayer 内容源，VLC 由 libvlc 的画中画控制器自动进入。
+        let engine = controller.engine
         let canAutoPictureInPicture = AVPictureInPictureController.isPictureInPictureSupported()
-            && (controller.engine.supportsLayerPictureInPicture || (controller.engine as? any EnginePictureInPictureProviding)?.pictureInPictureController != nil)
+            && (engine.supportsLayerPictureInPicture
+                || (engine as? any EnginePictureInPictureProviding)?.pictureInPictureController != nil
+                || (engine as? any WindowPictureInPictureProviding)?.isPictureInPictureReady == true)
         if preferences.autoPictureInPicture, canAutoPictureInPicture {
             return
         }
@@ -1260,7 +1263,13 @@ final class PlayerSession {
         case .system: controller.replaceEngine(AVPlayerEngine())
         case .ksPlayer: controller.replaceEngine(makeKSPlayerEngine())
         case .mpv: controller.replaceEngine(MPVPlaybackEngine())
-        case .vlc: controller.replaceEngine(VLCPlaybackEngine())
+        case .vlc:
+            let vlc = VLCPlaybackEngine()
+            #if os(iOS)
+            // libvlc 在起播创建视频输出时读取，必须在 load 之前设置（见 `WindowPictureInPictureProviding`）。
+            vlc.allowsAutomaticPictureInPicture = app?.playerPreferences.autoPictureInPicture ?? false
+            #endif
+            controller.replaceEngine(vlc)
         }
     }
 

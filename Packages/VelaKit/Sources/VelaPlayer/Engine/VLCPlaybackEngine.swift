@@ -353,6 +353,14 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
 extension VLCPlaybackEngine: WindowPictureInPictureProviding {
     public var isPictureInPictureReady: Bool { pictureInPicture != nil }
 
+    public var allowsAutomaticPictureInPicture: Bool {
+        get { containerView.canStartPictureInPictureAutomaticallyFromInline() }
+        set { containerView.setAutomaticPictureInPictureAllowed(newValue) }
+    }
+
+    /// libvlc 的 `samplebufferdisplay` 把字幕画在独立的叠加视图上，送往小窗的帧不含字幕（VLCKit 内部固定，无法配置）。
+    public var showsSubtitlesInPictureInPicture: Bool { false }
+
     public func startPictureInPicture() { pictureInPicture?.startPictureInPicture() }
 
     public func stopPictureInPicture() { pictureInPicture?.stopPictureInPicture() }
