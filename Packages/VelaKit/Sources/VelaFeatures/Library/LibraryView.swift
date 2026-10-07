@@ -25,8 +25,8 @@ struct MyMediaView: View {
                                 .buttonStyle(.plain)
                             }
                         }
-                        .padding(.horizontal, 20)
                         .padding(.vertical, VelaTheme.Spacing.l)
+                        .velaPageMargin()
                     }
                 case .failed(let message):
                     LoadFailureView(message: message) { Task { await load() } }

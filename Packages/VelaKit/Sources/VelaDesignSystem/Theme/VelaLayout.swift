@@ -96,8 +96,65 @@ private struct VelaLayoutReader: ViewModifier {
         content
             .environment(\.velaLayout, layout)
             .onGeometryChange(for: VelaLayout.self) { VelaLayout(size: $0.size) } action: { layout = $0 }
+            #if os(iOS)
+            .background { NavigationBarMarginAligner(margin: layout.pageMargin).frame(width: 0, height: 0) }
+            #endif
     }
 }
+
+#if os(iOS)
+import UIKit
+
+/// 让系统导航栏（大标题、返回按钮、栏按钮）的左右边距等于页面边距，与内容左对齐。
+///
+/// SwiftUI 没有调整大标题边距的接口；系统默认约 16 / 20pt，而宽屏页面内容按 `VelaLayout.pageMargin`（32 / 50pt）
+/// 排布，「发现」「搜索」等页的大标题会比内容靠左。这里找到本页 `NavigationStack` 背后的 `UINavigationController`
+/// 设置其导航栏的 `directionalLayoutMargins`。只影响边距，不改变导航栏的其他外观。
+///
+/// 查找方式：本视图位于标签页根视图（`NavigationStack` 外层）上，从自身控制器向上逐级，在每级的子控制器中
+/// 广度优先找第一个导航控制器。找不到时（视图层级尚未建立）在下一次更新时重试，不影响页面显示。
+private struct NavigationBarMarginAligner: UIViewControllerRepresentable {
+    let margin: CGFloat
+
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.margin = margin
+        controller.apply()
+    }
+
+    final class Controller: UIViewController {
+        var margin: CGFloat = 0
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            apply()
+        }
+
+        func apply() {
+            guard let bar = findNavigationController()?.navigationBar else { return }
+            let current = bar.directionalLayoutMargins
+            guard current.leading != margin else { return }
+            bar.directionalLayoutMargins.leading = margin
+        }
+
+        private func findNavigationController() -> UINavigationController? {
+            var ancestor = parent
+            for _ in 0..<4 {
+                guard let current = ancestor else { return nil }
+                var queue = current.children
+                while !queue.isEmpty {
+                    let next = queue.removeFirst()
+                    if let navigation = next as? UINavigationController { return navigation }
+                    queue.append(contentsOf: next.children)
+                }
+                ancestor = current.parent
+            }
+            return nil
+        }
+    }
+}
+#endif
 
 extension View {
     /// 左右各留 `VelaLayout.pageMargin`，使页面内各分区与横滑卡片的首尾对齐。
