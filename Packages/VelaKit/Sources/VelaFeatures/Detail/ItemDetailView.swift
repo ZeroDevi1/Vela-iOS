@@ -121,6 +121,9 @@ struct ItemDetailView: View {
                 .buttonStyle(.plain)
             }
             HStack(spacing: VelaTheme.Spacing.m) {
+                if let target = playTarget, resumeFraction(target) != nil {
+                    iconButton("从头播放", systemImage: "arrow.counterclockwise") { playFromBeginning(target) }
+                }
                 if item.kind == .movie || item.kind == .episode {
                     DownloadButton(item: model.playbackItem)
                 }
@@ -204,6 +207,18 @@ struct ItemDetailView: View {
                 }
                 .buttonStyle(.plain)
                 .frame(maxWidth: isCompact ? .infinity : 420)
+                // 有续播进度时，在播放按钮旁直接提供「从头播放」，不必进「更多」菜单。
+                if resumeFraction(target) != nil {
+                    Button { playFromBeginning(target) } label: {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.title3.weight(.semibold))
+                            .frame(width: 48, height: 48)
+                            .contentShape(.circle)
+                    }
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.circle)
+                    .accessibilityLabel("从头播放")
+                }
             }
             if item.kind == .movie || item.kind == .episode {
                 DownloadButton(item: model.playbackItem)
@@ -219,6 +234,13 @@ struct ItemDetailView: View {
         } else {
             playMedia(.item(target))
         }
+    }
+
+    /// 忽略续播进度从头播放；本条目沿用已选的播放源 / 音轨 / 字幕，剧集页的下一集用默认选择。
+    private func playFromBeginning(_ target: MediaItem) {
+        var options = target.id == item.id ? model.playbackOptions : PlaybackRequest.Options()
+        options.startFromBeginning = true
+        playMedia(.item(target.id == item.id ? model.playbackItem : target, options: options))
     }
 
     /// 只有看到一半的条目显示进度；未开始或已看完（≥ 95%）按「播放」处理。
@@ -257,12 +279,9 @@ struct ItemDetailView: View {
     /// 「更多」菜单：从头播放、刷新元数据。
     @ViewBuilder
     private var moreMenuItems: some View {
-        if item.kind.isPlayable, item.playedFraction != nil {
-            Button("从头开始播放", systemImage: "arrow.counterclockwise") {
-                var options = model.playbackOptions
-                options.startFromBeginning = true
-                playMedia(.item(model.playbackItem, options: options))
-            }
+        // 剧集页的目标是下一集：同样可以从头播放该集。
+        if let target = playTarget, target.playedFraction != nil {
+            Button("从头开始播放", systemImage: "arrow.counterclockwise") { playFromBeginning(target) }
         }
         // 单集的元数据随剧集刷新：在剧集入口操作可一次更新全部季与单集。
         if item.kind != .episode {

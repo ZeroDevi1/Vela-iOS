@@ -175,21 +175,34 @@ struct TrackSelectionMenu: View {
 
 // MARK: - 单集
 
-/// 横向单集列表，自动滚动到当前集。
+/// 横向单集列表，自动滚动到当前集。超过 `EpisodePaging.pageSize` 集时按区间分页（长篇动画常有数百集，
+/// 只靠横滑在 iPad / Mac 上很难定位），初始区间为当前集所在的一段。
 struct EpisodeShelf: View {
     let title: String
     let episodes: [MediaItem]
     let currentID: String
     @Environment(AppModel.self) private var app
     @Environment(\.isCompactLayout) private var isCompact
+    @State private var rangeIndex: Int?
+
+    private var paged: Bool { episodes.count > EpisodePaging.pageSize }
+    private var currentRange: Int {
+        rangeIndex ?? (episodes.firstIndex { $0.id == currentID } ?? 0) / EpisodePaging.pageSize
+    }
+    private var visible: ArraySlice<MediaItem> {
+        paged ? episodes[EpisodePaging.range(currentRange, total: episodes.count)] : episodes[...]
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: VelaTheme.Spacing.s) {
             Text(title).font(.title3.weight(.semibold)).velaPageMargin()
+            if paged {
+                EpisodeRangeBar(episodes: episodes, selected: currentRange, compact: isCompact) { rangeIndex = $0 }
+            }
             ScrollViewReader { proxy in
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: VelaTheme.Spacing.m) {
-                        ForEach(episodes) { episode in
+                        ForEach(visible) { episode in
                             NavigationLink(value: episode) {
                                 LandscapeCard(
                                     title: "\(episode.indexNumber.map { "\($0). " } ?? "")\(episode.name)",
@@ -215,8 +228,78 @@ struct EpisodeShelf: View {
                 }
                 .scrollIndicators(.hidden)
                 .onAppear { proxy.scrollTo(currentID, anchor: .center) }
+                // 换区间后回到该段开头（当前集所在的一段回到当前集）。
+                .onChange(of: rangeIndex) {
+                    let target = visible.contains { $0.id == currentID } ? currentID : visible.first?.id
+                    // 等新区间的卡片布局完成后再滚动，否则目标 id 尚不存在。
+                    if let target { Task { @MainActor in proxy.scrollTo(target, anchor: visible.first?.id == target ? .leading : .center) } }
+                }
             }
         }
+    }
+}
+
+/// 单集区间胶囊（「1 · 30」「31 · 60」…），横向滚动，选中段自动滚入可见区域。
+/// 标签用集号（缺失时显示「–」），与 Forward 一致；iPad / Mac 详情页与单集页的「更多来自」共用。
+struct EpisodeRangeBar<Trailing: View>: View {
+
+    let episodes: [MediaItem]
+    let selected: Int
+    var compact = false
+    let select: (Int) -> Void
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        HStack(spacing: VelaTheme.Spacing.m) {
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal) {
+                    HStack(spacing: VelaTheme.Spacing.s) {
+                        ForEach(0..<EpisodePaging.count(episodes.count), id: \.self) { index in
+                            let range = EpisodePaging.range(index, total: episodes.count)
+                            Button { select(index) } label: {
+                                Text("\(label(episodes[range.lowerBound])) · \(label(episodes[range.upperBound - 1]))")
+                                    .font((compact ? Font.subheadline : .headline).monospacedDigit())
+                                    .padding(.horizontal, compact ? 14 : 22)
+                                    .padding(.vertical, compact ? 8 : 12)
+                                    .background(index == selected ? Color.black.opacity(0.75) : Color.white.opacity(0.08), in: .capsule)
+                                    .foregroundStyle(index == selected ? .white : .white.opacity(0.6))
+                                    .contentShape(.capsule)
+                            }
+                            .buttonStyle(.plain)
+                            .id(index)
+                        }
+                    }
+                }
+                .scrollIndicators(.hidden)
+                .onAppear { proxy.scrollTo(selected, anchor: .center) }
+                .onChange(of: selected) { withAnimation { proxy.scrollTo(selected, anchor: .center) } }
+            }
+            trailing
+        }
+        .velaPageMargin()
+    }
+
+    private func label(_ episode: MediaItem) -> String {
+        episode.indexNumber.map(String.init) ?? "–"
+    }
+
+}
+
+/// 单集分段：每段 30 集（与 Forward 一致）。
+enum EpisodePaging {
+    static let pageSize = 30
+
+    static func count(_ total: Int) -> Int { (total + pageSize - 1) / pageSize }
+
+    static func range(_ index: Int, total: Int) -> Range<Int> {
+        let start = min(index * pageSize, total)
+        return start..<min(start + pageSize, total)
+    }
+}
+
+extension EpisodeRangeBar where Trailing == EmptyView {
+    init(episodes: [MediaItem], selected: Int, compact: Bool = false, select: @escaping (Int) -> Void) {
+        self.init(episodes: episodes, selected: selected, compact: compact, select: select) { EmptyView() }
     }
 }
 

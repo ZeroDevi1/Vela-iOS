@@ -188,8 +188,7 @@ struct SeasonEpisodesSection: View {
     @State private var rangeIndex = 0
     @State private var scrollTarget: String?
 
-    /// 每段集数（与 Forward 一致）。
-    private static let pageSize = 30
+    private static var pageSize: Int { EpisodePaging.pageSize }
     private static let cardSpacing: CGFloat = 20
 
     var body: some View {
@@ -200,10 +199,11 @@ struct SeasonEpisodesSection: View {
                 if episodes.isEmpty {
                     Text("本季暂无单集").foregroundStyle(.secondary).velaPageMargin()
                 } else {
-                    episodeRow(episodes)
+                    // 区间胶囊放在单集上方：长篇剧集先选区间再横滑，比在卡片下方更容易发现。
                     if episodes.count > Self.pageSize {
                         rangeBar(episodes)
                     }
+                    episodeRow(episodes)
                 }
             case .failed(let message):
                 Label(message, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.secondary).velaPageMargin()
@@ -277,28 +277,10 @@ struct SeasonEpisodesSection: View {
     }
 
     private func rangeBar(_ episodes: [MediaItem]) -> some View {
-        HStack(spacing: VelaTheme.Spacing.m) {
-            ScrollView(.horizontal) {
-                HStack(spacing: VelaTheme.Spacing.s) {
-                    ForEach(0..<pageCount(episodes.count), id: \.self) { index in
-                        let range = pageRange(index, total: episodes.count)
-                        Button {
-                            rangeIndex = index
-                            scrollTarget = episodes[range].first?.id
-                        } label: {
-                            Text("\(label(episodes[range.lowerBound])) · \(label(episodes[range.upperBound - 1]))")
-                                .font(.headline.monospacedDigit())
-                                .padding(.horizontal, 22)
-                                .padding(.vertical, 12)
-                                .background(index == rangeIndex ? Color.black.opacity(0.75) : Color.white.opacity(0.08), in: .capsule)
-                                .foregroundStyle(index == rangeIndex ? .white : .white.opacity(0.6))
-                                .contentShape(.capsule)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-            .scrollIndicators(.hidden)
+        EpisodeRangeBar(episodes: episodes, selected: rangeIndex) { index in
+            rangeIndex = index
+            scrollTarget = episodes[pageRange(index, total: episodes.count)].first?.id
+        } trailing: {
             Button("跳到最新一集", systemImage: "arrow.right.to.line") {
                 focus(latestEpisode(in: episodes), in: episodes)
             }
@@ -306,12 +288,6 @@ struct SeasonEpisodesSection: View {
             .font(.title3)
             .buttonStyle(.plain)
         }
-        .velaPageMargin()
-    }
-
-    /// 区间标签用集号（缺失时用序号），与 Forward 的「1 · 30」一致。
-    private func label(_ episode: MediaItem) -> String {
-        episode.indexNumber.map(String.init) ?? "–"
     }
 
     /// 初始定位：下一集在本季时定位到它，否则第一个未看完的单集。
@@ -333,11 +309,8 @@ struct SeasonEpisodesSection: View {
         Task { @MainActor in scrollTarget = episode.id }
     }
 
-    private func pageCount(_ total: Int) -> Int { (total + Self.pageSize - 1) / Self.pageSize }
-
     private func pageRange(_ index: Int, total: Int) -> Range<Int> {
-        let start = min(index * Self.pageSize, total)
-        return start..<min(start + Self.pageSize, total)
+        EpisodePaging.range(index, total: total)
     }
 }
 
