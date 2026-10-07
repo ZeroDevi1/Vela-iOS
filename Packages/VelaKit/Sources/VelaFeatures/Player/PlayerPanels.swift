@@ -547,7 +547,7 @@ private struct PlaybackInfoPanel: View {
                         if !stream.transcodeReasons.isEmpty {
                             row("转码原因", stream.transcodeReasons.map(Self.reasonTitle).joined(separator: "、"))
                         }
-                        row("播放内核", engine.kind == .ksPlayer ? "KSPlayer（FFmpeg）" : "系统（AVPlayer）")
+                        row("播放内核", engine.kind.title)
                         row("网速", engine.networkThroughput.flatMap { MediaFormat.bitrate(Int($0)) })
                         row("已缓冲", Self.bufferAhead(engine))
                     }
@@ -555,7 +555,7 @@ private struct PlaybackInfoPanel: View {
                         section("视频") {
                             row("格式", Self.videoFormat(video))
                             row("参数", Self.videoParameters(video))
-                            row("解码器", engine.kind == .ksPlayer ? "FFmpeg + VideoToolbox" : "VideoToolbox")
+                            row("解码器", engine.kind == .avFoundation ? "VideoToolbox" : "FFmpeg + VideoToolbox")
                             row("分辨率", video.width.flatMap { w in video.height.map { "\(w)×\($0)" } })
                             row("动态范围", PlayerSession.dynamicRangeLabel(for: video) ?? video.videoRangeType)
                         }

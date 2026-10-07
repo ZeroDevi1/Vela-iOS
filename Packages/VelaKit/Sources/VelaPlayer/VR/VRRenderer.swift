@@ -99,13 +99,13 @@ final class AVPlayerVRFrameSource: VRFrameSource {
     }
 }
 
-/// KSPlayer 内核：读取其最近一帧解码画面（VideoToolbox 输出的 IOSurface 缓冲区，零拷贝）。
+/// 自带解码帧的内核（KSPlayer 等）：读取其最近一帧解码画面（KSPlayer 为 VideoToolbox 输出的 IOSurface 缓冲区，零拷贝）。
 @MainActor
-final class KSPlayerVRFrameSource: VRFrameSource {
-    private weak var engine: KSPlayerEngine?
+final class DecodedFrameVRFrameSource: VRFrameSource {
+    private weak var engine: (any DecodedFrameProviding)?
     private var lastFrame: CVPixelBuffer?
 
-    init(engine: KSPlayerEngine) {
+    init(engine: any DecodedFrameProviding) {
         self.engine = engine
     }
 
@@ -478,7 +478,7 @@ public struct VRVideoView: PlayerPlatformViewRepresentable {
         renderer.onIssue = { [weak controller] issue in controller?.vrIssue = issue }
         switch controller.engine.surface {
         case .avPlayer(let player): renderer.attach(AVPlayerVRFrameSource(player: player))
-        case .view: if let engine = controller.engine as? KSPlayerEngine { renderer.attach(KSPlayerVRFrameSource(engine: engine)) }
+        case .view: if let engine = controller.engine as? any DecodedFrameProviding { renderer.attach(DecodedFrameVRFrameSource(engine: engine)) }
         }
         return renderer.makeView()
     }

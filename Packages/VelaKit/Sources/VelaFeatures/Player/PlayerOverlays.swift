@@ -18,8 +18,8 @@ struct SubtitleOverlay: View {
     private static let minimumSpaceBelowVideo: CGFloat = 72
 
     /// KSPlayer 从视频流读取的内嵌字幕；与 WebVTT 字幕互斥。
-    private var embeddedEngine: KSPlayerEngine? {
-        (controller.engine as? KSPlayerEngine).flatMap { $0.hasEmbeddedSubtitle ? $0 : nil }
+    private var embeddedEngine: (any EmbeddedSubtitleProviding)? {
+        (controller.engine as? any EmbeddedSubtitleProviding).flatMap { $0.hasEmbeddedSubtitle ? $0 : nil }
     }
 
     var body: some View {

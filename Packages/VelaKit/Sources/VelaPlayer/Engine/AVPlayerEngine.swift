@@ -9,7 +9,7 @@ import VelaCore
 /// 空间音频与杜比全景声在 AirPods / 支持的扬声器上由系统处理。
 @MainActor
 @Observable
-public final class AVPlayerEngine: PlaybackEngine {
+public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, MultichannelSpatializationConfigurable {
     public let kind: PlaybackEngineKind = .avFoundation
     public private(set) var status: PlaybackStatus = .idle
     public private(set) var currentTime: TimeInterval = 0

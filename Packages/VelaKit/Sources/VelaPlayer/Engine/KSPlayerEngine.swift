@@ -13,7 +13,8 @@ import VelaCore
 /// 线程：KSMEPlayer 的回调都在主线程；进度由 4 Hz 定时器轮询（KSMEPlayer 没有时间观察接口）。
 @MainActor
 @Observable
-public final class KSPlayerEngine: NSObject, PlaybackEngine {
+public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitleProviding, EnginePictureInPictureProviding,
+    PictureInPictureSubtitleBurning, VideoGravityAdjustable, DecodedFrameProviding {
     public let kind: PlaybackEngineKind = .ksPlayer
     public private(set) var status: PlaybackStatus = .idle
     public private(set) var currentTime: TimeInterval = 0

@@ -12,3 +12,9 @@ Packages/VelaKit/.swiftpm/
 # KSPlayer / FFmpegKit 本地镜像：由 scripts/fetch-ksplayer.sh 拉取，体积大，不入库
 Packages/KSPlayer/
 Packages/FFmpegKit/
+
+# VLCKit 官方预编译包：由 scripts/fetch-vlckit.sh 拉取，体积大，不入库
+Packages/VLCKit/
+
+# xcodebuild 未指定 -derivedDataPath 时的本地产物
+build/

@@ -7,20 +7,60 @@ public enum PlaybackEngineMode: String, CaseIterable, Sendable {
     case auto
     /// 始终使用系统内核（AVPlayer）。MKV 内嵌字幕也交给服务器提取，不自动切换。
     case system
-    /// 始终使用 KSPlayer 直放原文件。旧版本保存的 "mpv" 由偏好读取时迁移到此项。
+    /// 始终使用 KSPlayer 直放原文件。
     case ksPlayer = "ksplayer"
+    /// 始终使用 mpv 直放原文件（测试用，与 Android 版默认内核相同）。
+    case mpv = "libmpv"
+    /// 始终使用 VLC 直放原文件（测试用）。
+    case vlc
 
     public var title: String {
         switch self {
         case .auto: "自动"
         case .system: "系统（AVPlayer）"
         case .ksPlayer: "KSPlayer"
+        case .mpv: "mpv"
+        case .vlc: "VLC"
         }
     }
 }
 
-/// 内核选择规则。
+/// 内核选择规则（纯函数，单测覆盖）。起播流程：
+/// 1. `requestedEngine` 决定按哪个内核的能力向服务器请求播放信息；
+/// 2. 自动模式下若需要播放器读取内嵌字幕，`switchesToKSPlayerForSubtitle` 改按 KSPlayer 重新请求；
+/// 3. 拿到服务器结果后由 `playbackEngine` 定出实际内核（服务器仍要求转码时 HLS 交给能效更高的系统内核）。
 public enum PlaybackEngineChoice {
+    public enum Engine: Sendable, Equatable {
+        case system, ksPlayer, mpv, vlc
+
+        /// 是否直放原文件（按 FFmpeg 系内核能力向服务器请求，MKV 等不转码）。
+        public var directPlaysOriginal: Bool { self != .system }
+    }
+
+    /// - Parameter serverDownscaled: 当前条目已改为「服务器转码为 4K」，只有系统内核能播放服务器缩放后的码流。
+    public static func requestedEngine(mode: PlaybackEngineMode, serverDownscaled: Bool) -> Engine {
+        guard !serverDownscaled else { return .system }
+        switch mode {
+        case .auto, .system: return .system
+        case .ksPlayer: return .ksPlayer
+        case .mpv: return .mpv
+        case .vlc: return .vlc
+        }
+    }
+
+    /// 自动模式下，按系统内核请求后要显示的字幕需要播放器读取（见 `needsPlayerSideSubtitle`）时改用 KSPlayer。
+    /// 用户选了「系统」时不切换（字幕交给服务器提取，可能较慢）。
+    public static func switchesToKSPlayerForSubtitle(
+        mode: PlaybackEngineMode, requested: Engine, serverDownscaled: Bool, subtitleNeedsPlayer: Bool
+    ) -> Bool {
+        requested == .system && mode == .auto && !serverDownscaled && subtitleNeedsPlayer
+    }
+
+    /// 实际使用的内核：只有按直放内核请求且服务器允许直放原文件时才用该内核，否则（服务器转码为 HLS）用系统内核。
+    public static func playbackEngine(requested: Engine, isDirectPlay: Bool) -> Engine {
+        requested.directPlaysOriginal && isDirectPlay ? requested : .system
+    }
+
     /// 是否需要由播放器自己从视频流读取字幕（于是改用 KSPlayer 直放）：转封装播放（系统框架打不开的容器，如 MKV）中的内嵌文本字幕。
     /// 这类字幕若交给服务器提取，需要读完整个视频文件，网盘上的大文件可能要数分钟。
     public static func needsPlayerSideSubtitle(isTranscode: Bool, container: String?, isEmbeddedText: Bool) -> Bool {

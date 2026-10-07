@@ -148,7 +148,7 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
     /// KSPlayer 的画中画控制器在起播后才创建（内容源为其 `AVSampleBufferDisplayLayer`）：起播后或首次请求时接管。
     /// 须在切后台之前接管，否则「切到后台自动画中画」对 KSPlayer 不生效。
     func adoptEnginePictureInPicture() {
-        guard nativePictureInPicture == nil, let engine = controller?.engine as? KSPlayerEngine,
+        guard nativePictureInPicture == nil, let engine = controller?.engine as? any EnginePictureInPictureProviding,
               let pip = engine.pictureInPictureController else { return }
         pip.delegate = self
         #if os(iOS)
@@ -219,7 +219,7 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
             // 画中画期间 AVPlayer 只输出到视频输出：仍挂在 AVPlayerLayer 上的播放器切到后台会被系统暂停。
             view.player = nil
         }
-        if let engine = controller?.engine as? KSPlayerEngine, controller?.hasActiveSubtitle == true {
+        if let engine = controller?.engine as? any PictureInPictureSubtitleBurning, controller?.hasActiveSubtitle == true {
             engine.setPictureInPictureSubtitles(burner)
         }
         startSubtitleUpdates()
@@ -245,7 +245,7 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
             subtitleSource?.didStop()
             view.player = player
         }
-        (controller?.engine as? KSPlayerEngine)?.setPictureInPictureSubtitles(nil)
+        (controller?.engine as? any PictureInPictureSubtitleBurning)?.setPictureInPictureSubtitles(nil)
         guard let controller else { return }
         let restored = controller.isRestoringPictureInPicture
         controller.isPictureInPictureActive = false
@@ -303,9 +303,9 @@ public struct PlayerSurface: PlayerPlatformViewRepresentable {
         case .stretch: .resize
         }
         let host = controller.surfaceHost()
-        if let engine = controller.engine as? KSPlayerEngine {
-            engine.setGravity(controller.videoGravity)
-            // 读取状态以便起播（readyToPlay）后再次更新，此时 KSPlayer 的画中画控制器已创建，可以接管。
+        (controller.engine as? any VideoGravityAdjustable)?.setGravity(controller.videoGravity)
+        if let engine = controller.engine as? any EnginePictureInPictureProviding {
+            // 读取状态以便起播（readyToPlay）后再次更新，此时内核的画中画控制器已创建，可以接管。
             if engine.status != .loading { host.adoptEnginePictureInPicture() }
         }
         // 读取字幕状态：开 / 关字幕时切换系统内核的画中画内容源。

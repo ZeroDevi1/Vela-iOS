@@ -134,9 +134,20 @@ final class PlayerSession {
         do {
             switch request.target {
             case .url(let url):
-                // 离线文件中系统框架打不开的容器（MKV 等）交给 KSPlayer；设置为 KSPlayer 时外部地址也用它。
-                if (url.isFileURL && !OfflinePlayback.prefersSystemEngine(for: url)) || preferences.engineMode == .ksPlayer {
-                    controller.replaceEngine(makeKSPlayerEngine())
+                // 设置为直放内核（KSPlayer / mpv / VLC）时外部地址与离线文件都用它；
+                // 否则离线文件中系统框架打不开的容器（MKV 等）交给 KSPlayer。
+                var mode = preferences.engineMode
+                #if DEBUG
+                // 仅 Debug：`VELA_DEBUG_ENGINE=<auto|system|ksplayer|libmpv|vlc>` 指定外部地址使用的内核（内核对比测试）。
+                if let forced = ProcessInfo.processInfo.environment["VELA_DEBUG_ENGINE"].flatMap(PlaybackEngineMode.init(rawValue:)) {
+                    mode = forced
+                }
+                #endif
+                let preferred = PlaybackEngineChoice.requestedEngine(mode: mode, serverDownscaled: false)
+                if preferred.directPlaysOriginal {
+                    useEngine(preferred)
+                } else if url.isFileURL, !OfflinePlayback.prefersSystemEngine(for: url) {
+                    useEngine(.ksPlayer)
                 }
                 // 离线 / 外部地址没有服务器元数据，只按路径（文件名）识别 VR 排布。
                 let vrLayout = VRLayoutParser.parse(mediaSourcePath: url.path)
@@ -196,13 +207,15 @@ final class PlayerSession {
         endedReported = false
         app.refreshCapabilities()
 
-        let startTime = explicitStart ?? (options.startFromBeginning ? 0 : resumePosition(for: item))
+        let startTime = explicitStart ?? options.startPosition ?? (options.startFromBeginning ? 0 : resumePosition(for: item))
         isNextPreloaded = false
         // 内核（与 Android 版一致）：设置为 KSPlayer 或手动切换时按 KSPlayer 能力请求，服务器直接给原文件；
         // 「服务器转码为 4K」需要服务器缩放后的码流，始终交给系统内核。
         let mode = engineOverride ?? app.playerPreferences.engineMode
         let downscaled = maxVideoWidthOverride?.itemID == item.id
-        var profile: DeviceProfile.Kind = mode == .ksPlayer && !downscaled ? .ksPlayer : .avFoundation
+        var requested = PlaybackEngineChoice.requestedEngine(mode: mode, serverDownscaled: downscaled)
+        // mpv / VLC 与 KSPlayer 一样基于 FFmpeg，按 KSPlayer 的能力档请求服务器（直放原文件）。
+        var profile: DeviceProfile.Kind { requested.directPlaysOriginal ? .ksPlayer : .avFoundation }
         func resolve(_ profile: DeviceProfile.Kind) async throws -> ResolvedStream {
             try await app.playbackResolver.resolve(
                 item: item, server: server, client: client,
@@ -227,20 +240,18 @@ final class PlayerSession {
         var initialSubtitle = initialSubtitleChoice(for: stream, preferredSubtitle: options.subtitleStreamIndex)
         // 自动模式：要显示 MKV 等系统打不开的容器里的内嵌文本字幕时改用 KSPlayer 直放，由播放器从视频流读取字幕
         // （Android 用 MPV 也是如此）。否则服务器要读完整个文件才能提取字幕，文件在网盘上时实测超过 2 分钟。
-        if profile == .avFoundation, mode == .auto, !downscaled, let subtitle = initialSubtitle,
-           needsPlayerSideSubtitle(subtitle, in: stream) {
+        if let subtitle = initialSubtitle, PlaybackEngineChoice.switchesToKSPlayerForSubtitle(
+            mode: mode, requested: requested, serverDownscaled: downscaled,
+            subtitleNeedsPlayer: needsPlayerSideSubtitle(subtitle, in: stream)
+        ) {
             Log.player.info("内嵌字幕 #\(subtitle) 需要播放器读取，改用 KSPlayer 直放")
-            profile = .ksPlayer
+            requested = .ksPlayer
             stream = try await resolve(.ksPlayer)
             configureTracks(for: stream)
             initialSubtitle = initialSubtitleChoice(for: stream, preferredSubtitle: options.subtitleStreamIndex ?? subtitle)
         }
-        // 服务器即使按 KSPlayer 能力也要求转码（编码不支持等）时，HLS 交给能效更高的系统内核。
-        if profile == .ksPlayer, stream.method == .directPlay {
-            if controller.engine.kind != .ksPlayer { controller.replaceEngine(makeKSPlayerEngine()) }
-        } else if controller.engine.kind != .avFoundation {
-            controller.replaceEngine(AVPlayerEngine())
-        }
+        // 服务器即使按直放能力也要求转码（编码不支持等）时，HLS 交给能效更高的系统内核。
+        useEngine(PlaybackEngineChoice.playbackEngine(requested: requested, isDirectPlay: stream.method == .directPlay))
         apply(stream: stream, item: item, startTime: startTime, resetMetadata: true)
         configurePreview(for: stream, item: item)
         if let initialSubtitle {
@@ -351,7 +362,7 @@ final class PlayerSession {
 
     private func apply(stream: ResolvedStream, item: MediaItem, startTime: TimeInterval, resetMetadata: Bool) {
         self.stream = stream
-        (controller.engine as? AVPlayerEngine)?.allowsMultichannelSpatialization = app?.playerPreferences.nativeAudio ?? true
+        (controller.engine as? any MultichannelSpatializationConfigurable)?.allowsMultichannelSpatialization = app?.playerPreferences.nativeAudio ?? true
         Log.player.info("播放方式：\(stream.method.rawValue, privacy: .public) \(Self.redacted(stream.url), privacy: .public)")
         let video = stream.mediaSource.videoStream
         Log.player.info("视频流：\(video?.codec ?? "-", privacy: .public) tag=\(video?.codecTag ?? "-", privacy: .public) range=\(video?.videoRangeType ?? "-", privacy: .public) depth=\(video?.bitDepth ?? 0) container=\(stream.mediaSource.container ?? "-", privacy: .public)")
@@ -513,10 +524,10 @@ final class PlayerSession {
         if stream.burnedSubtitleIndex != nil {
             Task { await reloadStream(audioStreamIndex: selectedAudioIndex, burnSubtitleIndex: nil) }
         }
-        let ksEngine = controller.engine as? KSPlayerEngine
+        let embeddedEngine = controller.engine as? any EmbeddedSubtitleProviding
         guard let index else {
             controller.subtitleTrack = nil
-            ksEngine?.selectEmbeddedSubtitle(ordinal: nil)
+            embeddedEngine?.selectEmbeddedSubtitle(ordinal: nil)
             reporter?.flush(position: controller.engine.currentTime, audioStreamIndex: selectedAudioIndex, subtitleStreamIndex: nil)
             return
         }
@@ -529,14 +540,14 @@ final class PlayerSession {
         }
         // KSPlayer 直放原文件：内嵌文本字幕由播放器从视频流读取（与 Android / SenPlayer 相同），不请求服务器提取。
         let embedded = stream.mediaSource.subtitleStreams.filter { $0.isExternal != true }
-        if let ksEngine, let ordinal = embedded.firstIndex(where: { $0.index == index }), embedded[ordinal].isTextSubtitle {
+        if let embeddedEngine, let ordinal = embedded.firstIndex(where: { $0.index == index }), embedded[ordinal].isTextSubtitle {
             controller.subtitleTrack = nil
-            ksEngine.selectEmbeddedSubtitle(ordinal: ordinal)
+            embeddedEngine.selectEmbeddedSubtitle(ordinal: ordinal)
             reporter?.flush(position: controller.engine.currentTime, audioStreamIndex: selectedAudioIndex, subtitleStreamIndex: index)
-            preloadFullSubtitle(index: index, stream: stream, item: item, client: client, replacing: ksEngine)
+            preloadFullSubtitle(index: index, stream: stream, item: item, client: client, replacing: embeddedEngine)
             return
         }
-        ksEngine?.selectEmbeddedSubtitle(ordinal: nil)
+        embeddedEngine?.selectEmbeddedSubtitle(ordinal: nil)
         let mediaSourceID = stream.mediaSource.id
         subtitleTask = Task {
             // 内嵌字幕由服务器从整个视频文件中提取，可能要等较久：超过 3 秒给出提示，避免以为字幕坏了。
@@ -582,18 +593,18 @@ final class PlayerSession {
     /// KSPlayer 只能解码拖动点之后的字幕包：拖到一句字幕的中间（如 10–20 秒的字幕拖到 15 秒）要等下一句才有字幕。
     /// 完整字幕按时间查询，任意位置都能立即显示当前这句（与 Android mpv 的字幕预读效果一致）。
     /// 服务器首次提取内嵌字幕要读完整个文件（网盘上较慢），之后有缓存；期间仍由 KSPlayer 显示，失败时保持现状。
-    private func preloadFullSubtitle(index: Int, stream: ResolvedStream, item: MediaItem, client: MediaServerClient, replacing ksEngine: KSPlayerEngine) {
+    private func preloadFullSubtitle(index: Int, stream: ResolvedStream, item: MediaItem, client: MediaServerClient, replacing embeddedEngine: any EmbeddedSubtitleProviding) {
         let codec = stream.mediaSource.subtitleStreams.first { $0.index == index }?.codec
         let mediaSourceID = stream.mediaSource.id
         subtitleTask = Task {
             do {
                 let vtt = try await client.subtitleText(itemID: item.id, mediaSourceID: mediaSourceID, streamIndex: index, codec: codec)
                 let cues = WebVTTParser.parse(vtt)
-                guard !Task.isCancelled, selectedSubtitleIndex == index, controller.engine === ksEngine, !cues.isEmpty else { return }
+                guard !Task.isCancelled, selectedSubtitleIndex == index, controller.engine === embeddedEngine, !cues.isEmpty else { return }
                 var track = SubtitleTrack(cues: cues)
                 track.delay = controller.subtitleTrack?.delay ?? 0
                 controller.subtitleTrack = track
-                ksEngine.selectEmbeddedSubtitle(ordinal: nil)
+                embeddedEngine.selectEmbeddedSubtitle(ordinal: nil)
                 Log.player.info("字幕 #\(index) 已换用服务器完整字幕（\(cues.count) 条）")
             } catch {
                 guard !Task.isCancelled else { return }
@@ -671,7 +682,7 @@ final class PlayerSession {
         }
         trackError = nil
         subtitleTask?.cancel()
-        (controller.engine as? KSPlayerEngine)?.selectEmbeddedSubtitle(ordinal: nil)
+        (controller.engine as? any EmbeddedSubtitleProviding)?.selectEmbeddedSubtitle(ordinal: nil)
         // 烧录字幕会叠在画面里，换回不烧录的码流。
         if let stream, stream.burnedSubtitleIndex != nil {
             Task { await reloadStream(audioStreamIndex: selectedAudioIndex, burnSubtitleIndex: nil) }
@@ -728,10 +739,16 @@ final class PlayerSession {
         )
     }
 
-    /// 在系统内核与 KSPlayer 之间切换，从当前位置继续（与 Android 版「使用 ExoPlayer / MPV」对应）。
-    func switchEngine() {
-        guard canSwitchEngine else { return }
-        restart(with: controller.engine.kind == .ksPlayer ? .system : .ksPlayer)
+    /// 换用指定内核，从当前位置继续（与 Android 版「使用 ExoPlayer / MPV」对应）。
+    func switchEngine(to kind: PlaybackEngineKind) {
+        guard canSwitchEngine, kind != controller.engine.kind else { return }
+        let mode: PlaybackEngineMode = switch kind {
+        case .avFoundation: .system
+        case .ksPlayer: .ksPlayer
+        case .mpv: .mpv
+        case .vlc: .vlc
+        }
+        restart(with: mode)
     }
 
     /// 系统内核播放失败（或解不出画面）时改用 KSPlayer 从当前位置重试。
@@ -1207,7 +1224,7 @@ final class PlayerSession {
         // 即将自动进入画中画：此时小窗还没启动（isPictureInPictureActive 仍为 false），不能当作普通切后台暂停。
         // 两种内核都支持：系统内核用 AVPlayerLayer，KSPlayer 用其 AVSampleBufferDisplayLayer 内容源。
         let canAutoPictureInPicture = AVPictureInPictureController.isPictureInPictureSupported()
-            && (controller.engine.kind == .avFoundation || (controller.engine as? KSPlayerEngine)?.pictureInPictureController != nil)
+            && (controller.engine.supportsLayerPictureInPicture || (controller.engine as? any EnginePictureInPictureProviding)?.pictureInPictureController != nil)
         if preferences.autoPictureInPicture, canAutoPictureInPicture {
             return
         }
@@ -1229,6 +1246,23 @@ final class PlayerSession {
         }
     }
     #endif
+
+    /// 换成指定内核（当前已是该内核时不重建）。
+    private func useEngine(_ engine: PlaybackEngineChoice.Engine) {
+        let kind: PlaybackEngineKind = switch engine {
+        case .system: .avFoundation
+        case .ksPlayer: .ksPlayer
+        case .mpv: .mpv
+        case .vlc: .vlc
+        }
+        guard controller.engine.kind != kind else { return }
+        switch engine {
+        case .system: controller.replaceEngine(AVPlayerEngine())
+        case .ksPlayer: controller.replaceEngine(makeKSPlayerEngine())
+        case .mpv: controller.replaceEngine(MPVPlaybackEngine())
+        case .vlc: controller.replaceEngine(VLCPlaybackEngine())
+        }
+    }
 
     /// KSPlayer 备选内核：按设置配置解码方式与软解线程。
     private func makeKSPlayerEngine() -> KSPlayerEngine {

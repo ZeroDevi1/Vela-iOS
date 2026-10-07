@@ -116,7 +116,7 @@ public struct PlayerScreen: View {
                         Button("关闭 VR 转平面") { session.controller.toggleVR() }
                             .buttonStyle(.glass)
                     }
-                } else if let issue = (session.controller.engine as? AVPlayerEngine)?.videoDecodeIssue {
+                } else if let issue = (session.controller.engine as? any VideoDecodeDiagnosing)?.videoDecodeIssue {
                     VideoIssueCard(session: session, message: issue, symbol: "exclamationmark.triangle") { EmptyView() }
                 }
                 if let error = session.trackError {

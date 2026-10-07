@@ -135,7 +135,13 @@ struct PlayerControlsView: View {
             }
             if buttons.pictureInPicture {
                 circleButton(controller.isPictureInPictureActive ? "pip.exit" : "pip.enter", label: "画中画", size: size) {
-                    controller.requestPictureInPictureToggle()
+                    // mpv / VLC 尚未接入画中画：明确提示换内核，不让按钮点了没反应。
+                    let engine = controller.engine
+                    if engine.supportsLayerPictureInPicture || engine is any EnginePictureInPictureProviding {
+                        controller.requestPictureInPictureToggle()
+                    } else {
+                        controller.showMessage("\(engine.kind.title) 内核暂不支持画中画，可在「更多 → 切换内核」换用系统或 KSPlayer", symbol: "pip", duration: .seconds(3.5))
+                    }
                 }
             }
             circleButton("info.circle", label: "媒体信息", size: size) { open(.info) }
@@ -162,26 +168,47 @@ struct PlayerControlsView: View {
         .padding(.top, landscape ? 8 : 4)
     }
 
-    /// 当前内核的文字标签（对应 Android 顶栏的解码模式标签），点按在两种内核间切换并从当前位置继续。
+    /// 当前内核的文字标签（对应 Android 顶栏的解码模式标签），点按选择其他内核并从当前位置继续。
     private func engineBadge(size: CGFloat) -> some View {
-        let isKS = controller.engine.kind == .ksPlayer
-        return Button { session.switchEngine() } label: {
-            Text(isKS ? "KS" : "AV")
+        let current = controller.engine.kind
+        return Menu {
+            engineChoices
+        } label: {
+            Text(Self.badgeText(current))
                 .font(.system(size: size * 0.36, weight: .semibold, design: .rounded))
                 .frame(minWidth: size, minHeight: size)
                 .contentShape(.rect)
         }
+        .menuIndicator(.hidden)
         .buttonStyle(.plain)
-        .accessibilityLabel(isKS ? "当前 KSPlayer 内核，点按切换到系统内核" : "当前系统内核，点按切换到 KSPlayer")
+        .disabled(!session.canSwitchEngine)
+        .accessibilityLabel("当前\(current.title)内核，点按切换内核")
+    }
+
+    /// 四个内核的单选列表（当前内核打勾），选择后从当前位置用新内核重新起播。
+    @ViewBuilder
+    private var engineChoices: some View {
+        ForEach(PlaybackEngineKind.allCases, id: \.self) { kind in
+            Toggle(isOn: Binding(
+                get: { controller.engine.kind == kind },
+                set: { if $0 { session.switchEngine(to: kind) } }
+            )) { Text(kind.title) }
+        }
+    }
+
+    private static func badgeText(_ kind: PlaybackEngineKind) -> String {
+        switch kind {
+        case .avFoundation: "AV"
+        case .ksPlayer: "KS"
+        case .mpv: "MPV"
+        case .vlc: "VLC"
+        }
     }
 
     private func moreMenu(size: CGFloat) -> some View {
         Menu {
             if session.canSwitchEngine {
-                Button(
-                    controller.engine.kind == .ksPlayer ? "使用系统内核" : "使用 KSPlayer 内核",
-                    systemImage: "arrow.left.arrow.right"
-                ) { session.switchEngine() }
+                Menu("切换内核", systemImage: "arrow.left.arrow.right") { engineChoices }
             }
             sleepTimerMenu
             Button("媒体信息", systemImage: "info.circle") { open(.info) }

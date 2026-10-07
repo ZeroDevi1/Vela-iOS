@@ -1,4 +1,5 @@
 import AVFoundation
+import AVKit
 import Foundation
 import VelaCore
 
@@ -47,11 +48,87 @@ public protocol PlaybackEngine: AnyObject {
     func stop()
 }
 
+// MARK: - 可选能力
+
+// 内核特有的能力拆成可选协议，功能层按「能不能」判断（`engine as? any EmbeddedSubtitleProviding`），
+// 不依赖具体内核类型。新增内核（VLCKit / MPVKit 等）时实现对应协议即可接入这些功能；未实现的能力，
+// 界面须明确提示并提供切换内核，不能静默失效（见 docs/PLAN.md 第 5 节）。
+
+/// 能直接从视频流读取内嵌文本字幕的内核（KSPlayer）。系统内核做不到，需服务器提取字幕。
+@MainActor
+public protocol EmbeddedSubtitleProviding: PlaybackEngine {
+    /// 当前是否选中了内嵌字幕轨（选中后才由内核解码字幕包）。
+    var hasEmbeddedSubtitle: Bool { get }
+    /// 按内嵌字幕轨出现顺序（从 0 开始）选择；nil 关闭。
+    func selectEmbeddedSubtitle(ordinal: Int?)
+    func embeddedSubtitleText(at time: TimeInterval) -> String?
+}
+
+/// 由内核自己提供画中画控制器的内核（自带画面视图、不使用 `AVPlayerLayer`，例如 KSPlayer）。
+/// 系统内核走 `AVPlayerLayer` 原生画中画，不实现此协议。控制器可能在起播后才创建。
+@MainActor
+public protocol EnginePictureInPictureProviding: PlaybackEngine {
+    var pictureInPictureController: AVPictureInPictureController? { get }
+}
+
+/// 画中画期间能把字幕叠进送出画面的内核（小窗里没有应用的字幕图层）。
+@MainActor
+protocol PictureInPictureSubtitleBurning: PlaybackEngine {
+    func setPictureInPictureSubtitles(_ burner: SubtitleBurner?)
+}
+
+/// 自带画面视图、需由播放器同步画面比例的内核（系统内核由 `AVPlayerLayer.videoGravity` 处理）。
+@MainActor
+public protocol VideoGravityAdjustable: PlaybackEngine {
+    func setGravity(_ gravity: PlayerController.VideoGravity)
+}
+
+/// 能提供最近一帧解码画面（`CVPixelBuffer`）的内核；VR 转平面经此取帧。系统内核改用 `AVPlayerItemVideoOutput`。
+@MainActor
+public protocol DecodedFrameProviding: PlaybackEngine {
+    func currentPixelBuffer() -> CVPixelBuffer?
+}
+
+/// 能报告「有声无画」等视频解码问题的内核，播放页据此提示换内核或服务器转码。
+@MainActor
+public protocol VideoDecodeDiagnosing: PlaybackEngine {
+    /// 解码问题的用户可读说明；正常时为 nil。
+    var videoDecodeIssue: String? { get }
+}
+
+/// 可控制多声道音频是否交给系统空间化处理的内核（「原生音频」设置）。
+@MainActor
+public protocol MultichannelSpatializationConfigurable: PlaybackEngine {
+    var allowsMultichannelSpatialization: Bool { get set }
+}
+
+extension PlaybackEngine {
+    /// 画面经 `AVPlayerLayer` 输出，可用系统原生画中画（含切后台自动进入）；否则需内核实现 `EnginePictureInPictureProviding`。
+    public var supportsLayerPictureInPicture: Bool {
+        if case .avPlayer = surface { return true }
+        return false
+    }
+}
+
 public enum PlaybackEngineKind: String, Sendable, CaseIterable {
     /// 系统内核：原生 HDR10 / 杜比视界 / 空间音频 / 画中画 / AirPlay。
     case avFoundation
     /// KSPlayer（FFmpeg 解封装 + VideoToolbox 硬解）：直放 MKV 等系统框架打不开的容器，同样支持画中画与 VR 转平面。
     case ksPlayer
+    /// mpv（libmpv + OpenGL 渲染 + VideoToolbox 硬解）：与 Android 版默认内核相同，字幕由 libass 渲染。
+    case mpv
+    /// VLC（VLCKit 4）：字幕由 libvlc 渲染。
+    case vlc
+
+    /// 播放信息面板与切换菜单中显示的名称。
+    public var title: String {
+        switch self {
+        case .avFoundation: "系统（AVPlayer）"
+        case .ksPlayer: "KSPlayer"
+        case .mpv: "mpv"
+        case .vlc: "VLC"
+        }
+    }
 }
 
 public enum PlaybackStatus: Equatable, Sendable {

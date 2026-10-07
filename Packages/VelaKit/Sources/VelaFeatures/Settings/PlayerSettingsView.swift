@@ -30,7 +30,7 @@ struct PlayerSettingsView: View {
                     ForEach(PlaybackEngineMode.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
             } footer: {
-                Text("自动：始终使用系统内核（硬件解码，最省电；支持 HDR / 杜比视界 / 画中画 / AirPlay / VR 转平面），MKV 等格式由服务器转封装。系统内核播放失败时可选择「用 KSPlayer 内核重试」。KSPlayer 仅作备选：基于 FFmpeg 直放原文件（同样硬件解码，支持画中画与 VR 转平面），不支持 AirPlay 视频，杜比视界按 HDR10 显示。")
+                Text("自动：始终使用系统内核（硬件解码，最省电；支持 HDR / 杜比视界 / 画中画 / AirPlay / VR 转平面），MKV 等格式由服务器转封装。系统内核播放失败时可选择「用 KSPlayer 内核重试」。KSPlayer 仅作备选：基于 FFmpeg 直放原文件（同样硬件解码，支持画中画与 VR 转平面），不支持 AirPlay 视频，杜比视界按 HDR10 显示。mpv / VLC 为测试内核：直放原文件、字幕（含 ASS 特效）由内核自行渲染，暂不支持画中画、VR 转平面与 AirPlay 视频。播放中可在「更多 → 切换内核」随时换用。")
             }
 
             Section {
