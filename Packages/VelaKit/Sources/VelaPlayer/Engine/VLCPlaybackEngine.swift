@@ -71,6 +71,7 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
         videoSize = .zero
         wantsPlay = true
         didStartPlaying = false
+        progress.reset()
         startTime = source.startTime
         activateAudioSession()
 
@@ -114,6 +115,7 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
     public func seek(to seconds: TimeInterval) async {
         let target = duration > 0 ? min(max(0, seconds), duration) : max(0, seconds)
         currentTime = target
+        progress.reset()
         if status == .ended {
             status = .paused
             player.play()
@@ -187,7 +189,8 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
         pollTimer = nil
         wantsPlay = false
         player.stop()
-        player.media = nil
+        // 不能写 `player.media = nil`：VLCKit 4.0.0a19 会把空媒体转给自己的「媒体已切换」回调，
+        // 在 `libvlc_media_retain` 断言失败直接中止进程（macOS 关闭播放窗口时闪退）。媒体随播放器一起释放。
         player.drawable = nil
         status = .idle
     }
@@ -246,14 +249,14 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
         updateStatus(time: time)
     }
 
-    /// 上一次轮询读到的播放位置；用于判断是否真的在走（见 `updateStatus`）。
-    @ObservationIgnored private var lastPolledTime: TimeInterval?
+    @ObservationIgnored private var progress = VLCProgressTracker()
 
     /// libvlc 4 在正常播放中也会持续报告 `buffering`（收到缓冲事件即切换），不能只看状态：
-    /// `isPlaying` 为真时，时间在前进就是播放中，停住才算缓冲。
+    /// `isPlaying` 为真时，时间近期在前进就是播放中，停住超过宽限期才算缓冲。
     private func updateStatus(time: TimeInterval? = nil) {
         if case .failed = status { return }
-        defer { if let time { lastPolledTime = time } }
+        let now = Date.now
+        if let time { progress.record(time, at: now) }
         switch player.state {
         case .error:
             Log.player.error("VLC 播放失败")
@@ -273,10 +276,7 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
                 status = didStartPlaying ? .paused : .loading
                 return
             }
-            if let time, let last = lastPolledTime, time > last {
-                didStartPlaying = true
-                status = .playing
-            } else if player.state == .playing {
+            if progress.isAdvancing(at: now) || player.state == .playing {
                 didStartPlaying = true
                 status = .playing
             } else {
@@ -298,5 +298,32 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
             Log.player.error("音频会话配置失败：\(error.localizedDescription, privacy: .public)")
         }
         #endif
+    }
+}
+
+/// 判断 libvlc 的播放位置是否「近期在前进」。
+///
+/// VLCKit 4 的 `time` 只按 `minimalTimePeriod`（默认 500 ms）刷新，而引擎按 250 ms 轮询，
+/// 相邻两次轮询读到同一个值是常态；若据此判为缓冲，加载圈会在播放中反复闪现。
+/// 因此以「最近一次前进距今是否在宽限期内」判断，宽限期取刷新间隔的 3 倍。
+struct VLCProgressTracker {
+    var stallGrace: TimeInterval = 1.5
+    private var lastTime: TimeInterval?
+    private var lastAdvance: Date?
+
+    mutating func record(_ time: TimeInterval, at date: Date) {
+        if let lastTime, time > lastTime { lastAdvance = date }
+        lastTime = time
+    }
+
+    func isAdvancing(at date: Date) -> Bool {
+        guard let lastAdvance else { return false }
+        return date.timeIntervalSince(lastAdvance) <= stallGrace
+    }
+
+    /// 起播与跳转后调用：跳转造成的时间跳变不算播放前进，需重新观察。
+    mutating func reset() {
+        lastTime = nil
+        lastAdvance = nil
     }
 }
