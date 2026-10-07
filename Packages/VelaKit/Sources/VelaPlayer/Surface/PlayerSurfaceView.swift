@@ -135,7 +135,19 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
         case .view(let content):
             view.host(content)
         }
+        if let engine = controller.engine as? any WindowPictureInPictureProviding {
+            engine.onPictureInPictureStateChange = { [weak self] started in
+                self?.windowPictureInPictureChanged(started: started)
+            }
+        }
     }
+
+    /// 内核自管的画中画窗口（VLC）。
+    private var windowEngine: (any WindowPictureInPictureProviding)? {
+        controller?.engine as? any WindowPictureInPictureProviding
+    }
+    /// 由应用（而非用户在小窗上）结束内核自管的画中画：此时不应再把播放页呈现回来。
+    private var windowStopRequestedByApp = false
 
     private var allControllers: [AVPictureInPictureController] {
         [nativePictureInPicture, subtitleSource?.pictureInPicture].compactMap { $0 }
@@ -187,6 +199,16 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
     func handleToggle(_ request: Int) {
         guard request != lastToggleRequest else { return }
         lastToggleRequest = request
+        if let windowEngine {
+            if controller?.isPictureInPictureActive == true {
+                stopPictureInPicture()
+            } else if windowEngine.isPictureInPictureReady {
+                windowEngine.startPictureInPicture()
+            } else {
+                controller?.showMessage("画面尚未就绪，起播后再试", symbol: "pip", duration: .seconds(2))
+            }
+            return
+        }
         adoptEnginePictureInPicture()
         if let active = activePictureInPicture {
             active.stopPictureInPicture()
@@ -206,11 +228,44 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
 
     func stopPictureInPicture() {
         activePictureInPicture?.stopPictureInPicture()
+        if let windowEngine, controller?.isPictureInPictureActive == true {
+            windowStopRequestedByApp = true
+            windowEngine.stopPictureInPicture()
+        }
     }
 
     /// 播放状态变化时让带字幕的小窗刷新播放 / 暂停按钮（原生画中画由系统自行跟踪）。
     func invalidatePlaybackState() {
         subtitleSource?.invalidatePlaybackState()
+        windowEngine?.invalidatePictureInPicturePlaybackState()
+    }
+
+    /// 内核自管画中画的开始 / 结束。内核不区分小窗的「恢复」与「关闭」：用户在小窗上结束时一律按恢复处理，
+    /// 先呈现播放页再回报结束（与 `restoreUserInterfaceForPictureInPictureStop` 的流程一致），不会意外关闭会话。
+    private func windowPictureInPictureChanged(started: Bool) {
+        guard let controller else { return }
+        if started {
+            guard !controller.isPictureInPictureActive else { return }
+            controller.isPictureInPictureActive = true
+            controller.onPictureInPictureStart?()
+            return
+        }
+        guard controller.isPictureInPictureActive else { return }
+        let finish = { [weak controller] (restored: Bool) in
+            guard let controller else { return }
+            controller.isPictureInPictureActive = false
+            controller.isRestoringPictureInPicture = false
+            controller.onPictureInPictureStop?(restored)
+        }
+        if windowStopRequestedByApp {
+            windowStopRequestedByApp = false
+            finish(false)
+        } else if let restore = controller.onPictureInPictureRestore {
+            controller.isRestoringPictureInPicture = true
+            restore { _ in finish(true) }
+        } else {
+            finish(true)
+        }
     }
 
     func pictureInPictureControllerDidStartPictureInPicture(_ pip: AVPictureInPictureController) {

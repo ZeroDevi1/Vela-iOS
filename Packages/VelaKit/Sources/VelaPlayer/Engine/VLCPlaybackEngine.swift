@@ -10,7 +10,9 @@ import VelaCore
 ///
 /// 能力范围（未实现的能力由播放器提示切换内核，不静默失效）：
 /// - 直放 MKV 等任意容器；内嵌字幕（含 ASS 特效）由 libvlc 直接画进画面，所以 `embeddedSubtitleText` 恒为 nil
-/// - 不实现：画中画（VLCKit 4 的画中画走自己的窗口控制协议，未接入）、VR 取帧、网速与帧率统计
+/// - 画中画（仅 iOS）：经 `VLCVideoContainerView` 接 VLCKit 4 的窗口控制协议（不支持切后台自动进入，见 `WindowPictureInPictureProviding`）。
+///   macOS 的 libvlc 视频输出为 OpenGL（`vout_macosx`），不创建画中画控制器
+/// - 不实现：VR 取帧、网速与帧率统计
 /// - HTTP 请求头：libvlc 只支持 User-Agent / Referer，其余请求头无法注入，依赖 URL 鉴权（Jellyfin / Emby 的 api_key）
 /// 线程：VLCMediaPlayer 的属性在主线程读写；进度由 4 Hz 定时器轮询，与其他内核一致。
 @MainActor
@@ -30,8 +32,11 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
     public private(set) var hasEmbeddedSubtitle = false
 
     /// 渲染容器：libvlc 在其中创建自己的视频视图并铺满。由 `PlayerSurface` 放进视图层级。
-    @ObservationIgnored public let containerView = PlayerPlatformView()
+    @ObservationIgnored let containerView = VLCVideoContainerView()
     @ObservationIgnored private let player: VLCMediaPlayer
+    /// libvlc 视频输出创建后交回的画中画窗口控制对象；换媒体时视频输出重建，会再次交回。
+    @ObservationIgnored private var pictureInPicture: (any VLCPictureInPictureWindowControlling)?
+    @ObservationIgnored public var onPictureInPictureStateChange: ((Bool) -> Void)?
     @ObservationIgnored private var pollTimer: Timer?
     @ObservationIgnored private var wantsPlay = false
     /// 起播位置（秒）：通过 `:start-time` 媒体选项交给 libvlc，避免先从 0 开始再跳。
@@ -58,6 +63,15 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
         containerView.wantsLayer = true
         containerView.layer?.backgroundColor = CGColor(gray: 0, alpha: 1)
         #endif
+        containerView.handlers = .init(
+            play: { [weak self] in self?.play() },
+            pause: { [weak self] in self?.pause() },
+            seekBy: { [weak self] offset in
+                guard let self else { return }
+                await self.seek(to: self.currentTime + Double(offset) / 1000)
+            },
+            ready: { [weak self] controller in self?.adoptPictureInPicture(controller) }
+        )
         player.drawable = containerView
     }
 
@@ -185,6 +199,9 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
     }
 
     public func stop() {
+        pictureInPicture?.stopPictureInPicture()
+        pictureInPicture = nil
+        containerView.handlers = nil
         pollTimer?.invalidate()
         pollTimer = nil
         wantsPlay = false
@@ -193,6 +210,28 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
         // 在 `libvlc_media_retain` 断言失败直接中止进程（macOS 关闭播放窗口时闪退）。媒体随播放器一起释放。
         player.drawable = nil
         status = .idle
+    }
+
+    // MARK: - 画中画
+
+    private func adoptPictureInPicture(_ controller: any VLCPictureInPictureWindowControlling) {
+        controller.stateChangeEventHandler = { [weak self] started in
+            // 回调线程未在文档中约定，统一转到主线程。
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.onPictureInPictureStateChange?(started) }
+            }
+        }
+        pictureInPicture = controller
+        Log.player.info("VLC 画中画就绪")
+    }
+
+    private func publishSnapshot() {
+        containerView.update(.init(
+            timeMs: Int64(currentTime * 1000),
+            lengthMs: Int64(duration * 1000),
+            isPlaying: wantsPlay && status != .ended,
+            isSeekable: player.isSeekable
+        ))
     }
 
     // MARK: - 内部
@@ -247,6 +286,7 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
             selectEmbeddedSubtitle(ordinal: pending)
         }
         updateStatus(time: time)
+        publishSnapshot()
     }
 
     @ObservationIgnored private var progress = VLCProgressTracker()
@@ -300,6 +340,21 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
         #endif
     }
 }
+
+#if os(iOS)
+extension VLCPlaybackEngine: WindowPictureInPictureProviding {
+    public var isPictureInPictureReady: Bool { pictureInPicture != nil }
+
+    public func startPictureInPicture() { pictureInPicture?.startPictureInPicture() }
+
+    public func stopPictureInPicture() { pictureInPicture?.stopPictureInPicture() }
+
+    public func invalidatePictureInPicturePlaybackState() {
+        publishSnapshot()
+        pictureInPicture?.invalidatePlaybackState()
+    }
+}
+#endif
 
 /// 判断 libvlc 的播放位置是否「近期在前进」。
 ///

@@ -135,12 +135,12 @@ struct PlayerControlsView: View {
             }
             if buttons.pictureInPicture {
                 circleButton(controller.isPictureInPictureActive ? "pip.exit" : "pip.enter", label: "画中画", size: size) {
-                    // mpv / VLC 尚未接入画中画：明确提示换内核，不让按钮点了没反应。
+                    // mpv 尚未接入画中画：明确提示换内核，不让按钮点了没反应。
                     let engine = controller.engine
-                    if engine.supportsLayerPictureInPicture || engine is any EnginePictureInPictureProviding {
+                    if engine.supportsPictureInPicture {
                         controller.requestPictureInPictureToggle()
                     } else {
-                        controller.showMessage("\(engine.kind.title) 内核暂不支持画中画，可在「更多 → 切换内核」换用系统或 KSPlayer", symbol: "pip", duration: .seconds(3.5))
+                        controller.showMessage("\(engine.kind.title) 内核暂不支持画中画，可在「更多 → 切换内核」换用系统、KSPlayer 或 VLC", symbol: "pip", duration: .seconds(3.5))
                     }
                 }
             }
