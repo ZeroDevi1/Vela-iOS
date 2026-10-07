@@ -125,6 +125,12 @@ extension PlaybackEngine {
         return false
     }
 
+    /// 能为「VR 转平面」提供画面：系统内核经 `AVPlayerItemVideoOutput`，其余内核需实现 `DecodedFrameProviding`。
+    public var supportsVRFrames: Bool {
+        if case .avPlayer = surface { return true }
+        return self is any DecodedFrameProviding
+    }
+
     /// 内核能以任一方式进入画中画（原生图层、内核自带控制器或内核自管窗口）。
     public var supportsPictureInPicture: Bool {
         supportsLayerPictureInPicture || self is any EnginePictureInPictureProviding || self is any WindowPictureInPictureProviding

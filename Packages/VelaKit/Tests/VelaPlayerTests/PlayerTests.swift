@@ -273,3 +273,30 @@ struct SRTParsingTests {
         #expect(cues.last?.text == "第二句")
     }
 }
+
+@MainActor
+struct VRCapabilityTests {
+    private let vrSource = PlaybackSource(
+        url: URL(fileURLWithPath: "/dev/null"), title: "vr",
+        vrLayout: VRLayout(projection: .halfEquirect, stereo: .sideBySide, inputFOV: 180)
+    )
+
+    /// 回归：mpv / VLC 拿不到解码画面，VR 片源不应自动转平面（否则只有黑屏），手动开启也只提示换内核。
+    @Test func engineWithoutFramesDoesNotEnableVR() {
+        let controller = PlayerController(engine: VLCPlaybackEngine())
+        controller.load(vrSource)
+        #expect(!controller.vrEnabled)
+        controller.toggleVR()
+        #expect(!controller.vrEnabled)
+        controller.shutdown()
+    }
+
+    @Test func systemEngineEnablesVRAndSwitchingDisablesIt() {
+        let controller = PlayerController(engine: AVPlayerEngine())
+        controller.load(vrSource)
+        #expect(controller.vrEnabled)
+        controller.replaceEngine(VLCPlaybackEngine())
+        #expect(!controller.vrEnabled)
+        controller.shutdown()
+    }
+}

@@ -116,10 +116,11 @@ public final class PlayerController {
         self.source = source
         if resetMetadata {
             // 新条目：识别为 VR 时默认转平面（与 Android 版一致），可在菜单中关闭或改选排布。
+            // 内核拿不到解码画面（mpv / VLC）时不自动开启，否则只有黑屏；手动开启会提示换内核。
             vrLayoutOverride = nil
             vrState = VRViewState()
             vrIssue = nil
-            vrEnabled = source.vrLayout != nil
+            vrEnabled = source.vrLayout != nil && engine.supportsVRFrames
             zoomScale = preferences.rememberZoom ? CGFloat(preferences.savedZoomScale) : 1
             zoomOffset = .zero
         }
@@ -145,6 +146,8 @@ public final class PlayerController {
         newEngine.setMuted(isMuted)
         // 画中画绑定在旧内核的渲染图层上，随旧内核结束。
         isPictureInPictureActive = false
+        // 新内核拿不到解码画面时关闭 VR 转平面（否则只剩黑屏），可换回支持的内核再开启。
+        if !newEngine.supportsVRFrames { vrEnabled = false }
     }
 
     /// 当前内核的渲染宿主；内核替换后重建。
@@ -382,7 +385,7 @@ public final class PlayerController {
 
     /// 开关「VR 转平面」；每次开启从正前方、默认视场角开始。
     public func toggleVR() {
-        guard effectiveVRLayout != nil else { return }
+        guard effectiveVRLayout != nil, vrEnabled || ensureVRFramesSupported() else { return }
         vrEnabled.toggle()
         vrState = VRViewState()
         flashHUD(.message(vrEnabled ? "VR 转平面：拖动转视角，捏合缩放" : "已关闭 VR 转平面", symbol: "visionpro"), delay: .seconds(1.5))
@@ -390,10 +393,18 @@ public final class PlayerController {
 
     /// 手动指定 VR 排布并开启转平面。
     public func selectVRLayout(_ layout: VRLayout) {
+        guard ensureVRFramesSupported() else { return }
         vrLayoutOverride = layout
         vrState = VRViewState()
         vrEnabled = true
         flashHUD(.message("VR 转平面：\(layout.displayName)", symbol: "visionpro"), delay: .seconds(1.5))
+    }
+
+    /// 当前内核拿不到解码画面（mpv / VLC）时提示换内核，而不是开启后只显示黑屏。
+    private func ensureVRFramesSupported() -> Bool {
+        guard !engine.supportsVRFrames else { return true }
+        showMessage("\(engine.kind.title) 内核暂不支持 VR 转平面，可在「更多 → 切换内核」换用系统或 KSPlayer", symbol: "visionpro", duration: .seconds(3.5))
+        return false
     }
 
     /// 显示一次性提示（例如截图完成）。
