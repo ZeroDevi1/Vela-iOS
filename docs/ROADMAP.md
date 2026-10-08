@@ -161,6 +161,7 @@
 - 🟡 画中画：KSPlayer 下使用其 `AVSampleBufferDisplayLayer` 内容源的画中画控制器，事件与系统内核共用同一套收起 / 恢复逻辑
 - 已在模拟器验证：MP4 单文件直放出画面；Apple 多码率 HLS 示例在 KSPlayer 下起播慢且会停住（FFmpeg HLS 解封装同时拉取全部变体），实际使用的服务器直放单文件不受影响
 - 待实机验证：8K HEVC 硬解、HDR / 杜比视界显示、画中画
+- 2026-10-08：曾接入的 mpv（FFmpegKit 的 libmpv）与 VLC（VLCKit 4.0.0a19）已移除，只保留系统内核与 KSPlayer。原因：VLC 切换内核断言崩溃、起播位置错位、macOS OpenGL 输出死锁、画中画暂停 / 无字幕；mpv 无画中画；两者维护成本高于收益。旧设置值 `libmpv` / `vlc` 读取时回到「自动」
 
 ## M8 其他 🟡
 
