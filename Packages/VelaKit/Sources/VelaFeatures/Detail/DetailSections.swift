@@ -228,6 +228,7 @@ struct EpisodeShelf: View {
                 }
                 .scrollIndicators(.hidden)
                 .onAppear { proxy.scrollTo(currentID, anchor: .center) }
+                .velaHorizontalPaging()
                 // 换区间后回到该段开头（当前集所在的一段回到当前集）。
                 .onChange(of: rangeIndex) {
                     let target = visible.contains { $0.id == currentID } ? currentID : visible.first?.id
@@ -239,7 +240,7 @@ struct EpisodeShelf: View {
     }
 }
 
-/// 单集区间胶囊（「1 · 30」「31 · 60」…），横向滚动，选中段自动滚入可见区域。
+/// 单集区间选择（「1 · 30」「31 · 60」…）：iOS 为横向滚动的胶囊，选中段自动滚入可见区域；macOS 为翻段按钮 + 区间菜单。
 /// 标签用集号（缺失时显示「–」），与 Forward 一致；iPad / Mac 详情页与单集页的「更多来自」共用。
 struct EpisodeRangeBar<Trailing: View>: View {
 
@@ -251,33 +252,75 @@ struct EpisodeRangeBar<Trailing: View>: View {
 
     var body: some View {
         HStack(spacing: VelaTheme.Spacing.m) {
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal) {
-                    HStack(spacing: VelaTheme.Spacing.s) {
-                        ForEach(0..<EpisodePaging.count(episodes.count), id: \.self) { index in
-                            let range = EpisodePaging.range(index, total: episodes.count)
-                            Button { select(index) } label: {
-                                Text("\(label(episodes[range.lowerBound])) · \(label(episodes[range.upperBound - 1]))")
-                                    .font((compact ? Font.subheadline : .headline).monospacedDigit())
-                                    .padding(.horizontal, compact ? 14 : 22)
-                                    .padding(.vertical, compact ? 8 : 12)
-                                    .background(index == selected ? Color.black.opacity(0.75) : Color.white.opacity(0.08), in: .capsule)
-                                    .foregroundStyle(index == selected ? .white : .white.opacity(0.6))
-                                    .contentShape(.capsule)
-                            }
-                            .buttonStyle(.plain)
-                            .id(index)
-                        }
-                    }
-                }
-                .scrollIndicators(.hidden)
-                .onAppear { proxy.scrollTo(selected, anchor: .center) }
-                .onChange(of: selected) { withAnimation { proxy.scrollTo(selected, anchor: .center) } }
-            }
+            #if os(macOS)
+            macPicker
+            Spacer(minLength: 0)
+            #else
+            capsules
+            #endif
             trailing
         }
         .velaPageMargin()
     }
+
+    private var count: Int { EpisodePaging.count(episodes.count) }
+
+    private func title(_ index: Int) -> String {
+        let range = EpisodePaging.range(index, total: episodes.count)
+        return "\(label(episodes[range.lowerBound])) · \(label(episodes[range.upperBound - 1]))"
+    }
+
+    #if os(macOS)
+    /// Mac 没有触屏，横滑的胶囊难以操作：改为「上一段 / 区间菜单 / 下一段」，几十个区间也只占一行。
+    private var macPicker: some View {
+        HStack(spacing: VelaTheme.Spacing.s) {
+            Button("上一段", systemImage: "chevron.left") { select(selected - 1) }
+                .disabled(selected <= 0)
+            Menu {
+                ForEach(0..<count, id: \.self) { index in
+                    Toggle(isOn: Binding(get: { index == selected }, set: { if $0 { select(index) } })) {
+                        Text(title(index))
+                    }
+                }
+            } label: {
+                Text("第 \(title(selected)) 集")
+                    .font((compact ? Font.subheadline : .headline).monospacedDigit())
+            }
+            .menuStyle(.button)
+            .fixedSize()
+            Button("下一段", systemImage: "chevron.right") { select(selected + 1) }
+                .disabled(selected >= count - 1)
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.bordered)
+        .controlSize(compact ? .regular : .large)
+    }
+    #else
+    private var capsules: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal) {
+                HStack(spacing: VelaTheme.Spacing.s) {
+                    ForEach(0..<count, id: \.self) { index in
+                        Button { select(index) } label: {
+                            Text(title(index))
+                                .font((compact ? Font.subheadline : .headline).monospacedDigit())
+                                .padding(.horizontal, compact ? 14 : 22)
+                                .padding(.vertical, compact ? 8 : 12)
+                                .background(index == selected ? Color.black.opacity(0.75) : Color.white.opacity(0.08), in: .capsule)
+                                .foregroundStyle(index == selected ? .white : .white.opacity(0.6))
+                                .contentShape(.capsule)
+                        }
+                        .buttonStyle(.plain)
+                        .id(index)
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+            .onAppear { proxy.scrollTo(selected, anchor: .center) }
+            .onChange(of: selected) { withAnimation { proxy.scrollTo(selected, anchor: .center) } }
+        }
+    }
+    #endif
 
     private func label(_ episode: MediaItem) -> String {
         episode.indexNumber.map(String.init) ?? "–"
@@ -351,6 +394,7 @@ struct SeasonDetailView: View {
                             }
                         }
                         .scrollIndicators(.hidden)
+                        .velaHorizontalPaging()
                         .listRowBackground(Color.clear)
                     }
                 }
@@ -517,6 +561,7 @@ struct ExtrasShelf: View {
                     .velaPageMargin()
                 }
                 .scrollIndicators(.hidden)
+                .velaHorizontalPaging()
             }
         }
     }
@@ -587,6 +632,7 @@ struct ChapterShelf: View {
                     .velaPageMargin()
                 }
                 .scrollIndicators(.hidden)
+                .velaHorizontalPaging()
             }
         }
     }
@@ -652,6 +698,7 @@ struct CastShelf: View {
                     .velaPageMargin()
                 }
                 .scrollIndicators(.hidden)
+                .velaHorizontalPaging()
             }
         }
     }
@@ -710,6 +757,7 @@ struct MediaInfoSection: View {
                 .velaPageMargin()
             }
             .scrollIndicators(.hidden)
+            .velaHorizontalPaging()
         }
     }
 

@@ -292,10 +292,9 @@ private final class SystemVolume {
 
 #else
 
-/// macOS：鼠标悬停唤出控制层，单击播放 / 暂停，双击全屏；键盘 空格 / ← → / F。
+/// macOS：鼠标移动唤出控制层，单击播放 / 暂停，双击全屏。键盘操作在菜单栏「播放」（`PlayerCommands`）。
 struct PlayerGestureLayer: View {
     let controller: PlayerController
-    @FocusState private var focused: Bool
     /// VR 拖动的上一次平移量与捏合的上一次倍率，按增量更新视角。
     @State private var lastDrag: CGSize = .zero
     @State private var lastMagnification: CGFloat = 1
@@ -303,10 +302,6 @@ struct PlayerGestureLayer: View {
     var body: some View {
         Color.clear
             .contentShape(.rect)
-            .focusable()
-            .focusEffectDisabled()
-            .focused($focused)
-            .onAppear { focused = true }
             .onContinuousHover { phase in
                 if case .active = phase { controller.touchControls() }
             }
@@ -316,10 +311,6 @@ struct PlayerGestureLayer: View {
             )
             .simultaneousGesture(vrDrag, including: controller.vrEnabled ? .all : .none)
             .simultaneousGesture(vrMagnify, including: controller.vrEnabled ? .all : .none)
-            .onKeyPress(.space) { controller.togglePlayPause(); return .handled }
-            .onKeyPress(.leftArrow) { controller.skipBackward(); return .handled }
-            .onKeyPress(.rightArrow) { controller.skipForward(); return .handled }
-            .onKeyPress("f") { NSApp.keyWindow?.toggleFullScreen(nil); return .handled }
     }
 
     /// VR 转平面：鼠标拖动转视角。

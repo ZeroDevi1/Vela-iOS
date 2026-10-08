@@ -274,6 +274,8 @@ struct SeasonEpisodesSection: View {
         .scrollIndicators(.hidden)
         .scrollTargetBehavior(.viewAligned)
         .scrollPosition(id: $scrollTarget, anchor: .leading)
+        // 不用 `ScrollPosition` 版的翻页：`scrollTo(id:)` 在卡片布局前调用会被丢弃，进入页面时定位不到下一集。
+        .velaHorizontalPaging(ids: page.map(\.id), position: $scrollTarget, pageSize: layout.visibleEpisodeCards)
     }
 
     private func rangeBar(_ episodes: [MediaItem]) -> some View {
@@ -392,6 +394,7 @@ struct WideCastShelf: View {
                     .velaPageMargin()
                 }
                 .scrollIndicators(.hidden)
+                .velaHorizontalPaging()
             }
         }
     }
@@ -712,6 +715,7 @@ struct StillsShelf: View {
                 .contentMargins(.horizontal, layout.pageMargin, for: .scrollContent)
                 .scrollIndicators(.hidden)
                 .scrollTargetBehavior(.viewAligned)
+                .velaHorizontalPaging()
             }
         }
     }

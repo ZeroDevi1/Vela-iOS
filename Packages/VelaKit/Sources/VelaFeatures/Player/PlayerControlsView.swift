@@ -41,7 +41,11 @@ struct PlayerControlsView: View {
                     if controller.isLocked {
                         lockedOverlay(landscape: landscape)
                     } else {
+                        #if os(macOS)
+                        macControls
+                        #else
                         fullControls(landscape: landscape)
+                        #endif
                     }
                 }
                 .transition(.opacity)
@@ -113,10 +117,19 @@ struct PlayerControlsView: View {
     // MARK: - 顶部
 
     private func topSection(landscape: Bool) -> some View {
+        #if os(macOS)
+        let size = Self.barButtonSize
+        #else
         let size: CGFloat = landscape ? 48 : 40
+        #endif
         return HStack(spacing: landscape ? 10 : 4) {
+            #if os(macOS)
+            // Esc 由菜单栏「播放」处理：全屏时先退出全屏。
+            circleButton("xmark", label: "关闭播放器", size: size, action: onClose)
+            #else
             circleButton("chevron.backward", label: "关闭播放器", size: size, action: onClose)
                 .keyboardShortcut(.cancelAction)
+            #endif
             if landscape, let logo = session.logoURL {
                 CachedImage(url: logo, contentMode: .fit) { EmptyView() }
                     .frame(maxWidth: 200, maxHeight: 48, alignment: .leading)
@@ -135,12 +148,17 @@ struct PlayerControlsView: View {
             }
             if buttons.pictureInPicture {
                 circleButton(controller.isPictureInPictureActive ? "pip.exit" : "pip.enter", label: "画中画", size: size) {
-                    // mpv 尚未接入画中画：明确提示换内核，不让按钮点了没反应。
+                    // mpv（及 macOS 上的 VLC）没有画中画：明确提示换内核，不让按钮点了没反应。
                     let engine = controller.engine
                     if engine.supportsPictureInPicture {
                         controller.requestPictureInPictureToggle()
                     } else {
-                        controller.showMessage("\(engine.kind.title) 内核暂不支持画中画，可在「更多 → 切换内核」换用系统、KSPlayer 或 VLC", symbol: "pip", duration: .seconds(3.5))
+                        #if os(iOS)
+                        let alternatives = "系统、KSPlayer 或 VLC"
+                        #else
+                        let alternatives = "系统或 KSPlayer"
+                        #endif
+                        controller.showMessage("\(engine.kind.title) 内核暂不支持画中画，可在「更多 → 切换内核」换用\(alternatives)", symbol: "pip", duration: .seconds(3.5))
                     }
                 }
             }
@@ -284,6 +302,109 @@ struct PlayerControlsView: View {
         }
     }
 
+    #if os(macOS)
+    // MARK: - macOS 控制层
+
+    /// macOS：不用触屏的中央大按钮与两侧按钮列（锁屏、竖排倍速），改为常见桌面播放器的结构——
+    /// 顶栏（关闭、内核、画中画、信息、更多）+ 底部工具条（标题、进度、播放控制与各面板入口、倍速、全屏）。
+    /// 键盘操作由菜单栏「播放」菜单提供（`PlayerCommands`）。
+    private var macControls: some View {
+        let chrome: Double = controller.scrubTime == nil ? 1 : 0
+        let hasNavigation = (session.item?.kind == .episode || session.partPosition != nil) && buttons.switchMedia
+        return VStack(spacing: 0) {
+            topSection(landscape: true)
+                .opacity(chrome)
+                .overlay(alignment: .top) { ScrubTimeIndicator(controller: controller) }
+            Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 6) {
+                titleBlock.opacity(chrome)
+                HStack(spacing: 10) {
+                    PlaybackTimeLabel(controller: controller)
+                    PlayerScrubber(controller: controller, chapterStarts: session.chapters.map(\.chapter.start))
+                }
+                HStack(spacing: 8) {
+                    if hasNavigation {
+                        circleButton("backward.end.fill", label: "上一集", size: Self.barButtonSize) { session.playPreviousEpisode() }
+                            .disabled(session.previousEpisode == nil)
+                    }
+                    if buttons.seek {
+                        circleButton(Self.seekSymbol("gobackward", controller.preferences.seekBackwardSeconds), label: "快退", size: Self.barButtonSize) {
+                            controller.skipBackward()
+                        }
+                    }
+                    macPlayPauseButton
+                    if buttons.seek {
+                        circleButton(Self.seekSymbol("goforward", controller.preferences.seekForwardSeconds), label: "快进", size: Self.barButtonSize) {
+                            controller.skipForward()
+                        }
+                    }
+                    if hasNavigation {
+                        circleButton("forward.end.fill", label: "下一集", size: Self.barButtonSize) { controller.playNextNow() }
+                            .disabled(session.nextEpisode == nil)
+                    }
+                    Spacer(minLength: 0)
+                    if buttons.screenshot {
+                        circleButton("camera", label: "截图", size: Self.barButtonSize) { session.captureScreenshot() }
+                    }
+                    bottomActions
+                    if buttons.speed { macSpeedMenu }
+                    circleButton("arrow.up.left.and.arrow.down.right", label: "全屏", size: Self.barButtonSize) {
+                        NSApp.keyWindow?.toggleFullScreen(nil)
+                    }
+                }
+                .opacity(chrome)
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 14)
+        }
+        .background { scrims(landscape: true) }
+        .foregroundStyle(.white)
+        .animation(.easeOut(duration: 0.2), value: chrome)
+    }
+
+    /// 底栏的播放 / 暂停；缓冲时显示小号转圈。
+    @ViewBuilder
+    private var macPlayPauseButton: some View {
+        let status = controller.engine.status
+        if status == .buffering || status == .loading || session.isSwitchingStream {
+            ProgressView().controlSize(.small).tint(.white)
+                .frame(width: 40, height: 40)
+        } else {
+            circleButton(controller.isPlaying ? "pause.fill" : "play.fill", label: controller.isPlaying ? "暂停" : "播放", size: 40, iconScale: 0.5) {
+                controller.togglePlayPause()
+            }
+        }
+    }
+
+    /// 倍速：当前倍速文字，点按选择预设（± 微调在「播放」菜单）。
+    private var macSpeedMenu: some View {
+        let rate = controller.engine.rate
+        return Menu {
+            Picker("播放速度", selection: Binding(
+                get: { controller.engine.rate },
+                set: { controller.engine.setRate($0) }
+            )) {
+                ForEach(Self.speedPresets, id: \.self) { speed in
+                    Text(speed == 1 ? "正常" : "\(speed.formatted())×").tag(speed)
+                }
+            }
+            pinWhileOpen
+        } label: {
+            Text("\(rate.formatted())×")
+                .font(.callout.weight(rate == 1 ? .medium : .bold).monospacedDigit())
+                .padding(.horizontal, 8)
+                .frame(minWidth: Self.barButtonSize, minHeight: Self.barButtonSize)
+                .background(Capsule().fill(Self.buttonFill))
+                .contentShape(.capsule)
+        }
+        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .fixedSize()
+        .accessibilityLabel("播放速度")
+        .accessibilityValue("\(rate.formatted())×")
+    }
+    #endif
+
     // MARK: - 两侧
 
     private func leftColumn(landscape: Bool) -> some View {
@@ -425,9 +546,9 @@ struct PlayerControlsView: View {
     private var episodeNavigation: some View {
         HStack(spacing: 8) {
             let isPart = session.partPosition != nil
-            circleButton("backward.end.fill", label: isPart ? "上一段" : "上一集", size: 44) { session.playPreviousEpisode() }
+            circleButton("backward.end.fill", label: isPart ? "上一段" : "上一集", size: Self.barButtonSize) { session.playPreviousEpisode() }
                 .disabled(session.previousEpisode == nil)
-            circleButton("forward.end.fill", label: isPart ? "下一段" : "下一集", size: 44) { controller.playNextNow() }
+            circleButton("forward.end.fill", label: isPart ? "下一段" : "下一集", size: Self.barButtonSize) { controller.playNextNow() }
                 .disabled(session.nextEpisode == nil)
                 // 下一集已预加载：服务器已开始准备，切换会更快。
                 .overlay(alignment: .topTrailing) {
@@ -482,18 +603,18 @@ struct PlayerControlsView: View {
         HStack(spacing: 12) {
             // 串流画质只对服务器条目有意义（由服务器按码率上限转码）。
             if session.item != nil {
-                circleButton(session.maxBitrateOverride == nil ? "sparkles.tv" : "sparkles.tv.fill", label: "串流画质", size: 44) { open(.quality) }
+                circleButton(session.maxBitrateOverride == nil ? "sparkles.tv" : "sparkles.tv.fill", label: "串流画质", size: Self.barButtonSize) { open(.quality) }
                     .disabled(session.isSwitchingStream)
             }
             if !session.seasonEpisodes.isEmpty {
-                circleButton("list.bullet", label: "剧集列表", size: 44) { open(.episodes) }
+                circleButton("list.bullet", label: "剧集列表", size: Self.barButtonSize) { open(.episodes) }
             }
             if !session.audioOptions.isEmpty {
                 let isMuted = controller.engine.isMuted
-                circleButton(isMuted ? "speaker.slash" : "waveform", label: isMuted ? "音轨（已静音）" : "音轨", size: 44) { open(.audio) }
+                circleButton(isMuted ? "speaker.slash" : "waveform", label: isMuted ? "音轨（已静音）" : "音轨", size: Self.barButtonSize) { open(.audio) }
                     .disabled(session.isSwitchingStream)
             }
-            circleButton(session.selectedSubtitleIndex == nil ? "captions.bubble" : "captions.bubble.fill", label: "字幕", size: 44) {
+            circleButton(session.selectedSubtitleIndex == nil ? "captions.bubble" : "captions.bubble.fill", label: "字幕", size: Self.barButtonSize) {
                 open(.subtitle)
             }
             .disabled(session.isSwitchingStream)
@@ -504,6 +625,13 @@ struct PlayerControlsView: View {
 
     /// 圆形按钮底色，与 Android 版 `OverlayButtonFill` 相同。
     static let buttonFill = Color.black.opacity(0.36)
+
+    /// 顶栏与底栏按钮的直径：iOS 按触控目标取 44pt；macOS 用鼠标操作，取接近系统工具栏控件的 32pt。
+    #if os(macOS)
+    static let barButtonSize: CGFloat = 32
+    #else
+    static let barButtonSize: CGFloat = 44
+    #endif
 
     private func circleButton(_ symbol: String, label: String, size: CGFloat, iconScale: CGFloat = 0.45, action: @escaping () -> Void) -> some View {
         Button(action: action) {

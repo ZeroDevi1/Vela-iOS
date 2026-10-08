@@ -13,6 +13,12 @@ public struct PlayerScreen: View {
     @Environment(\.dismiss) private var dismiss
     @State private var session: PlayerSession
     @State private var panel: PlayerPanel?
+    #if os(macOS)
+    /// 播放器所在窗口：画中画期间隐藏，恢复时重新显示。
+    @State private var window: NSWindow?
+    /// Esc 的本地按键监听（见 `PlayerCommands.exitFullScreenOrClose`）。
+    @State private var escapeMonitor: Any?
+    #endif
 
     public init(request: PlaybackRequest) {
         _session = State(initialValue: PlayerSession(request: request))
@@ -148,6 +154,20 @@ public struct PlayerScreen: View {
         .task { await session.prepareIfNeeded(app: app) }
         #if os(iOS)
         .onAppear(perform: adoptSession)
+        #else
+        .background(PlayerWindowReader { window = $0 })
+        .onAppear(perform: adoptSessionInWindow)
+        // 菜单栏「播放」作用于当前在前的播放器窗口。
+        .focusedSceneValue(\.playerSession, session)
+        // 控制层自动隐藏时一并隐藏鼠标指针，移动鼠标即恢复（与控制层同时出现）。
+        .onChange(of: session.controller.controlsVisible) { _, visible in
+            if !visible { NSCursor.setHiddenUntilMouseMoves(true) }
+        }
+        .onAppear(perform: installEscapeMonitor)
+        .onDisappear {
+            if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+            escapeMonitor = nil
+        }
         #endif
         #if os(iOS)
         // 「暂停后自动锁屏」关闭时，播放器打开期间始终常亮；开启时交给 AVPlayer（只在播放视频时阻止锁屏）。
@@ -208,11 +228,72 @@ public struct PlayerScreen: View {
     }
     #endif
 
+    #if os(macOS)
+    /// macOS 的播放器是独立窗口，画中画开始时窗口原地只剩系统的「正以画中画播放」占位：
+    /// 开始时隐藏窗口（会话与视图都保留，`orderOut` 不触发 `onDisappear`），恢复时重新显示后再通知系统，
+    /// 用户在小窗上关闭时结束播放并关闭窗口。
+    /// 窗口模式下 Esc 到不了菜单栏的快捷键（SwiftUI 宿主视图先处理掉了），在本窗口的按键事件进入分发前拦截。
+    /// 只处理不带修饰键、发往本播放器窗口的 Esc；面板打开时交给面板（Esc 关闭面板）。
+    private func installEscapeMonitor() {
+        guard escapeMonitor == nil else { return }
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.keyCode == 53, event.window === window, panel == nil,
+                  event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty else { return event }
+            PlayerCommands.exitFullScreenOrClose(event.window)
+            return nil
+        }
+    }
+
+    private func adoptSessionInWindow() {
+        let controller = session.controller
+        controller.onPictureInPictureStart = {
+            window?.orderOut(nil)
+        }
+        controller.onPictureInPictureRestore = { completion in
+            window?.makeKeyAndOrderFront(nil)
+            Task {
+                try? await Task.sleep(for: .milliseconds(120))
+                completion(true)
+            }
+        }
+        controller.onPictureInPictureStop = { restored in
+            guard !restored else { return }
+            session.close()
+            window?.close()
+        }
+    }
+    #endif
+
     private func close() {
         session.close()
         dismiss()
     }
 }
+
+#if os(macOS)
+/// 取得 SwiftUI 视图所在的 `NSWindow`（加入窗口后回调一次）。
+private struct PlayerWindowReader: NSViewRepresentable {
+    let onWindow: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView { Reader(onWindow: onWindow) }
+    func updateNSView(_ view: NSView, context: Context) {}
+
+    private final class Reader: NSView {
+        let onWindow: (NSWindow?) -> Void
+        init(onWindow: @escaping (NSWindow?) -> Void) {
+            self.onWindow = onWindow
+            super.init(frame: .zero)
+        }
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            let window = window
+            DispatchQueue.main.async { self.onWindow(window) }
+        }
+    }
+}
+#endif
 
 /// 渲染表面 + 画面旋转。旋转 90° / 270° 时交换宽高再旋转，使画面在新方向上仍按比例适应容器。
 private struct RotatableSurface: View {

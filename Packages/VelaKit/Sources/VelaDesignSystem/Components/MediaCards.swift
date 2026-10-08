@@ -310,6 +310,7 @@ public struct MediaShelf<Item: Identifiable, Card: View, Accessory: View>: View 
             }
             .scrollIndicators(.hidden)
             .scrollTargetBehavior(.viewAligned)
+            .velaHorizontalPaging()
         }
     }
 }

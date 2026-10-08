@@ -22,7 +22,10 @@ struct VelaApp: App {
         #if os(macOS)
         .defaultSize(width: 1200, height: 780)
         .windowResizability(.contentMinSize)
-        .commands { VelaCommands() }
+        .commands {
+            VelaCommands()
+            PlayerCommands()
+        }
         #endif
 
         #if os(macOS)
@@ -34,6 +37,8 @@ struct VelaApp: App {
             }
         }
         .windowStyle(.hiddenTitleBar)
+        // 不恢复上次退出时开着的播放器窗口：否则下次启动会自动重新起播（还会写入服务器播放记录）。
+        .restorationBehavior(.disabled)
         .defaultSize(width: 1280, height: 720)
         .windowResizability(.contentMinSize)
 
