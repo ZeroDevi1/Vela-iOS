@@ -186,7 +186,7 @@ private struct SubscribeControl: View {
                     } label: {
                         Label(isOn ? "已订阅" : "订阅", systemImage: isOn ? "bookmark.fill" : "bookmark")
                     }
-                    .buttonStyle(.glass)
+                    .buttonStyle(.bordered)
                 } else {
                     Menu {
                         ForEach(1...max(seasonCount ?? 1, 1), id: \.self) { season in
@@ -198,7 +198,7 @@ private struct SubscribeControl: View {
                     } label: {
                         Label(subscribedSummary, systemImage: (subscribed?.isEmpty ?? true) ? "bookmark" : "bookmark.fill")
                     }
-                    .buttonStyle(.glass)
+                    .buttonStyle(.bordered)
                 }
                 if isWorking || subscribed == nil { ProgressView().controlSize(.small) }
             }
@@ -269,13 +269,13 @@ private struct MatchRow: View {
                 } label: {
                     Image(systemName: "play.fill").frame(width: 20, height: 20)
                 }
-                .buttonStyle(.glassProminent)
+                .buttonStyle(.borderedProminent)
                 .buttonBorderShape(.circle)
                 .accessibilityLabel("在 \(match.serverName) 播放")
             }
         }
         .padding(VelaTheme.Spacing.m)
-        .glassEffect(.regular, in: .rect(cornerRadius: VelaTheme.Radius.panel))
+        .background(.regularMaterial, in: .rect(cornerRadius: VelaTheme.Radius.panel))
     }
 }
 

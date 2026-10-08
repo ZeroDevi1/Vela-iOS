@@ -7,7 +7,7 @@ import VelaNetwork
 /// 「发现」标签页；内容见 `DiscoverPage`。
 struct DiscoverView: View {
     var body: some View {
-        NavigationStack { DiscoverPage().toolbar { SidebarToggleItem() } }
+        NavigationStack { DiscoverPage() }
     }
 }
 
@@ -29,7 +29,7 @@ struct DiscoverPage: View {
                     Text("发现页的榜单与目录来自 TMDB，需要先填写 TMDB API Key 或 Read Access Token。")
                 } actions: {
                     Button("填写 TMDB 凭据") { isEditingCredential = true }
-                        .buttonStyle(.glassProminent)
+                        .buttonStyle(.borderedProminent)
                 }
             }
         }

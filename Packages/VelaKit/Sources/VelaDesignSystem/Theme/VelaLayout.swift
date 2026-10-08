@@ -83,7 +83,7 @@ extension EnvironmentValues {
 
 extension View {
     /// 测量本视图的宽度并把对应的 `VelaLayout` 写入子视图环境。放在页面根视图上（ScrollView 外层），
-    /// 这样 iPad 侧边栏展开 / 分屏时按内容区的实际宽度分档，而不是整窗宽度。
+    /// 这样 iPad 分屏、Mac 侧边栏展开时按内容区的实际宽度分档，而不是整窗宽度。
     public func measuresVelaLayout() -> some View {
         modifier(VelaLayoutReader())
     }
@@ -111,8 +111,8 @@ import UIKit
 /// 排布，「发现」「搜索」等页的大标题会比内容靠左。这里找到本页 `NavigationStack` 背后的 `UINavigationController`
 /// 设置其导航栏的 `directionalLayoutMargins`。只影响边距，不改变导航栏的其他外观。
 ///
-/// 查找方式：本视图位于标签页根视图（`NavigationStack` 外层）上，从自身控制器向上逐级，在每级的子控制器中
-/// 广度优先找第一个导航控制器。找不到时（视图层级尚未建立）在下一次更新时重试，不影响页面显示。
+/// 查找方式：本视图位于标签页根视图（`NavigationStack` 外层）上，从自身控制器向上逐级，取第一级子树中的全部导航控制器
+/// （同一宿主下可能有多个标签页的导航控制器，边距对它们相同）。找不到时（视图层级尚未建立）在下一次更新时重试，不影响页面显示。
 private struct NavigationBarMarginAligner: UIViewControllerRepresentable {
     let margin: CGFloat
 
@@ -132,25 +132,30 @@ private struct NavigationBarMarginAligner: UIViewControllerRepresentable {
         }
 
         func apply() {
-            guard let bar = findNavigationController()?.navigationBar else { return }
-            let current = bar.directionalLayoutMargins
-            guard current.leading != margin else { return }
-            bar.directionalLayoutMargins.leading = margin
+            for navigation in findNavigationControllers()
+            where navigation.navigationBar.directionalLayoutMargins.leading != margin {
+                navigation.navigationBar.directionalLayoutMargins.leading = margin
+            }
         }
 
-        private func findNavigationController() -> UINavigationController? {
+        private func findNavigationControllers() -> [UINavigationController] {
             var ancestor = parent
             for _ in 0..<4 {
-                guard let current = ancestor else { return nil }
+                guard let current = ancestor else { return [] }
+                var found: [UINavigationController] = []
                 var queue = current.children
                 while !queue.isEmpty {
                     let next = queue.removeFirst()
-                    if let navigation = next as? UINavigationController { return navigation }
-                    queue.append(contentsOf: next.children)
+                    if let navigation = next as? UINavigationController {
+                        found.append(navigation)
+                    } else {
+                        queue.append(contentsOf: next.children)
+                    }
                 }
+                if !found.isEmpty { return found }
                 ancestor = current.parent
             }
-            return nil
+            return []
         }
     }
 }

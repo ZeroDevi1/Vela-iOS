@@ -159,8 +159,9 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
     /// 系统内核：开着字幕时由带字幕的内容源负责画中画（含切后台自动进入），否则交给原生画中画。画中画进行中不切换。
     func refreshPictureInPictureSource(subtitlesActive: Bool) {
         #if os(macOS)
-        // macOS 不用带字幕的样本缓冲区内容源：系统把这类小窗的画面按源图层在播放器窗口中的尺寸摆放、不随小窗缩放
-        // （实测 macOS 27.2：小窗约 400×300，画面 960×720，只露出放大的一角），只用原生 AVPlayerLayer 画中画（无字幕）。
+        // macOS 不走系统画中画（改用置顶小窗，见 `PlayerController.isMiniWindow`），不创建带字幕的样本缓冲区内容源：
+        // 系统把这类小窗的画面按源图层在播放器窗口中的尺寸摆放、不随小窗缩放（实测 macOS 27.2：小窗约 400×300，
+        // 画面 960×720，只露出放大的一角）。系统修复后可用 `VELA_DEBUG_DUMP_PIP=1` 复查再恢复。
         let subtitlesActive = false
         #endif
         guard let player, AVPictureInPictureController.isPictureInPictureSupported(),
@@ -200,14 +201,9 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
         lastToggleRequest = request
         if let controller, !controller.isPictureInPictureActive {
             guard controller.engine.supportsPictureInPicture else {
-                controller.showMessage("macOS 上 \(controller.engine.kind.title) 内核暂不支持画中画，可在「更多 → 切换内核」换用系统内核", symbol: "pip", duration: .seconds(3.5))
+                controller.showMessage("\(controller.engine.kind.title) 内核暂不支持画中画", symbol: "pip", duration: .seconds(3))
                 return
             }
-            #if os(macOS)
-            if controller.hasActiveSubtitle {
-                controller.showMessage("Mac 的画中画不显示字幕", symbol: "captions.bubble", duration: .seconds(2.5))
-            }
-            #endif
         }
         adoptEnginePictureInPicture()
         if let active = activePictureInPicture {

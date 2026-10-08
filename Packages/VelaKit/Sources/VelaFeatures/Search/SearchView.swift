@@ -30,7 +30,6 @@ struct SearchView: View {
                 }
             }
             .navigationTitle("搜索")
-            .toolbar { SidebarToggleItem() }
             .navigationDestination(for: CatalogTitle.self) { CatalogDetailView(title: $0) }
             .navigationDestination(for: DoubanTitle.self) { DoubanResolveView(title: $0) }
             .detailDestinations()
@@ -173,7 +172,7 @@ private struct DoubanResolveView: View {
                     Text("豆瓣没有提供该条目的 TMDB / IMDb id，无法确认它在服务器中对应哪部作品。")
                 } actions: {
                     Button("在豆瓣查看") { openURL(URL(string: "https://movie.douban.com/subject/\(title.doubanID)/")!) }
-                        .buttonStyle(.glass)
+                        .buttonStyle(.bordered)
                 }
             } else {
                 ProgressView()
@@ -236,7 +235,7 @@ private struct SearchSuggestionsView: View {
                             .font(.subheadline.weight(.semibold))
                             .padding(.horizontal, 16)
                             .frame(height: 36)
-                            .glassEffect(.regular, in: .capsule)
+                            .background(.regularMaterial, in: .capsule)
                             .velaPageMargin()
                         carousel(cardWidth: cardWidth, height: min(cardWidth * 1.5, proxy.size.height * 0.62))
                         if let currentItem {

@@ -43,7 +43,6 @@ struct HomeView: View {
             #else
             // Mac 用窗口工具栏承载分类与服务器操作（原生位置），不在内容里画浮动按钮。
             .toolbar { HomeToolbar(category: $category) }
-            .toolbar { SidebarToggleItem() }
             #endif
             .navigationTitle(app.servers.activeServer?.displayName ?? "首页")
             .navigationDestination(for: HomeListRoute.self) { route in
@@ -240,7 +239,7 @@ struct HomeView: View {
                         .font(.title3)
                         .foregroundStyle(.white)
                         .frame(width: 44, height: 44)
-                        .glassEffect(.regular.interactive(), in: .circle)
+                        .background(.ultraThinMaterial, in: .circle)
                 }
                 .buttonStyle(.plain)
                 .frame(height: width * 9 / 16)
@@ -625,62 +624,58 @@ struct CarouselMetadataRow: View {
 private struct HomeTopBar: View {
     @Binding var category: HomeModel.Category
     @Environment(AppModel.self) private var app
-    @Environment(\.sidebarControl) private var sidebar
     @State private var isAddingServer = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            // 侧边栏收起时的开关（首页隐藏了导航栏，不走 `SidebarToggleItem`）。
-            if !sidebar.isVisible {
-                Button(action: sidebar.toggle) { circleIcon("sidebar.left") }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("显示边栏")
-            }
-            Menu {
-                Picker("分类", selection: $category) {
-                    ForEach(HomeModel.Category.allCases) { Text($0.title).tag($0) }
+        // 顶栏的玻璃控件放进同一容器：相邻玻璃一起渲染、互相融合，而不是各自取样叠加（HIG Materials）。
+        GlassEffectContainer(spacing: 10) {
+            HStack(spacing: 10) {
+                Menu {
+                    Picker("分类", selection: $category) {
+                        ForEach(HomeModel.Category.allCases) { Text($0.title).tag($0) }
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "play.tv.fill")
+                            .foregroundStyle(VelaTheme.accent)
+                        Text(category.title).font(.headline)
+                        Image(systemName: "chevron.down").font(.caption.weight(.bold))
+                    }
+                    .padding(.horizontal, 16)
+                    .frame(height: 44)
+                    .glassEffect(.regular.interactive(), in: .capsule)
                 }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "play.tv.fill")
-                        .foregroundStyle(VelaTheme.accent)
-                    Text(category.title).font(.headline)
-                    Image(systemName: "chevron.down").font(.caption.weight(.bold))
+                .buttonStyle(.plain)
+                .accessibilityLabel("分类：\(category.title)")
+
+                Spacer()
+
+                if let server = app.servers.activeServer, server.lines.count > 1 {
+                    Menu { LineMenuContent(server: server) } label: { circleIcon("bolt.fill") }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("切换线路")
                 }
-                .padding(.horizontal, 16)
-                .frame(height: 44)
-                .glassEffect(.regular.interactive(), in: .capsule)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("分类：\(category.title)")
 
-            Spacer()
+                #if os(iOS)
+                AirPlayButton()
+                    .frame(width: 44, height: 44)
+                    .glassEffect(.regular.interactive(), in: .circle)
+                #endif
 
-            if let server = app.servers.activeServer, server.lines.count > 1 {
-                Menu { LineMenuContent(server: server) } label: { circleIcon("bolt.fill") }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("切换线路")
-            }
-
-            #if os(iOS)
-            AirPlayButton()
-                .frame(width: 44, height: 44)
-                .glassEffect(.regular.interactive(), in: .circle)
-            #endif
-
-            Menu {
-                ServerMenuContent { isAddingServer = true }
-            } label: {
-                CachedImage(url: app.activeClient?.userImageURL) {
-                    Image(systemName: "person.crop.circle.fill").resizable().foregroundStyle(.secondary)
+                Menu {
+                    ServerMenuContent { isAddingServer = true }
+                } label: {
+                    CachedImage(url: app.activeClient?.userImageURL) {
+                        Image(systemName: "person.crop.circle.fill").resizable().foregroundStyle(.secondary)
+                    }
+                    .frame(width: 40, height: 40)
+                    .clipShape(.circle)
+                    .padding(2)
+                    .glassEffect(.regular.interactive(), in: .circle)
                 }
-                .frame(width: 40, height: 40)
-                .clipShape(.circle)
-                .padding(2)
-                .glassEffect(.regular.interactive(), in: .circle)
+                .buttonStyle(.plain)
+                .accessibilityLabel("服务器：\(app.servers.activeServer?.displayName ?? "")")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("服务器：\(app.servers.activeServer?.displayName ?? "")")
         }
         .velaPageMargin()
         .padding(.top, 4)

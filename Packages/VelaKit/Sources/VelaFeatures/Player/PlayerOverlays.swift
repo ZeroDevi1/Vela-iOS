@@ -11,6 +11,12 @@ import VelaPlayer
 struct SubtitleOverlay: View {
     let controller: PlayerController
     let preferences: PlayerPreferences
+    /// macOS 小窗：字号按窗口宽度缩小（以 720pt 宽为原始字号，最小 0.55 倍），贴底且不为控制层让位。
+    var fitsSmallWindow = false
+
+    /// 小窗字号缩放的基准宽度（pt）与下限。
+    private static let smallWindowReferenceWidth: CGFloat = 720
+    private static let smallWindowMinimumScale: CGFloat = 0.55
 
     /// 字幕顶部与画面下边缘的间距（pt）。
     private static let gapBelowVideo: CGFloat = 12
@@ -27,20 +33,23 @@ struct SubtitleOverlay: View {
         let embedded = embeddedEngine
         if track != nil || embedded != nil {
             GeometryReader { proxy in
-                let anchor = belowVideoAnchor(in: proxy)
+                let anchor = fitsSmallWindow ? nil : belowVideoAnchor(in: proxy)
+                let scale = fitsSmallWindow
+                    ? min(1, max(Self.smallWindowMinimumScale, proxy.size.width / Self.smallWindowReferenceWidth))
+                    : 1
                 let isPlaying = controller.engine.status == .playing
                 // 只在暂停时订阅进度，播放中由时间线驱动，避免两路同时刷新。
                 let pausedTime = isPlaying ? nil : controller.engine.currentTime
                 TimelineView(.animation(minimumInterval: 0.05, paused: !isPlaying)) { _ in
                     let time = pausedTime ?? controller.engine.preciseCurrentTime
                     if let text = track?.text(at: time) ?? embedded?.embeddedSubtitleText(at: time) {
-                        subtitleText(text)
+                        subtitleText(text, scale: scale)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: anchor == nil ? .bottom : .top)
                 .padding(.top, anchor ?? 0)
                 // 控制层出现时上移，避免与进度条重叠。
-                .padding(.bottom, anchor == nil ? (controller.controlsVisible ? PlayerLayout.controlsBottomInset(landscape: proxy.size.width > proxy.size.height) : 28) + preferences.subtitleBottomOffset : 0)
+                .padding(.bottom, anchor == nil ? bottomPadding(in: proxy, scale: scale) : 0)
             }
             .animation(.easeInOut(duration: 0.25), value: controller.controlsVisible)
             .allowsHitTesting(false)
@@ -48,14 +57,20 @@ struct SubtitleOverlay: View {
         }
     }
 
-    private func subtitleText(_ text: String) -> some View {
+    private func subtitleText(_ text: String, scale: CGFloat) -> some View {
         Text(text)
-            .font(.system(size: 20 * preferences.subtitleScale, weight: .semibold))
+            .font(.system(size: 20 * preferences.subtitleScale * scale, weight: .semibold))
             .multilineTextAlignment(.center)
             .foregroundStyle(.white)
             .shadow(color: .black.opacity(0.9), radius: 2, x: 0, y: 1)
             .shadow(color: .black.opacity(0.6), radius: 6)
-            .padding(.horizontal, 32)
+            .padding(.horizontal, 32 * scale)
+    }
+
+    private func bottomPadding(in proxy: GeometryProxy, scale: CGFloat) -> CGFloat {
+        if fitsSmallWindow { return 12 + preferences.subtitleBottomOffset * scale }
+        let controls = controller.controlsVisible ? PlayerLayout.controlsBottomInset(landscape: proxy.size.width > proxy.size.height) : 28
+        return controls + preferences.subtitleBottomOffset
     }
 
     /// 竖屏时字幕顶部在本视图坐标系中的 y；不适用时返回 nil。
@@ -132,9 +147,9 @@ struct UpNextCard: View {
                             Label(upNext.countdown.map { "播放（\($0)）" } ?? "播放", systemImage: "play.fill")
                                 .contentTransition(.numericText(countsDown: true))
                         }
-                        .buttonStyle(.glassProminent)
+                        .buttonStyle(.borderedProminent)
                         Button("取消") { controller.dismissUpNext() }
-                            .buttonStyle(.glass)
+                            .buttonStyle(.bordered)
                     }
                     .font(.subheadline)
                 }
@@ -196,9 +211,9 @@ struct ScreenshotToast: View {
                         ShareLink(item: image, preview: SharePreview(session.controller.source?.title ?? "截图", image: image)) {
                             Label("分享", systemImage: "square.and.arrow.up")
                         }
-                        .buttonStyle(.glassProminent)
+                        .buttonStyle(.borderedProminent)
                         Button("关闭") { session.screenshot = nil }
-                            .buttonStyle(.glass)
+                            .buttonStyle(.bordered)
                     }
                     .font(.subheadline)
                 }

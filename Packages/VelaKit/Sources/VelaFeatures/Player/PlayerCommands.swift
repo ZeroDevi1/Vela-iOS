@@ -56,13 +56,15 @@ public struct PlayerCommands: Commands {
         Divider()
         Button(controller.engine.isMuted ? "取消静音" : "静音") { controller.engine.setMuted(!controller.engine.isMuted) }
             .keyboardShortcut("m", modifiers: [])
-        Button(controller.isPictureInPictureActive ? "退出画中画" : "画中画") { controller.requestPictureInPictureToggle() }
+        // Mac 的画中画是置顶小窗（`MiniPlayerWindow`）。
+        Button(controller.isMiniWindow ? "退出画中画" : "画中画") { controller.requestPictureInPictureToggle() }
             .keyboardShortcut("p", modifiers: [.command, .option])
         Button("截图") { session.captureScreenshot() }
             .keyboardShortcut("s", modifiers: [.command, .shift])
         Divider()
         Button("切换全屏") { NSApp.keyWindow?.toggleFullScreen(nil) }
             .keyboardShortcut("f", modifiers: [])
+            .disabled(controller.isMiniWindow)
         // 按键实际由 `PlayerScreen` 的本地监听处理（窗口模式下 Esc 到不了菜单），这里的快捷键用于在菜单中展示。
         Button("退出全屏或关闭播放器") { Self.exitFullScreenOrClose(NSApp.keyWindow) }
             .keyboardShortcut(.escape, modifiers: [])

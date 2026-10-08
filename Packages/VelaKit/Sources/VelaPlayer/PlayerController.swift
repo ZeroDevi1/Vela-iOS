@@ -66,6 +66,11 @@ public final class PlayerController {
     public private(set) var pictureInPictureToggleRequest = 0
     /// 正在从画中画恢复界面（系统已调用恢复回调、尚未结束画中画）。
     public internal(set) var isRestoringPictureInPicture = false
+    #if os(macOS)
+    /// macOS 的「画中画」是播放器窗口原地变成的置顶小窗（`MiniPlayerWindow`），不走系统画中画：
+    /// 样本缓冲区画中画在 macOS 上不随小窗缩放，原生画中画又不显示应用渲染的字幕（见 PLAN 第 13、14 轮）。
+    public var isMiniWindow = false
+    #endif
 
     /// 画中画事件，由上层决定播放页的去留：开始时可收起播放页（会话继续由上层持有）；
     /// 恢复时重新呈现播放页，完成后调用传入的回调；结束时参数表示是否经由「恢复」结束（否则为用户关闭小窗）。
@@ -403,7 +408,7 @@ public final class PlayerController {
     /// 当前内核拿不到解码画面时提示换内核，而不是开启后只显示黑屏。
     private func ensureVRFramesSupported() -> Bool {
         guard !engine.supportsVRFrames else { return true }
-        showMessage("\(engine.kind.title) 内核暂不支持 VR 转平面，可在「更多 → 切换内核」换用系统或 KSPlayer", symbol: "visionpro", duration: .seconds(3.5))
+        showMessage("\(engine.kind.title) 内核暂不支持 VR 转平面，可在「更多 → 切换内核」换用 AVPlayer 或 KSPlayer", symbol: "visionpro", duration: .seconds(3.5))
         return false
     }
 
@@ -423,8 +428,13 @@ public final class PlayerController {
         subtitleTrack != nil || (engine as? any EmbeddedSubtitleProviding)?.hasEmbeddedSubtitle == true
     }
 
+    /// 画中画按钮 / 菜单项。macOS 切换置顶小窗（见 `isMiniWindow`），其余平台交给渲染表面启停系统画中画。
     public func requestPictureInPictureToggle() {
+        #if os(macOS)
+        isMiniWindow.toggle()
+        #else
         pictureInPictureToggleRequest &+= 1
+        #endif
     }
 
     // MARK: - 拖动进度

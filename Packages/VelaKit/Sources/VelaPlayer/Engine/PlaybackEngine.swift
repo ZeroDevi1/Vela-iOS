@@ -114,14 +114,9 @@ extension PlaybackEngine {
         return self is any DecodedFrameProviding
     }
 
-    /// 内核能以任一方式进入画中画（原生图层或内核自带控制器）。
-    /// macOS 只认原生 `AVPlayerLayer` 画中画：KSPlayer 的样本缓冲区画中画在 macOS 上画面布局错误（见 `refreshPictureInPictureSource`）。
+    /// 内核能以任一方式进入系统画中画（原生图层或内核自带控制器）。macOS 不走系统画中画（见 `PlayerController.isMiniWindow`）。
     public var supportsPictureInPicture: Bool {
-        #if os(macOS)
-        supportsLayerPictureInPicture
-        #else
         supportsLayerPictureInPicture || self is any EnginePictureInPictureProviding
-        #endif
     }
 }
 
@@ -134,7 +129,7 @@ public enum PlaybackEngineKind: String, Sendable, CaseIterable {
     /// 播放信息面板与切换菜单中显示的名称。
     public var title: String {
         switch self {
-        case .avFoundation: "系统（AVPlayer）"
+        case .avFoundation: "AVPlayer"
         case .ksPlayer: "KSPlayer"
         }
     }

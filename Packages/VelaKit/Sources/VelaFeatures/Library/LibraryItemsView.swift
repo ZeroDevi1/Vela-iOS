@@ -215,7 +215,7 @@ struct TabPills<Value: Hashable>: View {
                             .foregroundStyle(selection == value ? Color.primary : Color.secondary)
                             .padding(.horizontal, 16)
                             .frame(height: 38)
-                            .glassEffect(selection == value ? .regular.interactive() : .identity, in: .capsule)
+                            .background(selection == value ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(.clear), in: .capsule)
                             .contentShape(.capsule)
                     }
                     .buttonStyle(.plain)

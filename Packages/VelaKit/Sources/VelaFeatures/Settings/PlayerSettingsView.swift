@@ -53,7 +53,7 @@ private extension PlaybackEngineMode {
     var summary: String {
         switch self {
         case .auto:
-            "推荐。优先系统内核（硬件解码、最省电），MKV 等格式由服务器转封装；需要读取内嵌字幕时自动改用 KSPlayer。系统内核播放失败时可选择「用 KSPlayer 内核重试」。"
+            "推荐。优先 AVPlayer 内核（硬件解码、最省电），MKV 等格式由服务器转封装；需要读取内嵌字幕时自动改用 KSPlayer。AVPlayer 播放失败时可选择「用 KSPlayer 内核重试」。"
         case .system:
             "始终使用 AVPlayer：原生 HDR / 杜比视界、空间音频、画中画、AirPlay 与 VR 转平面。不能直放的格式交给服务器处理。"
         case .ksPlayer:
@@ -171,7 +171,7 @@ struct VideoSettingsView: View {
             } header: {
                 Text("解码（KSPlayer 备选内核）")
             } footer: {
-                Text("硬解码：高效省电，基本不发热，能否硬解取决于你的设备及系统。\n软解码：兼容性强，解码稳定，但播放大文件容易发热且耗电量高。\n除非无法正常播放，否则不要使用软解码！系统内核始终使用硬件解码。")
+                Text("硬解码：高效省电，基本不发热，能否硬解取决于你的设备及系统。\n软解码：兼容性强，解码稳定，但播放大文件容易发热且耗电量高。\n除非无法正常播放，否则不要使用软解码！AVPlayer 内核始终使用硬件解码。")
             }
 
             Section("视频截图") {

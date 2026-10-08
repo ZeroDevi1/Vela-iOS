@@ -126,7 +126,7 @@ struct DownloadButton: View {
             .frame(width: 30, height: 30)
         }
         .menuIndicator(.hidden)
-        .buttonStyle(.glass)
+        .buttonStyle(.bordered)
         .buttonBorderShape(.circle)
         .accessibilityLabel("下载")
     }

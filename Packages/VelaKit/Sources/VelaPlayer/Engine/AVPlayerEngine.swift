@@ -231,7 +231,7 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         guard videoDecodeIssue == nil, status == .playing, currentTime - loadedAt > 5,
               let item = player.currentItem, item.presentationSize == .zero,
               let video = item.tracks.first(where: { $0.assetTrack?.mediaType == .video }) else { return }
-        videoDecodeIssue = "系统内核无法解码该视频画面：可能超过本机硬件解码上限（如 8K）或编码标签不受支持"
+        videoDecodeIssue = "AVPlayer 内核无法解码该视频画面：可能超过本机硬件解码上限（如 8K）或编码标签不受支持"
         // 补充编码与尺寸，便于判断原因（异步读取轨道格式）。
         Task { [weak self] in
             guard let format = try? await video.assetTrack?.load(.formatDescriptions).first else { return }
@@ -240,7 +240,7 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
             let detail = "\(fourCC) \(dimensions.width)×\(dimensions.height)"
             Log.player.error("视频无画面：\(detail, privacy: .public)")
             guard let self, self.videoDecodeIssue != nil else { return }
-            self.videoDecodeIssue = "系统内核无法解码该视频画面（\(detail)）：可能超过本机硬件解码上限（如 8K）或编码标签不受支持"
+            self.videoDecodeIssue = "AVPlayer 内核无法解码该视频画面（\(detail)）：可能超过本机硬件解码上限（如 8K）或编码标签不受支持"
         }
     }
 

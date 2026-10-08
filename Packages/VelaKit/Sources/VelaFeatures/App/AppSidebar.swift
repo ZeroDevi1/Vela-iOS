@@ -3,57 +3,23 @@ import VelaCore
 import VelaDesignSystem
 import VelaNetwork
 
-/// 侧边栏的显示状态与开关，经环境传给各标签根页面（面板收起时在导航栏左侧显示开关按钮）。
-struct SidebarControl {
-    /// 面板当前是否显示。
-    var isVisible = false
-    /// 宽屏停靠（面板常驻左侧、内容让出宽度）；否则以模态形式盖在内容上。
-    var isDocked = false
-    var toggle: () -> Void = {}
-}
-
-extension EnvironmentValues {
-    @Entry var sidebarControl = SidebarControl()
-}
-
 extension FocusedValues {
     /// macOS「显示 / 隐藏边栏」菜单项作用于当前窗口。
     @Entry var toggleSidebar: (() -> Void)?
 }
 
-/// 标签根页面导航栏左侧的「边栏」按钮：面板已显示时不出现（面板顶部自带收起按钮）。
-/// 须加在 `NavigationStack` 内的根内容上，推入的子页面不显示。
-struct SidebarToggleItem: ToolbarContent {
-    @Environment(\.sidebarControl) private var sidebar
-
-    var body: some ToolbarContent {
-        if !sidebar.isVisible {
-            ToolbarItem(placement: .navigation) {
-                Button("显示边栏", systemImage: "sidebar.left", action: sidebar.toggle)
-            }
-        }
-    }
-}
-
-/// 侧边栏面板（参考 Forward）：悬浮的 Liquid Glass 圆角面板，背景内容透出。
-/// 顶部收起按钮与品牌；搜索；服务器（头像列表，点按切换）；浏览（各标签，右侧数量）；底部设置。
+#if os(macOS)
+/// Mac 侧边栏内容（参考 Forward），放在系统 `NavigationSplitView` 的侧边栏栏位，玻璃底与收起按钮由系统提供。
+/// 品牌；搜索；服务器（头像列表，点按切换）；浏览（各标签，右侧数量）。
+/// 不放「设置」：Mac 用 ⌘,，HIG 不建议把关键操作放在侧边栏底部。
 struct SidebarPanel: View {
     @Binding var selection: AppTab
     let counts: SidebarCounts
-    let close: () -> Void
     @Environment(AppModel.self) private var app
-
-    static let width: CGFloat = 300
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Button("收起边栏", systemImage: "sidebar.left", action: close)
-                    .labelStyle(.iconOnly)
-                    .font(.title3)
-                    .buttonStyle(.plain)
-                    .frame(width: 36, height: 36)
-                    .contentShape(.rect)
                 Spacer(minLength: 0)
                 HStack(spacing: 6) {
                     Image("VelaMark", bundle: .main)
@@ -95,15 +61,9 @@ struct SidebarPanel: View {
                 .padding(.bottom, 12)
             }
             .scrollIndicators(.hidden)
-
-            Divider().padding(.horizontal, 20)
-            settingsRow
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+            // 滚动内容在顶部品牌处柔和淡出，而不是被硬切。
+            .scrollEdgeEffectStyle(.soft, for: .vertical)
         }
-        .frame(width: Self.width)
-        .frame(maxHeight: .infinity)
-        .glassEffect(.regular, in: .rect(cornerRadius: 30))
     }
 
     private func sectionTitle(_ title: String) -> some View {
@@ -119,21 +79,6 @@ struct SidebarPanel: View {
         SidebarRow(title: title, symbol: symbol, count: count, isSelected: selection == tab) {
             selection = tab
         }
-    }
-
-    @ViewBuilder
-    private var settingsRow: some View {
-        #if os(macOS)
-        // macOS 的设置是独立的 Settings 场景。
-        SettingsLink {
-            SidebarRowLabel(title: "设置", symbol: "gearshape", count: nil, isSelected: false)
-        }
-        .buttonStyle(.plain)
-        #else
-        SidebarRow(title: "设置", symbol: "gearshape", count: nil, isSelected: selection == .settings) {
-            selection = .settings
-        }
-        #endif
     }
 }
 
@@ -175,7 +120,9 @@ private struct SidebarRowLabel: View {
         }
         .padding(.horizontal, 12)
         .frame(minHeight: 44)
-        .background(isSelected ? AnyShapeStyle(.fill.secondary) : AnyShapeStyle(.clear), in: .capsule)
+        // 选中项用强调色（Mac 跟随系统强调色，HIG 对侧边栏图标颜色的要求）。
+        .foregroundStyle(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+        .background(isSelected ? AnyShapeStyle(.tint.opacity(0.18)) : AnyShapeStyle(.clear), in: .capsule)
         .contentShape(.capsule)
     }
 }
@@ -233,3 +180,4 @@ struct SidebarCounts {
         return await SidebarCounts(resume: resume, libraries: libraries, favorites: favorites)
     }
 }
+#endif

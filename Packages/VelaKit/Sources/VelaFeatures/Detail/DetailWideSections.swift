@@ -44,8 +44,10 @@ struct WideDetailHero<Actions: View>: View {
                         startPoint: .top, endPoint: .bottom
                     )
                 }
+                .clipped()
+                // 剧照镜像延伸到安全区外（iPad 停靠的侧边栏、Mac 侧边栏下），玻璃面板下仍是画面而不是空白（HIG Sidebars）。
+                .backgroundExtensionEffect()
             }
-            .clipped()
             .overlay(alignment: .bottom) {
                 HStack(alignment: .bottom, spacing: 48) {
                     infoColumn.frame(maxWidth: .infinity, alignment: .leading)

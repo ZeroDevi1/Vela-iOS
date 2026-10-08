@@ -14,8 +14,9 @@ public struct PlayerScreen: View {
     @State private var session: PlayerSession
     @State private var panel: PlayerPanel?
     #if os(macOS)
-    /// 播放器所在窗口：画中画期间隐藏，恢复时重新显示。
+    /// 播放器所在窗口：「画中画」时原地变成置顶小窗（`MiniPlayerWindow`）。
     @State private var window: NSWindow?
+    @State private var miniWindow = MiniPlayerWindow()
     /// Esc 的本地按键监听（见 `PlayerCommands.exitFullScreenOrClose`）。
     @State private var escapeMonitor: Any?
     #endif
@@ -66,12 +67,23 @@ public struct PlayerScreen: View {
                 .allowsHitTesting(false)
             }
 
-            SubtitleOverlay(controller: session.controller, preferences: app.playerPreferences)
+            SubtitleOverlay(controller: session.controller, preferences: app.playerPreferences, fitsSmallWindow: isMiniWindow)
 
-            PlayerOSD(controller: session.controller)
-
-            PlayerGestureLayer(controller: session.controller)
+            if isMiniWindow {
+                #if os(macOS)
+                MiniPlayerOverlay(controller: session.controller) {
+                    session.controller.isMiniWindow = false
+                } onClose: {
+                    close()
+                }
                 .ignoresSafeArea()
+                #endif
+            } else {
+                PlayerOSD(controller: session.controller)
+
+                PlayerGestureLayer(controller: session.controller)
+                    .ignoresSafeArea()
+            }
 
             switch session.phase {
             case .preparing:
@@ -107,38 +119,13 @@ public struct PlayerScreen: View {
                     .foregroundStyle(.white)
                 }
                 // 控制层显示时播放键本身会转圈（与 Android 版一致），这里只在控制层隐藏时显示。
-                if !session.controller.controlsVisible || session.controller.isLocked,
+                if !session.controller.controlsVisible || session.controller.isLocked || isMiniWindow,
                    session.isSwitchingStream || session.controller.engine.status == .buffering
                     || session.controller.engine.status == .loading {
-                    ProgressView().controlSize(.large).tint(.white).allowsHitTesting(false)
+                    ProgressView().controlSize(isMiniWindow ? .regular : .large).tint(.white).allowsHitTesting(false)
                 }
-                PlayerHUDView(controller: session.controller)
-                PlayerControlsView(session: session, panel: $panel, onClose: close)
-                SkipSegmentButton(controller: session.controller)
-                UpNextCard(controller: session.controller)
-                ScreenshotToast(session: session)
-                if session.controller.vrEnabled, let issue = session.controller.vrIssue {
-                    VideoIssueCard(session: session, message: issue, symbol: "visionpro") {
-                        Button("关闭 VR 转平面") { session.controller.toggleVR() }
-                            .buttonStyle(.glass)
-                    }
-                } else if let issue = (session.controller.engine as? any VideoDecodeDiagnosing)?.videoDecodeIssue {
-                    VideoIssueCard(session: session, message: issue, symbol: "exclamationmark.triangle") { EmptyView() }
-                }
-                if let error = session.trackError {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                        .font(.footnote)
-                        .foregroundStyle(.white)
-                        .padding(10)
-                        .glassEffect(.regular, in: .capsule)
-                        .frame(maxHeight: .infinity, alignment: .top)
-                        .padding(.top, 72)
-                }
-                if let panel {
-                    PlayerPanelHost(panel: panel, session: session) {
-                        withAnimation(.snappy) { self.panel = nil }
-                        session.controller.touchControls()
-                    }
+                if !isMiniWindow {
+                    fullControls
                 }
             }
         }
@@ -149,24 +136,37 @@ public struct PlayerScreen: View {
         .persistentSystemOverlays(session.controller.controlsVisible ? .automatic : .hidden)
         #else
         .navigationTitle(session.request.title)
-        .frame(minWidth: 640, minHeight: 360)
+        .frame(minWidth: isMiniWindow ? MiniPlayerWindow.minimumWidth : 640, minHeight: isMiniWindow ? 135 : 360)
         #endif
         .task { await session.prepareIfNeeded(app: app) }
         #if os(iOS)
         .onAppear(perform: adoptSession)
         #else
         .background(PlayerWindowReader { window = $0 })
-        .onAppear(perform: adoptSessionInWindow)
+        .onChange(of: session.controller.isMiniWindow) { _, mini in
+            guard let window else { return }
+            if mini {
+                panel = nil
+                miniWindow.enter(window, videoSize: session.controller.engine.videoSize)
+            } else {
+                miniWindow.exit()
+            }
+        }
+        // 小窗里放不下错误卡片与重试按钮：出错时回到播放器窗口。
+        .onChange(of: session.controller.engine.status) { _, status in
+            if case .failed = status, session.controller.isMiniWindow { session.controller.isMiniWindow = false }
+        }
         // 菜单栏「播放」作用于当前在前的播放器窗口。
         .focusedSceneValue(\.playerSession, session)
         // 控制层自动隐藏时一并隐藏鼠标指针，移动鼠标即恢复（与控制层同时出现）。
         .onChange(of: session.controller.controlsVisible) { _, visible in
-            if !visible { NSCursor.setHiddenUntilMouseMoves(true) }
+            if !visible, !isMiniWindow { NSCursor.setHiddenUntilMouseMoves(true) }
         }
         .onAppear(perform: installEscapeMonitor)
         .onDisappear {
             if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
             escapeMonitor = nil
+            miniWindow.teardown()
         }
         #endif
         #if os(iOS)
@@ -185,6 +185,48 @@ public struct PlayerScreen: View {
             if app.pictureInPictureSession === session { app.pictureInPictureSession = nil }
             #endif
             session.close()
+        }
+    }
+
+    /// macOS 小窗模式（iOS 恒为 false）。
+    private var isMiniWindow: Bool {
+        #if os(macOS)
+        session.controller.isMiniWindow
+        #else
+        false
+        #endif
+    }
+
+    /// 控制层、跳过 / 下一集卡片、提示与面板；小窗模式下不显示。
+    @ViewBuilder
+    private var fullControls: some View {
+        PlayerHUDView(controller: session.controller)
+        PlayerControlsView(session: session, panel: $panel, onClose: close)
+        SkipSegmentButton(controller: session.controller)
+        UpNextCard(controller: session.controller)
+        ScreenshotToast(session: session)
+        if session.controller.vrEnabled, let issue = session.controller.vrIssue {
+            VideoIssueCard(session: session, message: issue, symbol: "visionpro") {
+                Button("关闭 VR 转平面") { session.controller.toggleVR() }
+                    .buttonStyle(.glass)
+            }
+        } else if let issue = (session.controller.engine as? any VideoDecodeDiagnosing)?.videoDecodeIssue {
+            VideoIssueCard(session: session, message: issue, symbol: "exclamationmark.triangle") { EmptyView() }
+        }
+        if let error = session.trackError {
+            Label(error, systemImage: "exclamationmark.triangle")
+                .font(.footnote)
+                .foregroundStyle(.white)
+                .padding(10)
+                .glassEffect(.regular, in: .capsule)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .padding(.top, 72)
+        }
+        if let panel {
+            PlayerPanelHost(panel: panel, session: session) {
+                withAnimation(.snappy) { self.panel = nil }
+                session.controller.touchControls()
+            }
         }
     }
 
@@ -236,41 +278,14 @@ public struct PlayerScreen: View {
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             guard event.keyCode == 53, event.window === window, panel == nil,
                   event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty else { return event }
+            // 小窗时 Esc 回到播放器窗口，不关闭。
+            if session.controller.isMiniWindow {
+                session.controller.isMiniWindow = false
+                return nil
+            }
             PlayerCommands.exitFullScreenOrClose(event.window)
             return nil
         }
-    }
-
-    /// macOS 的播放器是独立窗口，画中画开始时窗口原地只剩系统的「正以画中画播放」占位：开始时把窗口变为完全透明且不接收鼠标，
-    /// 恢复时再显示，用户在小窗上关闭时结束播放并关闭窗口。
-    /// 不用 `orderOut` 移出屏幕：原生画中画的画面来自窗口内的 `AVPlayerLayer`，窗口不在屏幕上时小窗只剩黑屏（用户实测）。
-    private func adoptSessionInWindow() {
-        let controller = session.controller
-        controller.onPictureInPictureStart = {
-            setWindowHidden(true)
-        }
-        controller.onPictureInPictureRestore = { completion in
-            setWindowHidden(false)
-            Task {
-                try? await Task.sleep(for: .milliseconds(120))
-                completion(true)
-            }
-        }
-        controller.onPictureInPictureStop = { restored in
-            guard !restored else {
-                setWindowHidden(false)
-                return
-            }
-            session.close()
-            window?.close()
-        }
-    }
-
-    private func setWindowHidden(_ hidden: Bool) {
-        guard let window else { return }
-        window.alphaValue = hidden ? 0 : 1
-        window.ignoresMouseEvents = hidden
-        if !hidden { window.makeKeyAndOrderFront(nil) }
     }
     #endif
 
@@ -346,11 +361,11 @@ private struct VideoIssueCard<Extra: View>: View {
             HStack(spacing: 8) {
                 if session.controller.engine.kind == .avFoundation, session.canSwitchEngine {
                     Button("用 KSPlayer 重试") { session.retryWithKSPlayer() }
-                        .buttonStyle(.glass)
+                        .buttonStyle(.bordered)
                 }
                 if session.item != nil, !session.isServerDownscaled {
                     Button("服务器转码为 4K") { session.retryWithServerDownscale() }
-                        .buttonStyle(.glass)
+                        .buttonStyle(.bordered)
                 }
                 extra()
             }

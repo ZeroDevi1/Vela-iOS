@@ -139,7 +139,8 @@ struct ItemDetailView: View {
                     Image(systemName: "ellipsis").font(.title3).frame(width: 30, height: 30)
                 }
                 .menuIndicator(.hidden)
-                .buttonStyle(.glass)
+                .buttonStyle(.bordered)
+                .tint(.white)
                 .buttonBorderShape(.circle)
                 .accessibilityLabel("更多")
                 Spacer(minLength: 0)
@@ -155,7 +156,8 @@ struct ItemDetailView: View {
                 .contentTransition(.symbolEffect(.replace))
                 .frame(width: 30, height: 30)
         }
-        .buttonStyle(.glass)
+        .buttonStyle(.bordered)
+        .tint(.white)
         .buttonBorderShape(.circle)
         .accessibilityLabel(title)
     }
@@ -215,7 +217,8 @@ struct ItemDetailView: View {
                             .frame(width: 48, height: 48)
                             .contentShape(.circle)
                     }
-                    .buttonStyle(.glass)
+                    .buttonStyle(.bordered)
+                    .tint(.white)
                     .buttonBorderShape(.circle)
                     .accessibilityLabel("从头播放")
                 }

@@ -47,7 +47,7 @@ struct SourceSelectionCard: View {
             .pickerStyle(.menu)
             .labelsHidden()
             .padding(.vertical, 4)
-            .glassEffect(.regular, in: .rect(cornerRadius: VelaTheme.Radius.panel))
+            .background(.regularMaterial, in: .rect(cornerRadius: VelaTheme.Radius.panel))
         }
     }
 
@@ -387,7 +387,7 @@ struct SeasonDetailView: View {
                                 ForEach(0..<pageCount(all), id: \.self) { index in
                                     let range = pageRange(index, total: all.count)
                                     Button("\(range.lowerBound + 1)-\(range.upperBound)") { rangeIndex = index }
-                                        .buttonStyle(.glass)
+                                        .buttonStyle(.bordered)
                                         .tint(index == rangeIndex ? VelaTheme.accent : nil)
                                         .fontWeight(index == rangeIndex ? .bold : .regular)
                                 }
@@ -428,7 +428,7 @@ struct SeasonDetailView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
                 }
-                .buttonStyle(.glassProminent)
+                .buttonStyle(.borderedProminent)
                 .tint(.white)
                 .foregroundStyle(.black)
                 .controlSize(.large)
@@ -787,7 +787,7 @@ struct StreamCard: View {
         }
         .padding(VelaTheme.Spacing.m)
         .frame(width: 260, alignment: .topLeading)
-        .glassEffect(.regular, in: .rect(cornerRadius: VelaTheme.Radius.panel))
+        .background(.regularMaterial, in: .rect(cornerRadius: VelaTheme.Radius.panel))
     }
 
     var title: String {

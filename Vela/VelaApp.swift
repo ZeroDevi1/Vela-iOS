@@ -43,9 +43,11 @@ struct VelaApp: App {
         .windowResizability(.contentMinSize)
 
         Settings {
+            // `velaPlaybackEnvironment()` 自身读取 `AppModel`，必须位于 `.environment(app)` 之内（先写），
+            // 否则修饰符拿不到环境对象，打开设置窗口即崩溃（No Observable object of type AppModel）。
             SettingsView()
-                .environment(app)
                 .velaPlaybackEnvironment()
+                .environment(app)
                 .frame(minWidth: 480, minHeight: 420)
         }
         #endif

@@ -39,7 +39,7 @@ struct LoadFailureView: View {
             Text(message)
         } actions: {
             Button("重试", action: retry)
-                .buttonStyle(.glass)
+                .buttonStyle(.bordered)
         }
     }
 }

@@ -13,7 +13,7 @@ struct OnboardingView: View {
                 Text("连接你的 Jellyfin 或 Emby 服务器，开始观看。")
             } actions: {
                 Button("添加服务器") { isAdding = true }
-                    .buttonStyle(.glassProminent)
+                    .buttonStyle(.borderedProminent)
                     .controlSize(.large)
             }
             .sheet(isPresented: $isAdding) {

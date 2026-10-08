@@ -79,7 +79,7 @@ struct PlayerPanelHost: View {
                 Button(action: onClose) {
                     Image(systemName: "xmark").frame(width: 20, height: 20)
                 }
-                .buttonStyle(.glass)
+                .buttonStyle(.bordered)
                 .buttonBorderShape(.circle)
                 .keyboardShortcut(.cancelAction)
                 .accessibilityLabel("关闭面板")
@@ -219,7 +219,7 @@ private struct SubtitlePanel: View {
                 // 在线字幕只对服务器条目可用（由服务器的字幕插件搜索并保存）。
                 if session.item != nil {
                     Button("在线搜索字幕", systemImage: "magnifyingglass") { isSearching = true }
-                        .buttonStyle(.glass)
+                        .buttonStyle(.bordered)
                 }
 
                 if session.hasActiveSubtitle {
@@ -253,7 +253,7 @@ private struct SubtitleDelayControls: View {
                 Button("延后 0.5 秒", systemImage: "plus") { session.adjustSubtitleDelay(by: 0.5) }
                     .labelStyle(.iconOnly)
             }
-            .buttonStyle(.glass)
+            .buttonStyle(.bordered)
             .buttonBorderShape(.circle)
         } else {
             // 时间偏移作用于客户端渲染的字幕（服务器 WebVTT / 本地文件），KSPlayer 读取的内嵌字幕不支持。
@@ -308,7 +308,7 @@ private struct RemoteSubtitleSearch: View {
             HStack {
                 Button("返回", systemImage: "chevron.backward", action: onBack)
                     .labelStyle(.iconOnly)
-                    .buttonStyle(.glass)
+                    .buttonStyle(.bordered)
                     .buttonBorderShape(.circle)
                 Picker("语言", selection: $language) {
                     ForEach(languageOptions, id: \.code) { Text($0.title).tag($0.code) }
@@ -316,7 +316,7 @@ private struct RemoteSubtitleSearch: View {
                 .pickerStyle(.menu)
                 Spacer(minLength: 0)
                 Button("搜索") { search() }
-                    .buttonStyle(.glassProminent)
+                    .buttonStyle(.borderedProminent)
                     .disabled(isLoading || language.isEmpty)
             }
             if isLoading {

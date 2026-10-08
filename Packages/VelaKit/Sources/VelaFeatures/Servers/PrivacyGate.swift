@@ -24,7 +24,7 @@ struct PrivacyGate<Content: View>: View {
                 } label: {
                     Label("解锁", systemImage: "faceid")
                 }
-                .buttonStyle(.glassProminent)
+                .buttonStyle(.borderedProminent)
                 .disabled(isUnlocking)
 
                 if let error = app.privacy.lastError {

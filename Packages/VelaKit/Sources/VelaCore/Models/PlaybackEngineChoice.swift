@@ -14,7 +14,7 @@ public enum PlaybackEngineMode: String, CaseIterable, Sendable {
     public var title: String {
         switch self {
         case .auto: "自动"
-        case .system: "系统（AVPlayer）"
+        case .system: "AVPlayer"
         case .ksPlayer: "KSPlayer"
         }
     }
