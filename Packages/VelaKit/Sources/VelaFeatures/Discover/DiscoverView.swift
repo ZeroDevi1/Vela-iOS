@@ -4,10 +4,10 @@ import VelaData
 import VelaDesignSystem
 import VelaNetwork
 
-/// 「发现」标签页；内容见 `DiscoverPage`（iPhone 从设置页推入，不能再套一层 NavigationStack）。
+/// 「发现」标签页；内容见 `DiscoverPage`。
 struct DiscoverView: View {
     var body: some View {
-        NavigationStack { DiscoverPage() }
+        NavigationStack { DiscoverPage().toolbar { SidebarToggleItem() } }
     }
 }
 

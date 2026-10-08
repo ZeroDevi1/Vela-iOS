@@ -30,6 +30,7 @@ struct SearchView: View {
                 }
             }
             .navigationTitle("搜索")
+            .toolbar { SidebarToggleItem() }
             .navigationDestination(for: CatalogTitle.self) { CatalogDetailView(title: $0) }
             .navigationDestination(for: DoubanTitle.self) { DoubanResolveView(title: $0) }
             .detailDestinations()

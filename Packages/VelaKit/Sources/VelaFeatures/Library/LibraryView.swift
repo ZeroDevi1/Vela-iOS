@@ -35,6 +35,7 @@ struct MyMediaView: View {
                 }
             }
             .navigationTitle("我的媒体")
+            .toolbar { SidebarToggleItem() }
             #if os(iOS)
             .navigationSubtitle(views.value.map { "\($0.count) 个媒体库" } ?? "")
             #endif

@@ -25,14 +25,6 @@ public struct SettingsView: View {
                     Button("添加服务器", systemImage: "plus") { isAdding = true }
                 }
 
-                #if os(iOS)
-                // iPhone 标签栏只放与 Android 版一致的 5 项，发现 / 订阅从这里进入（iPad 侧边栏中也直接可见）。
-                Section("探索") {
-                    NavigationLink { DiscoverPage() } label: { Label("发现", systemImage: "safari") }
-                    NavigationLink { SubscriptionsPage() } label: { Label("订阅日历", systemImage: "calendar") }
-                }
-                #endif
-
                 Section("播放") {
                     PlaybackSettingsLinks()
                     NavigationLink("媒体库配置") { LibrarySettingsView() }
@@ -128,6 +120,7 @@ public struct SettingsView: View {
             }
             .formStyle(.grouped)
             .navigationTitle("设置")
+            .toolbar { SidebarToggleItem() }
             .navigationDestination(for: String.self) { serverID in
                 ServerEditView(serverID: serverID)
             }

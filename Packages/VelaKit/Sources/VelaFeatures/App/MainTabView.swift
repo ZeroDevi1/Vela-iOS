@@ -12,86 +12,70 @@ extension FocusedValues {
     @Entry public var selectedTab: Binding<AppTab>?
 }
 
-/// 主导航，与 Android 版服务器页的底栏一致：首页 / 我的媒体 / 搜索 / 收藏 / 设置。
+/// 主导航：自定义外壳 + 悬浮的 Liquid Glass 侧边栏（参考 Forward），三端一致。
 ///
-/// `sidebarAdaptable`：iPhone 为底部 Liquid Glass 标签栏，iPad / Mac 可展开为侧边栏（收起时为顶部胶囊标签栏）。
-/// 侧边栏参考 Forward：顶部是品牌标识与服务器列表（点按切换），Mac 底部为设置入口。
-/// 「发现」「订阅」只在宽屏（iPad / Mac）显示为标签；紧凑宽度下标签栏超过 5 项会折叠出「更多」并挤掉搜索，
-/// 因此 iPhone 从设置页进入。
+/// 不用 `TabView(.sidebarAdaptable)`：系统侧边栏的外观无法改成悬浮圆角玻璃面板，iPhone 上也只有底部标签栏。
+/// - 宽屏（内容区 ≥ `dockWidth`，iPad 横屏、较宽的 Mac 窗口）：面板停靠在左侧，内容以 `safeAreaPadding` 让出宽度，
+///   铺满全屏的背景仍延伸到玻璃面板下；可收起。
+/// - 窄屏（iPhone、iPad 竖屏、较窄的 Mac 窗口）：面板以模态形式盖在内容上，点外侧或选中条目后关闭。
+/// - 面板收起时各标签根页面的导航栏左侧显示「边栏」按钮（`SidebarToggleItem`）。
+/// 访问过的标签保留在视图树中（隐藏而不移除），切换回来时保留导航栈，与 `TabView` 行为一致；
+/// 各页的数据刷新由 `.task(id:)` 按服务器触发，不依赖出现事件。
 struct MainTabView: View {
     #if DEBUG
     @MainActor private static var didOpenDebugPlayURL = false
     #endif
     @Environment(AppModel.self) private var app
-    @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.playMedia) private var playMedia
     @SceneStorage("selectedTab") private var selection: AppTab = .home
+    /// 宽屏停靠时面板是否展开（跨启动保留）；窄屏的模态面板每次默认关闭。
+    @SceneStorage("sidebarDockedVisible") private var dockedVisible = true
+    @State private var overlayVisible = false
+    @State private var visited: Set<AppTab> = []
     @State private var counts = SidebarCounts()
 
-    /// 数量角标（侧边栏条目右侧的数字，参考 Forward「在看 78」）只在 macOS 显示：Mac 侧边栏常驻，角标是灰色数字；
-    /// iOS 的标签栏（iPhone 底栏、iPad 侧边栏收起后的顶部胶囊栏）会画成红色通知角标，像「78 条未读」，含义不对，
-    /// 而 SwiftUI 没有接口判断 iPad 侧边栏是否展开。0 不显示。
-    private func badge(_ value: Int?) -> Int {
-        #if os(macOS)
-        value ?? 0
-        #else
-        0
-        #endif
-    }
+    /// 停靠所需的最小窗口宽度：面板 300 + 两侧间距后，内容区仍不窄于 regular 档（700pt）。
+    private static let dockWidth: CGFloat = 1000
+    private static let panelMargin: CGFloat = 12
+
+    private static let allTabs: [AppTab] = [.home, .media, .favorites, .discover, .subscriptions, .search, .settings]
 
     var body: some View {
-        // 不用 TabSection 分组：iPad 侧边栏收起后，顶部胶囊栏会只显示分组名（「媒体」「探索」），
-        // 首页 / 我的媒体等无法一键直达；保持扁平，分组感由侧边栏头部的品牌与服务器列表提供。
-        TabView(selection: $selection) {
-            Tab("首页", systemImage: "house", value: AppTab.home) {
-                PrivacyGate { HomeView() }.measuresVelaLayout()
-            }
-            .badge(badge(counts.resume))
-            Tab("我的媒体", systemImage: "play.square.stack", value: AppTab.media) {
-                PrivacyGate { MyMediaView() }.measuresVelaLayout()
-            }
-            .badge(badge(counts.libraries))
-            Tab("收藏", systemImage: "heart", value: AppTab.favorites) {
-                PrivacyGate { FavoritesView() }.measuresVelaLayout()
-            }
-            .badge(badge(counts.favorites))
-            if sizeClass != .compact {
-                Tab("发现", systemImage: "safari", value: AppTab.discover) {
-                    DiscoverView().measuresVelaLayout()
-                }
-                Tab("订阅", systemImage: "calendar", value: AppTab.subscriptions) {
-                    SubscriptionsView().measuresVelaLayout()
+        GeometryReader { proxy in
+            let docked = proxy.size.width >= Self.dockWidth
+            let visible = docked ? dockedVisible : overlayVisible
+            let control = SidebarControl(isVisible: visible, isDocked: docked) {
+                withAnimation(.snappy) {
+                    if docked { dockedVisible.toggle() } else { overlayVisible.toggle() }
                 }
             }
-            #if os(iOS)
-            Tab("设置", systemImage: "gearshape", value: AppTab.settings) {
-                SettingsView()
+            ZStack(alignment: .leading) {
+                tabs
+                    .safeAreaPadding(.leading, docked && visible ? SidebarPanel.width + Self.panelMargin * 2 : 0)
+                    .environment(\.sidebarControl, control)
+
+                if visible, !docked {
+                    // 模态面板的遮罩：点外侧关闭。
+                    Color.black.opacity(0.3)
+                        .ignoresSafeArea()
+                        .onTapGesture(perform: control.toggle)
+                        .transition(.opacity)
+                        .accessibilityLabel("关闭边栏")
+                        .accessibilityAddTraits(.isButton)
+                }
+                if visible {
+                    SidebarPanel(selection: select(docked: docked), counts: counts, close: control.toggle)
+                        // macOS 不延伸到标题栏下：窗口工具栏横跨整个窗口，左侧的分类 / 标题会被面板盖住。
+                        .padding(Self.panelMargin)
+                        .transition(.move(edge: .leading).combined(with: .opacity))
+                        .zIndex(1)
+                }
             }
-            #endif
-            Tab(value: AppTab.search, role: .search) {
-                SearchView().measuresVelaLayout()
-            }
+            .focusedSceneValue(\.toggleSidebar, control.toggle)
         }
-        .tabViewSidebarHeader { SidebarHeader() }
         .focusedSceneValue(\.selectedTab, $selection)
-        #if os(macOS)
-        // macOS 的设置是独立的 Settings 场景，不是标签：放在侧边栏底部（Forward 的「设置」位置）。
-        .tabViewSidebarBottomBar {
-            SettingsLink {
-                Label("设置", systemImage: "gearshape")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, VelaTheme.Spacing.m)
-            .padding(.vertical, VelaTheme.Spacing.s)
-        }
-        #endif
-        .tabViewStyle(.sidebarAdaptable)
-        #if os(iOS)
-        .tabBarMinimizeBehavior(.onScrollDown)
-        #endif
-        // 恢复到当前布局中不存在的标签（macOS 的设置、紧凑宽度下的发现 / 订阅）时回到首页。
+        .onChange(of: selection, initial: true) { _, tab in visited.insert(tab) }
+        // 恢复到当前平台不存在的标签（macOS 的设置）时回到首页。
         .onAppear {
             if !isAvailable(selection) { selection = .home }
             #if DEBUG
@@ -112,8 +96,6 @@ struct MainTabView: View {
             }
             #endif
         }
-        .onChange(of: sizeClass) { if !isAvailable(selection) { selection = .home } }
-        #if os(macOS)
         // 切换服务器或标签时刷新（例如在详情页收藏后回到侧边栏）。
         .task(id: CountsKey(server: app.servers.activeServer?.id, accessible: app.isActiveServerAccessible, tab: selection)) {
             // 私密服务器未解锁时不在侧边栏透露内容数量（与 `PrivacyGate` 一致）。
@@ -123,7 +105,44 @@ struct MainTabView: View {
             }
             counts = await SidebarCounts.load(client: client)
         }
-        #endif
+    }
+
+    /// 访问过的标签叠放在一起，只显示当前标签；未访问的不创建（避免启动时加载所有页面）。
+    private var tabs: some View {
+        ZStack {
+            ForEach(Self.allTabs.filter { visited.contains($0) && isAvailable($0) }, id: \.self) { tab in
+                let isCurrent = tab == selection
+                page(tab)
+                    .opacity(isCurrent ? 1 : 0)
+                    .allowsHitTesting(isCurrent)
+                    .accessibilityHidden(!isCurrent)
+                    .zIndex(isCurrent ? 1 : 0)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func page(_ tab: AppTab) -> some View {
+        switch tab {
+        case .home: PrivacyGate { HomeView() }.measuresVelaLayout()
+        case .media: PrivacyGate { MyMediaView() }.measuresVelaLayout()
+        case .favorites: PrivacyGate { FavoritesView() }.measuresVelaLayout()
+        case .discover: DiscoverView().measuresVelaLayout()
+        case .subscriptions: SubscriptionsView().measuresVelaLayout()
+        case .search: SearchView().measuresVelaLayout()
+        case .settings: SettingsView()
+        }
+    }
+
+    /// 侧边栏的选择：窄屏模态面板选中条目后自动关闭。
+    private func select(docked: Bool) -> Binding<AppTab> {
+        Binding(
+            get: { selection },
+            set: { tab in
+                selection = tab
+                if !docked { withAnimation(.snappy) { overlayVisible = false } }
+            }
+        )
     }
 
     private struct CountsKey: Hashable {
@@ -140,95 +159,7 @@ struct MainTabView: View {
             #else
             false
             #endif
-        case .discover, .subscriptions: sizeClass != .compact
         default: true
         }
-    }
-}
-
-/// 侧边栏顶部：品牌标识，下面是已登录的服务器（头像、名称、当前服务器打勾），点按即切换。
-/// 对应 Forward 侧边栏顶部的「发现」头像列表；服务器较多时整个侧边栏滚动，不单独限高。
-private struct SidebarHeader: View {
-    @Environment(AppModel.self) private var app
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: VelaTheme.Spacing.m) {
-            HStack(spacing: VelaTheme.Spacing.s) {
-                Image("VelaMark", bundle: .main)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 30, height: 30)
-                    .accessibilityHidden(true)
-                Text("Vela").font(.title2.weight(.bold))
-            }
-            .padding(.bottom, VelaTheme.Spacing.xs)
-
-            if !app.servers.servers.isEmpty {
-                Text("服务器").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                VStack(spacing: 2) {
-                    ForEach(app.servers.servers) { server in
-                        ServerRow(server: server, isActive: server.id == app.servers.activeServer?.id) {
-                            app.servers.activate(server.id)
-                        }
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, VelaTheme.Spacing.s)
-    }
-}
-
-private struct ServerRow: View {
-    let server: SavedServer
-    let isActive: Bool
-    let activate: () -> Void
-    @Environment(AppModel.self) private var app
-
-    var body: some View {
-        Button(action: activate) {
-            HStack(spacing: VelaTheme.Spacing.m) {
-                CachedImage(url: app.client(forServerID: server.id)?.userImageURL) {
-                    ZStack {
-                        Circle().fill(VelaTheme.accent.opacity(0.25))
-                        Text(server.displayName.prefix(1)).font(.headline).foregroundStyle(VelaTheme.accent)
-                    }
-                }
-                .frame(width: 36, height: 36)
-                .clipShape(.circle)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(server.displayName).font(.body.weight(isActive ? .semibold : .regular)).lineLimit(1)
-                    Text(isActive ? "当前服务器" : server.kind.displayName)
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                if server.isPrivate {
-                    Image(systemName: "lock.fill").font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            .padding(.horizontal, VelaTheme.Spacing.s)
-            .padding(.vertical, 6)
-            .background(isActive ? AnyShapeStyle(.fill.secondary) : AnyShapeStyle(.clear), in: .rect(cornerRadius: 12))
-            .contentShape(.rect(cornerRadius: 12))
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(isActive ? .isSelected : [])
-        .accessibilityHint(isActive ? "" : "切换到该服务器")
-    }
-}
-
-/// 侧边栏条目右侧的数量：继续观看、媒体库、收藏。单项请求失败时该项不显示（nil），不影响其他项。
-private struct SidebarCounts {
-    var resume: Int?
-    var libraries: Int?
-    var favorites: Int?
-
-    static func load(client: MediaServerClient) async -> SidebarCounts {
-        async let resume = try? client.resume(limit: 1).total
-        async let libraries = try? client.userViews().count
-        async let favorites = try? client.items(ItemQuery(
-            includeItemTypes: ["Movie", "Series", "Episode"], recursive: true, limit: 1, isFavorite: true
-        )).total
-        return await SidebarCounts(resume: resume, libraries: libraries, favorites: favorites)
     }
 }

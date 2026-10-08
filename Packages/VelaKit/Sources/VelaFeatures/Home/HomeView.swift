@@ -43,6 +43,7 @@ struct HomeView: View {
             #else
             // Mac 用窗口工具栏承载分类与服务器操作（原生位置），不在内容里画浮动按钮。
             .toolbar { HomeToolbar(category: $category) }
+            .toolbar { SidebarToggleItem() }
             #endif
             .navigationTitle(app.servers.activeServer?.displayName ?? "首页")
             .navigationDestination(for: HomeListRoute.self) { route in
@@ -624,10 +625,17 @@ struct CarouselMetadataRow: View {
 private struct HomeTopBar: View {
     @Binding var category: HomeModel.Category
     @Environment(AppModel.self) private var app
+    @Environment(\.sidebarControl) private var sidebar
     @State private var isAddingServer = false
 
     var body: some View {
         HStack(spacing: 10) {
+            // 侧边栏收起时的开关（首页隐藏了导航栏，不走 `SidebarToggleItem`）。
+            if !sidebar.isVisible {
+                Button(action: sidebar.toggle) { circleIcon("sidebar.left") }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("显示边栏")
+            }
             Menu {
                 Picker("分类", selection: $category) {
                     ForEach(HomeModel.Category.allCases) { Text($0.title).tag($0) }

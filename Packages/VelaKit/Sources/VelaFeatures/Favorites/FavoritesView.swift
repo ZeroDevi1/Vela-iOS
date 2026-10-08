@@ -35,6 +35,7 @@ struct FavoritesView: View {
                 }
             }
             .navigationTitle("收藏")
+            .toolbar { SidebarToggleItem() }
             .navigationDestination(for: HomeListRoute.self) { HomeListView(route: $0) }
             .detailDestinations()
             .refreshable { await load() }

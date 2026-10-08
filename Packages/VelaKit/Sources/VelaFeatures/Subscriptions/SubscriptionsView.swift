@@ -4,10 +4,10 @@ import VelaData
 import VelaDesignSystem
 import VelaNetwork
 
-/// 「订阅」标签页；内容见 `SubscriptionsPage`（iPhone 从设置页推入）。
+/// 「订阅」标签页；内容见 `SubscriptionsPage`。
 struct SubscriptionsView: View {
     var body: some View {
-        NavigationStack { SubscriptionsPage() }
+        NavigationStack { SubscriptionsPage().toolbar { SidebarToggleItem() } }
     }
 }
 

@@ -4,6 +4,7 @@ import SwiftUI
 /// 没有活动的浏览窗口（例如只开着播放器窗口）时菜单项置灰。
 public struct VelaCommands: Commands {
     @FocusedBinding(\.selectedTab) private var selectedTab
+    @FocusedValue(\.toggleSidebar) private var toggleSidebar
 
     public init() {}
 
@@ -16,6 +17,10 @@ public struct VelaCommands: Commands {
             item("订阅", .subscriptions, key: "5")
             Divider()
             item("搜索", .search, key: "f")
+            Divider()
+            Button("显示或隐藏边栏") { toggleSidebar?() }
+                .keyboardShortcut("s", modifiers: [.control, .command])
+                .disabled(toggleSidebar == nil)
         }
     }
 
