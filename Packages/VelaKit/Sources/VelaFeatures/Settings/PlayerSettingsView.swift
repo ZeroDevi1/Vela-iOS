@@ -210,7 +210,7 @@ struct AudioSettingsView: View {
             Section {
                 Toggle("杜比全景声", isOn: $prefs.enableAtmos)
             } footer: {
-                Text("支持原生杜比 E-AC3 Atmos 音频直通；关闭后由服务器转换为 AC3 / AAC。下次起播生效。")
+                Text("杜比音频（AC3 / E-AC3，含 E-AC3 Atmos）原样交给系统解码，保留全景声与多声道；关闭后系统内核由服务器转换为 AC3 / AAC，KSPlayer 自行解码为 PCM。下次起播生效。")
             }
             Section {
                 Toggle("原生音频", isOn: $prefs.nativeAudio)

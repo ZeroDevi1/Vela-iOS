@@ -1,0 +1,882 @@
+Vela：杜比音频 / 杜比视界压缩直通（KSOptions.audioPassthrough / videoPassthrough）。
+
+- 音频：AC-3 / E-AC-3（含 E-AC-3 JOC 全景声）不解码，包成压缩 CMSampleBuffer（自建 dec3 cookie）交给
+  AudioRendererPlayer 的 AVSampleBufferAudioRenderer，由系统解码；时间戳按采样连续递推，避免容器毫秒取整造成解码器反复重置。
+- 视频：HEVC / 杜比视界 P5、P8 不解码，包成压缩样本（dvh1 + hvcC + dvcC / dvvC），MetalPlayView 按读包顺序提前送入
+  AVSampleBufferDisplayLayer，图层时基使用音频同步器的时基；跳转时刷新图层队列。
+- AudioRendererPlayer：重复 play() 不叠加回调；无音频（纯视频）时按播放时钟启动同步器；渲染失败写日志。
+
+diff --git a/Sources/KSPlayer/AVPlayer/KSOptions.swift b/Sources/KSPlayer/AVPlayer/KSOptions.swift
+index d12deee..e4805f9 100644
+--- a/Sources/KSPlayer/AVPlayer/KSOptions.swift
++++ b/Sources/KSPlayer/AVPlayer/KSOptions.swift
+@@ -20,6 +20,14 @@ open class KSOptions {
+     /// pixel format and size: a format change recreates the display layer, which would interrupt PiP.
+     /// Called on the render (display link) thread.
+     public var displayFrameTransform: ((CVPixelBuffer) -> CVPixelBuffer?)?
++    /// Vela: returns true to pass the audio track through compressed instead of decoding it (only tracks with a
++    /// `passthroughAudioFormatID`: AC-3 / E-AC-3). Requires `KSOptions.audioPlayerType == AudioRendererPlayer.self`.
++    /// Asked whenever a decoder is created for the track (opening, switching tracks).
++    public var audioPassthrough: ((FFmpegAssetTrack) -> Bool)?
++    /// Vela: returns true to pass the video track to the display layer undecoded (HEVC only, typically Dolby Vision
++    /// profile 5 / 8, see `passthroughVideoFormatDescription`). Requires `AudioRendererPlayer`: the layer is timed by
++    /// its synchronizer. No decoded frames are available then (thumbnails, VR, `displayFrameTransform`).
++    public var videoPassthrough: ((FFmpegAssetTrack) -> Bool)?
+     /// 最低缓存视频时间
+     @Published
+     public var preferredForwardBufferDuration = KSOptions.preferredForwardBufferDuration
+diff --git a/Sources/KSPlayer/MEPlayer/AudioRendererPlayer.swift b/Sources/KSPlayer/MEPlayer/AudioRendererPlayer.swift
+index 6712e9e..be72766 100644
+--- a/Sources/KSPlayer/MEPlayer/AudioRendererPlayer.swift
++++ b/Sources/KSPlayer/MEPlayer/AudioRendererPlayer.swift
+@@ -40,10 +40,19 @@ public class AudioRendererPlayer: AudioOutput {
+     private let renderer = AVSampleBufferAudioRenderer()
+     private let synchronizer = AVSampleBufferRenderSynchronizer()
+     private let serializationQueue = DispatchQueue(label: "ks.player.serialization.queue")
++    /// Vela: audio was enqueued since the last flush. An empty renderer reports sufficient media data,
++    /// which must not make `play()` keep the synchronizer's stale time (video-only passthrough).
++    private var hasEnqueuedAudio = false
+     var isPaused: Bool {
+         synchronizer.rate == 0
+     }
+ 
++    /// Vela: the synchronizer's timebase (audio clock). Compressed video is displayed on it (`MetalPlayView`).
++    /// Read-only for others: rate and time are driven by this player.
++    public var timebase: CMTimebase {
++        synchronizer.timebase
++    }
++
+     public required init() {
+         synchronizer.addRenderer(renderer)
+         if #available(macOS 11.3, iOS 14.5, tvOS 14.5, *) {
+@@ -65,13 +74,15 @@ public class AudioRendererPlayer: AudioOutput {
+         let time: CMTime
+         if #available(macOS 11.3, iOS 14.5, tvOS 14.5, *) {
+             // 判断是否有足够的缓存，有的话就用当前的时间。seek的话，需要清空缓存，这样才能取到最新的时间。
+-            if renderer.hasSufficientMediaDataForReliablePlaybackStart {
++            if renderer.hasSufficientMediaDataForReliablePlaybackStart, hasEnqueuedAudio {
+                 time = synchronizer.currentTime()
+             } else {
+                 if let currentRender = renderSource?.getAudioOutputRender() {
+                     time = currentRender.cmtime
+                 } else {
+-                    time = .zero
++                    // Vela: no audio (video-only stream): start at the playback clock instead of 0, otherwise
++                    // passthrough video timed by this synchronizer waits until its first timestamp is reached.
++                    time = renderSource?.currentClockTime() ?? .zero
+                 }
+             }
+         } else {
+@@ -84,6 +95,13 @@ public class AudioRendererPlayer: AudioOutput {
+         synchronizer.setRate(playbackRate, time: time)
+         // 要手动的调用下，这样才能及时的更新音频的时间
+         renderSource?.setAudio(time: time, position: -1)
++        // Vela: `play()` can be called again without a `pause()` in between (e.g. loop playback);
++        // drop the previous request block and time observer instead of stacking them.
++        renderer.stopRequestingMediaData()
++        if let periodicTimeObserver {
++            synchronizer.removeTimeObserver(periodicTimeObserver)
++            self.periodicTimeObserver = nil
++        }
+         renderer.requestMediaDataWhenReady(on: serializationQueue) { [weak self] in
+             guard let self else {
+                 return
+@@ -109,6 +127,7 @@ public class AudioRendererPlayer: AudioOutput {
+ 
+     public func flush() {
+         renderer.flush()
++        hasEnqueuedAudio = false
+     }
+ 
+     private func request() {
+@@ -117,8 +136,9 @@ public class AudioRendererPlayer: AudioOutput {
+                 break
+             }
+             var array = [render]
+-            let loopCount = Int32(render.audioFormat.sampleRate) / 20 / Int32(render.numberOfSamples) - 2
+-            if loopCount > 0 {
++            let loopCount = Int32(render.audioFormat.sampleRate) / 20 / Int32(max(render.numberOfSamples, 1)) - 2
++            // Vela: compressed (passthrough) frames are enqueued one packet at a time, never merged.
++            if loopCount > 0, render.compressedSampleBuffer == nil {
+                 for _ in 0 ..< loopCount {
+                     if let render = renderSource?.getAudioOutputRender() {
+                         array.append(render)
+@@ -132,6 +152,12 @@ public class AudioRendererPlayer: AudioOutput {
+                 let channelCount = render.audioFormat.channelCount
+                 renderer.audioTimePitchAlgorithm = channelCount > 2 ? .spectral : .timeDomain
+                 renderer.enqueue(sampleBuffer)
++                hasEnqueuedAudio = true
++                // Vela: a failed renderer stays silent while the synchronizer clock keeps running; surface it.
++                if renderer.status == .failed {
++                    KSLog("[audio] AVSampleBufferAudioRenderer failed: \(String(describing: renderer.error))")
++                    break
++                }
+                 #if !os(macOS)
+                 if AVAudioSession.sharedInstance().preferredOutputNumberOfChannels != channelCount {
+                     try? AVAudioSession.sharedInstance().setPreferredOutputNumberOfChannels(Int(channelCount))
+diff --git a/Sources/KSPlayer/MEPlayer/KSMEPlayer.swift b/Sources/KSPlayer/MEPlayer/KSMEPlayer.swift
+index 9f01566..7223864 100644
+--- a/Sources/KSPlayer/MEPlayer/KSMEPlayer.swift
++++ b/Sources/KSPlayer/MEPlayer/KSMEPlayer.swift
+@@ -129,6 +129,7 @@ public class KSMEPlayer: NSObject {
+         audioOutput.renderSource = playerItem
+         videoOutput?.renderSource = playerItem
+         videoOutput?.displayLayerDelegate = self
++        attachCompressedVideoTimebase()
+         #if !os(macOS)
+         NotificationCenter.default.addObserver(self, selector: #selector(audioRouteChange), name: AVAudioSession.routeChangeNotification, object: AVAudioSession.sharedInstance())
+         if #available(tvOS 15.0, iOS 15.0, *) {
+@@ -208,7 +209,7 @@ extension KSMEPlayer: MEPlayerDelegate {
+                 KSLog("[audio] audio type: \(audioOutput) prepare audioFormat )")
+                 audioOutput.prepare(audioFormat: audioDescriptor.audioFormat)
+             }
+-            if let controlTimebase = videoOutput?.displayLayer.controlTimebase, options.startPlayTime > 1 {
++            if let controlTimebase = ownVideoTimebase, options.startPlayTime > 1 {
+                 CMTimebaseSetTime(controlTimebase, time: CMTimeMake(value: Int64(options.startPlayTime), timescale: 1))
+             }
+             delegate?.readyToPlay(player: self)
+@@ -332,6 +333,21 @@ extension KSMEPlayer: MediaPlayerProtocol {
+         audioOutput.renderSource = playerItem
+         videoOutput?.renderSource = playerItem
+         videoOutput?.options = options
++        attachCompressedVideoTimebase()
++    }
++
++    /// Vela: compressed (passthrough) video is presented on the audio renderer's synchronizer timebase.
++    private func attachCompressedVideoTimebase() {
++        (videoOutput as? MetalPlayView)?.compressedVideoTimebase = (audioOutput as? AudioRendererPlayer)?.timebase
++    }
++
++    /// Vela: the display layer's own timebase, nil while it is timed by the audio synchronizer (compressed video):
++    /// that timebase must only be driven by the synchronizer.
++    private var ownVideoTimebase: CMTimebase? {
++        if (videoOutput as? MetalPlayView)?.isCompressedVideo == true {
++            return nil
++        }
++        return videoOutput?.displayLayer.controlTimebase
+     }
+ 
+     public var currentPlaybackTime: TimeInterval {
+@@ -375,7 +391,8 @@ extension KSMEPlayer: MediaPlayerProtocol {
+                 self.audioOutput.flush()
+                 runOnMainThread { [weak self] in
+                     guard let self else { return }
+-                    if let controlTimebase = self.videoOutput?.displayLayer.controlTimebase {
++                    (self.videoOutput as? MetalPlayView)?.flushCompressedFrames()
++                    if let controlTimebase = self.ownVideoTimebase {
+                         CMTimebaseSetTime(controlTimebase, time: CMTimeMake(value: Int64(self.currentPlaybackTime), timescale: 1))
+                     }
+                 }
+@@ -475,6 +492,9 @@ extension KSMEPlayer: MediaPlayerProtocol {
+         let isSeek = playerItem.select(track: track)
+         if isSeek {
+             audioOutput.flush()
++            runOnMainThread { [weak self] in
++                (self?.videoOutput as? MetalPlayView)?.flushCompressedFrames()
++            }
+         }
+     }
+ }
+diff --git a/Sources/KSPlayer/MEPlayer/MEPlayerItem.swift b/Sources/KSPlayer/MEPlayer/MEPlayerItem.swift
+index 9216c05..82e40b1 100644
+--- a/Sources/KSPlayer/MEPlayer/MEPlayerItem.swift
++++ b/Sources/KSPlayer/MEPlayer/MEPlayerItem.swift
+@@ -841,6 +841,10 @@ extension MEPlayerItem: OutputRenderSourceDelegate {
+     /// wall time elapsed since the last update, so after a pause it jumps ahead by the whole pause duration
+     /// until the audio output renders again; the video sync then drops / flushes frames for seconds
+     /// (audio plays, picture frozen).
++    public func currentClockTime() -> CMTime? {
++        mainClock().time
++    }
++
+     func resetClockReference() {
+         audioClock.time = audioClock.time
+         videoClock.time = videoClock.time
+@@ -922,6 +926,8 @@ extension MEPlayerItem: OutputRenderSourceDelegate {
+ 
+     public func getAudioOutputRender() -> AudioFrame? {
+         if let frame = audioTrack?.getOutputRender(where: nil) {
++            // Vela: passthrough frames carry no PCM for speech recognition.
++            guard frame.compressedSampleBuffer == nil else { return frame }
+             SubtitleModel.audioRecognizes.first {
+                 $0.isEnabled
+             }?.append(frame: frame)
+diff --git a/Sources/KSPlayer/MEPlayer/MEPlayerItemTrack.swift b/Sources/KSPlayer/MEPlayer/MEPlayerItemTrack.swift
+index 775a9d1..c33bca6 100644
+--- a/Sources/KSPlayer/MEPlayer/MEPlayerItemTrack.swift
++++ b/Sources/KSPlayer/MEPlayer/MEPlayerItemTrack.swift
+@@ -142,6 +142,11 @@ class SyncPlayerItemTrack<Frame: MEFrame>: PlayerItemTrackProtocol, CustomString
+                 if self.state == .flush || self.state == .closed {
+                     return
+                 }
++                // Vela: compressed video frames before the seek target are still needed as references;
++                // the display layer skips the late ones itself.
++                if self.seekTime > 0, (frame as? VideoVTBFrame)?.compressedSampleBuffer != nil {
++                    self.seekTime = 0.0
++                }
+                 if self.seekTime > 0 {
+                     let timestamp = frame.timestamp + frame.duration
+ //                    KSLog("seektime \(self.seekTime), frame \(frame.seconds), mediaType \(packet.assetTrack.mediaType)")
+@@ -302,6 +307,16 @@ extension SyncPlayerItemTrack {
+         autoreleasepool {
+             if mediaType == .subtitle {
+                 return SubtitleDecode(assetTrack: assetTrack, options: options)
++            } else if mediaType == .audio, options.audioPassthrough?(assetTrack) == true,
++                      let decoder = PassthroughAudioDecode(assetTrack: assetTrack)
++            {
++                // Vela: compressed passthrough (see `KSOptions.audioPassthrough`).
++                return decoder
++            } else if mediaType == .video, options.videoPassthrough?(assetTrack) == true,
++                      let decoder = PassthroughVideoDecode(assetTrack: assetTrack)
++            {
++                // Vela: compressed passthrough (see `KSOptions.videoPassthrough`).
++                return decoder
+             } else {
+                 if mediaType == .video, options.asynchronousDecompression, options.hardwareDecode,
+                    let session = DecompressionSession(assetTrack: assetTrack, options: options)
+diff --git a/Sources/KSPlayer/MEPlayer/MetalPlayView.swift b/Sources/KSPlayer/MEPlayer/MetalPlayView.swift
+index 4af40c0..971fef6 100644
+--- a/Sources/KSPlayer/MEPlayer/MetalPlayView.swift
++++ b/Sources/KSPlayer/MEPlayer/MetalPlayView.swift
+@@ -70,6 +70,11 @@ public final class MetalPlayView: UIView, VideoOutput {
+ 
+     private let metalView = MetalView()
+     public weak var displayLayerDelegate: DisplayLayerDelegate?
++    /// Vela: timebase that compressed (passthrough) frames are presented on: the audio synchronizer's
++    /// (`AudioRendererPlayer.timebase`). Set by `KSMEPlayer`; nil when the audio output has no synchronizer.
++    public var compressedVideoTimebase: CMTimebase?
++    /// Vela: the display layer is decoding compressed frames itself (entered on the first such frame).
++    public private(set) var isCompressedVideo = false
+     public init(options: KSOptions) {
+         self.options = options
+         super.init(frame: .zero)
+@@ -143,6 +148,13 @@ public final class MetalPlayView: UIView, VideoOutput {
+ 
+     public func flush() {
+         pixelBuffer = nil
++        // Vela: leave compressed mode with a fresh layer: the current one is timed by the audio synchronizer.
++        if isCompressedVideo {
++            isCompressedVideo = false
++            formatDescription = nil
++            replaceDisplayView()
++            return
++        }
+         if displayView.isHidden {
+             metalView.clear()
+         } else {
+@@ -170,9 +182,19 @@ extension MetalPlayView {
+ 
+     private func draw(force: Bool) {
+         autoreleasepool {
++            if isCompressedVideo {
++                enqueueCompressedFrames()
++                return
++            }
+             guard let frame = renderSource?.getVideoOutputRender(force: force) else {
+                 return
+             }
++            if let sampleBuffer = frame.compressedSampleBuffer {
++                enterCompressedVideo(frame: frame)
++                displayView.displayLayer.enqueue(sampleBuffer)
++                enqueueCompressedFrames()
++                return
++            }
+             pixelBuffer = frame.corePixelBuffer
+             guard let pixelBuffer else {
+                 return
+@@ -225,15 +247,70 @@ extension MetalPlayView {
+     private func checkFormatDescription(pixelBuffer: PixelBufferProtocol) {
+         if formatDescription == nil || !pixelBuffer.matche(formatDescription: formatDescription!) {
+             if formatDescription != nil {
+-                displayView.removeFromSuperview()
+-                displayView = AVSampleBufferDisplayView()
+-                displayView.frame = frame
+-                addSubview(displayView)
++                replaceDisplayView()
+             }
+             formatDescription = pixelBuffer.formatDescription
+         }
+     }
+ 
++    private func replaceDisplayView() {
++        let gravity = displayView.displayLayer.videoGravity
++        displayView.removeFromSuperview()
++        displayView = AVSampleBufferDisplayView()
++        displayView.displayLayer.videoGravity = gravity
++        displayView.frame = frame
++        addSubview(displayView)
++    }
++
++    /// Vela: switch the display layer to decoding compressed frames, presented on the audio synchronizer's timebase.
++    private func enterCompressedVideo(frame: VideoVTBFrame) {
++        isCompressedVideo = true
++        pixelBuffer = nil
++        isDovi = frame.isDovi
++        fps = frame.fps
++        if displayView.isHidden {
++            displayView.isHidden = false
++            metalView.isHidden = true
++            metalView.clear()
++        }
++        displayView.displayLayer.flushAndRemoveImage()
++        if let compressedVideoTimebase {
++            displayView.displayLayer.controlTimebase = compressedVideoTimebase
++        } else {
++            KSLog("[video] passthrough without an audio synchronizer: frames are timed by the layer's own clock")
++        }
++        if let sampleBuffer = frame.compressedSampleBuffer {
++            formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer)
++        }
++    }
++
++    /// Vela: keep the display layer's queue filled ahead of time (called on every display link tick). The layer
++    /// decodes and presents each frame when the synchronizer reaches its timestamp; late frames are skipped by it.
++    private func enqueueCompressedFrames() {
++        let layer = displayView.displayLayer
++        if layer.status == .failed {
++            KSLog("[video] passthrough display layer failed: \(String(describing: layer.error)), flush")
++            layer.flush()
++        }
++        while layer.isReadyForMoreMediaData, let frame = renderSource?.getVideoOutputRender(force: true) {
++            if let sampleBuffer = frame.compressedSampleBuffer {
++                layer.enqueue(sampleBuffer)
++            }
++        }
++        // displayedVideoTime / display FPS follow the presentation clock. Not while it is stopped: before the first
++        // `play()` the synchronizer is still at 0 and would overwrite the start / seek time of the playback clock.
++        if CMTimebaseGetRate(layer.timebase) != 0 {
++            renderSource?.setVideo(time: layer.timebase.time, position: -1)
++        }
++    }
++
++    /// Vela: drop frames queued in the display layer after a seek (compressed mode only; decoded frames are
++    /// displayed immediately and need no flush). The current image stays until the next frame is presented.
++    public func flushCompressedFrames() {
++        guard isCompressedVideo else { return }
++        displayView.displayLayer.flush()
++    }
++
+     private func set(pixelBuffer: CVPixelBuffer, time: CMTime) {
+         guard let formatDescription else { return }
+         displayView.enqueue(imageBuffer: pixelBuffer, formatDescription: formatDescription, time: time)
+diff --git a/Sources/KSPlayer/MEPlayer/Model.swift b/Sources/KSPlayer/MEPlayer/Model.swift
+index 1576626..43cd27e 100644
+--- a/Sources/KSPlayer/MEPlayer/Model.swift
++++ b/Sources/KSPlayer/MEPlayer/Model.swift
+@@ -33,6 +33,13 @@ public protocol OutputRenderSourceDelegate: AnyObject {
+     func getAudioOutputRender() -> AudioFrame?
+     func setAudio(time: CMTime, position: Int64)
+     func setVideo(time: CMTime, position: Int64)
++    /// Vela: the playback clock (stream start, seek target, or the time reached so far), used to start
++    /// `AudioRendererPlayer`'s synchronizer when there is no audio frame (video-only passthrough).
++    func currentClockTime() -> CMTime?
++}
++
++public extension OutputRenderSourceDelegate {
++    func currentClockTime() -> CMTime? { nil }
+ }
+ 
+ protocol CodecCapacityDelegate: AnyObject {
+@@ -251,6 +258,9 @@ public final class AudioFrame: MEFrame {
+     public var size: Int32 = 0
+     public var data: [UnsafeMutablePointer<UInt8>?]
+     public var numberOfSamples: UInt32 = 0
++    /// Vela: a compressed (passthrough) frame, already wrapped for `AVSampleBufferAudioRenderer`; `data` is empty.
++    /// Produced by `PassthroughAudioDecode`, rendered only by `AudioRendererPlayer`.
++    public internal(set) var compressedSampleBuffer: CMSampleBuffer?
+     public init(dataSize: Int, audioFormat: AVAudioFormat) {
+         self.dataSize = dataSize
+         self.audioFormat = audioFormat
+@@ -358,6 +368,9 @@ public final class AudioFrame: MEFrame {
+     }
+ 
+     public func toCMSampleBuffer() -> CMSampleBuffer? {
++        if let compressedSampleBuffer {
++            return compressedSampleBuffer
++        }
+         var outBlockListBuffer: CMBlockBuffer?
+         CMBlockBufferCreateEmpty(allocator: kCFAllocatorDefault, capacity: UInt32(data.count), flags: 0, blockBufferOut: &outBlockListBuffer)
+         guard let outBlockListBuffer else {
+@@ -428,6 +441,9 @@ public final class VideoVTBFrame: MEFrame {
+     public let isDovi: Bool
+     public var edrMetaData: EDRMetaData? = nil
+     var corePixelBuffer: PixelBufferProtocol?
++    /// Vela: a compressed (passthrough) frame for `AVSampleBufferDisplayLayer`; `corePixelBuffer` is nil and
++    /// `timestamp` is the decode timestamp (see `PassthroughVideoDecode`).
++    public internal(set) var compressedSampleBuffer: CMSampleBuffer?
+     init(fps: Float, isDovi: Bool) {
+         self.fps = fps
+         self.isDovi = isDovi
+diff --git a/Sources/KSPlayer/MEPlayer/PassthroughAudioDecode.swift b/Sources/KSPlayer/MEPlayer/PassthroughAudioDecode.swift
+new file mode 100644
+index 0000000..e530c86
+--- /dev/null
++++ b/Sources/KSPlayer/MEPlayer/PassthroughAudioDecode.swift
+@@ -0,0 +1,300 @@
++//
++//  PassthroughAudioDecode.swift
++//  KSPlayer
++//
++//  Vela: compressed audio passthrough (Dolby Digital / Dolby Digital Plus incl. Atmos JOC).
++//
++
++import AVFoundation
++import Libavcodec
++
++public extension FFmpegAssetTrack {
++    /// Vela: Core Audio format ID used when this track is passed through without decoding; nil if unsupported.
++    /// Only AC-3 / E-AC-3: the system decodes them itself (E-AC-3 JOC as Dolby Atmos, spatialized or sent over HDMI).
++    var passthroughAudioFormatID: AudioFormatID? {
++        switch codecpar.codec_id {
++        case AV_CODEC_ID_EAC3: kAudioFormatEnhancedAC3
++        case AV_CODEC_ID_AC3: kAudioFormatAC3
++        default: nil
++        }
++    }
++
++    /// Vela: E-AC-3 with Joint Object Coding, i.e. Dolby Atmos (profile detected by FFmpeg's parser while probing).
++    var isDolbyAtmos: Bool {
++        codecpar.codec_id == AV_CODEC_ID_EAC3 && codecpar.profile == AV_PROFILE_EAC3_DDP_ATMOS
++    }
++}
++
++/// Vela: wraps each AC-3 / E-AC-3 packet into a compressed `CMSampleBuffer` instead of decoding it to PCM.
++/// The frames are rendered by `AVSampleBufferAudioRenderer` (`AudioRendererPlayer`), so the system decodes them:
++/// Dolby Atmos objects are kept (spatial audio / Atmos-capable outputs) and more than 2 channels reach the output.
++/// Only valid with `AudioRendererPlayer`; other audio outputs cannot render compressed frames.
++final class PassthroughAudioDecode: DecodeProtocol {
++    private let formatID: AudioFormatID
++    private let sampleRate: Int32
++    private let channelCount: UInt32
++    private let bitRate: Int64
++    private let isDolbyAtmos: Bool
++    /// PCM format of the track, only used for `AudioFrame.audioFormat` (channel count / sample rate bookkeeping).
++    private let audioFormat: AVAudioFormat
++    /// Built from the first packet: the E-AC-3 cookie (`dec3`) describes the substreams found in the bitstream.
++    private var formatDescription: CMAudioFormatDescription?
++    /// Presentation time the next packet should have if the stream is continuous (sample-accurate).
++    private var expectedTime: CMTime?
++
++    init?(assetTrack: FFmpegAssetTrack) {
++        guard let formatID = assetTrack.passthroughAudioFormatID, let audioDescriptor = assetTrack.audioDescriptor else {
++            return nil
++        }
++        self.formatID = formatID
++        sampleRate = assetTrack.codecpar.sample_rate > 0 ? assetTrack.codecpar.sample_rate : 48000
++        channelCount = UInt32(max(assetTrack.codecpar.ch_layout.nb_channels, 2))
++        bitRate = assetTrack.codecpar.bit_rate
++        isDolbyAtmos = assetTrack.isDolbyAtmos
++        audioFormat = audioDescriptor.audioFormat
++    }
++
++    func decode() {}
++
++    func decodeFrame(from packet: Packet, completionHandler: @escaping (Result<MEFrame, Error>) -> Void) {
++        guard let corePacket = packet.corePacket?.pointee, let bytes = corePacket.data, corePacket.size > 0 else {
++            return
++        }
++        let size = Int(corePacket.size)
++        let buffer = UnsafeBufferPointer(start: bytes, count: size)
++        let frames = DolbyAudioSyncFrames(buffer)
++        let samples = frames.samplesPerFrame ?? 1536
++        if formatDescription == nil {
++            formatDescription = makeFormatDescription(framesPerPacket: samples, cookie: frames.dec3(dataRate: bitRate, isDolbyAtmos: isDolbyAtmos))
++            KSLog("[audio] passthrough \(formatID == kAudioFormatEnhancedAC3 ? "E-AC-3" : "AC-3") \(channelCount)ch atmos=\(isDolbyAtmos) cookie=\(formatDescription.flatMap { CMAudioFormatDescriptionGetMagicCookie($0, sizeOut: nil) } != nil)")
++        }
++        // Container timestamps are rounded (Matroska: 1 ms), so 44.1 kHz frames (34.83 ms) jitter by a fraction of a
++        // millisecond. The renderer treats every such gap as a discontinuity and resets the decoder for each packet,
++        // so keep the timeline sample-accurate and only follow the container on a real jump (> 1/4 frame).
++        let frameDuration = CMTime(value: CMTimeValue(samples), timescale: sampleRate)
++        var time = packet.cmtime
++        if let expectedTime, (time - expectedTime).seconds.magnitude < frameDuration.seconds / 4 {
++            time = expectedTime
++        }
++        expectedTime = time + frameDuration
++        guard let formatDescription, let sampleBuffer = makeSampleBuffer(bytes: bytes, size: size, time: time, formatDescription: formatDescription) else {
++            completionHandler(.failure(NSError(domain: "KSPlayer.Passthrough", code: -1, userInfo: [NSLocalizedDescriptionKey: "cannot wrap compressed audio packet"])))
++            return
++        }
++        let frame = AudioFrame(dataSize: 0, audioFormat: audioFormat)
++        frame.compressedSampleBuffer = sampleBuffer
++        frame.timebase = packet.assetTrack.timebase
++        frame.timestamp = packet.timestamp
++        frame.duration = packet.duration > 0 ? packet.duration : packet.assetTrack.timebase.getPosition(from: Double(samples) / Double(sampleRate))
++        frame.position = packet.position
++        frame.size = packet.size
++        frame.numberOfSamples = UInt32(samples)
++        completionHandler(.success(frame))
++    }
++
++    func doFlushCodec() {
++        expectedTime = nil
++    }
++
++    func shutdown() {}
++
++    private func makeFormatDescription(framesPerPacket: Int, cookie: [UInt8]?) -> CMAudioFormatDescription? {
++        var asbd = AudioStreamBasicDescription(
++            mSampleRate: Float64(sampleRate), mFormatID: formatID, mFormatFlags: 0, mBytesPerPacket: 0,
++            mFramesPerPacket: UInt32(framesPerPacket), mBytesPerFrame: 0, mChannelsPerFrame: channelCount,
++            mBitsPerChannel: 0, mReserved: 0
++        )
++        var description: CMAudioFormatDescription?
++        let status: OSStatus
++        if let cookie {
++            status = cookie.withUnsafeBytes {
++                CMAudioFormatDescriptionCreate(allocator: kCFAllocatorDefault, asbd: &asbd, layoutSize: 0, layout: nil, magicCookieSize: cookie.count, magicCookie: $0.baseAddress, extensions: nil, formatDescriptionOut: &description)
++            }
++        } else {
++            status = CMAudioFormatDescriptionCreate(allocator: kCFAllocatorDefault, asbd: &asbd, layoutSize: 0, layout: nil, magicCookieSize: 0, magicCookie: nil, extensions: nil, formatDescriptionOut: &description)
++        }
++        if status != noErr {
++            KSLog("[audio] passthrough format description failed: \(status)")
++        }
++        return description
++    }
++
++    private func makeSampleBuffer(bytes: UnsafePointer<UInt8>, size: Int, time: CMTime, formatDescription: CMAudioFormatDescription) -> CMSampleBuffer? {
++        var blockBuffer: CMBlockBuffer?
++        guard CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: size, blockAllocator: kCFAllocatorDefault, customBlockSource: nil, offsetToData: 0, dataLength: size, flags: kCMBlockBufferAssureMemoryNowFlag, blockBufferOut: &blockBuffer) == noErr,
++              let blockBuffer,
++              CMBlockBufferReplaceDataBytes(with: bytes, blockBuffer: blockBuffer, offsetIntoDestination: 0, dataLength: size) == noErr
++        else {
++            return nil
++        }
++        // One access unit (independent substream plus its dependent substreams) is one packet of the compressed format.
++        var packetDescription = AudioStreamPacketDescription(mStartOffset: 0, mVariableFramesInPacket: 0, mDataByteSize: UInt32(size))
++        var sampleBuffer: CMSampleBuffer?
++        CMAudioSampleBufferCreateReadyWithPacketDescriptions(allocator: kCFAllocatorDefault, dataBuffer: blockBuffer, formatDescription: formatDescription, sampleCount: 1, presentationTimeStamp: time, packetDescriptions: &packetDescription, sampleBufferOut: &sampleBuffer)
++        return sampleBuffer
++    }
++}
++
++/// Vela: the AC-3 / E-AC-3 syncframes of one packet (ETSI TS 102 366), parsed only as far as needed to build the
++/// `dec3` cookie (Annex F.6) and the number of PCM samples per frame.
++struct DolbyAudioSyncFrames {
++    struct Substream: Equatable {
++        var fscod: UInt32
++        var bsid: UInt32
++        var bsmod: UInt32 = 0
++        var acmod: UInt32
++        var lfeon: UInt32
++        var numDependentSubstreams: UInt32 = 0
++        var channelLocations: UInt32 = 0
++    }
++
++    /// Independent substreams with their dependent substreams folded in, in bitstream order.
++    private(set) var independent: [Substream] = []
++    private(set) var samplesPerFrame: Int?
++    private(set) var isEnhanced = false
++
++    init(_ data: UnsafeBufferPointer<UInt8>) {
++        var offset = 0
++        while offset + 6 <= data.count, data[offset] == 0x0B, data[offset + 1] == 0x77 {
++            var reader = BitReader(data, byteOffset: offset + 2)
++            let bsid = UInt32((data[offset + 5] >> 3) & 0x1F)
++            if bsid <= 10 {
++                // AC-3: syncinfo crc1(16) fscod(2) frmsizecod(6), then bsid(5) bsmod(3) acmod(3).
++                reader.skip(16)
++                let fscod = reader.read(2)
++                let frmsizecod = reader.read(6)
++                reader.skip(5)
++                let bsmod = reader.read(3)
++                let acmod = reader.read(3)
++                if acmod & 1 != 0, acmod != 1 { reader.skip(2) } // cmixlev
++                if acmod & 4 != 0 { reader.skip(2) } // surmixlev
++                if acmod == 2 { reader.skip(2) } // dsurmod
++                let lfeon = reader.read(1)
++                independent.append(Substream(fscod: fscod, bsid: bsid, bsmod: bsmod, acmod: acmod, lfeon: lfeon))
++                samplesPerFrame = samplesPerFrame ?? 1536
++                guard let length = Self.ac3FrameLength(fscod: fscod, frmsizecod: frmsizecod) else { break }
++                offset += length
++            } else if bsid <= 16 {
++                isEnhanced = true
++                let strmtyp = reader.read(2)
++                reader.skip(3) // substreamid
++                let frmsiz = reader.read(11)
++                var fscod = reader.read(2)
++                let numblkscod: UInt32
++                if fscod == 3 {
++                    fscod = reader.read(2) // fscod2: reduced sample rates
++                    numblkscod = 3
++                } else {
++                    numblkscod = reader.read(2)
++                }
++                let acmod = reader.read(3)
++                let lfeon = reader.read(1)
++                reader.skip(5) // bsid
++                reader.skip(5) // dialnorm
++                if reader.read(1) == 1 { reader.skip(8) } // compre, compr
++                if acmod == 0 {
++                    reader.skip(5)
++                    if reader.read(1) == 1 { reader.skip(8) }
++                }
++                var chanmap: UInt32 = 0
++                if strmtyp == 1, reader.read(1) == 1 { chanmap = reader.read(16) }
++                if strmtyp == 1, !independent.isEmpty {
++                    // Dependent substream: extra channels of the preceding independent one (dec3 chan_loc, as FFmpeg's movenc).
++                    independent[independent.count - 1].numDependentSubstreams += 1
++                    independent[independent.count - 1].channelLocations |= (chanmap >> 5) & 0x1FF
++                } else {
++                    independent.append(Substream(fscod: fscod, bsid: 16, acmod: acmod, lfeon: lfeon))
++                    samplesPerFrame = samplesPerFrame ?? [1, 2, 3, 6][Int(numblkscod)] * 256
++                }
++                offset += (Int(frmsiz) + 1) * 2
++            } else {
++                break
++            }
++        }
++    }
++
++    /// `dec3` payload (EC3SpecificBox without the box header). nil for AC-3 or when no frame could be parsed.
++    /// For Dolby Atmos, `flag_ec3_extension_type_a` is set: the complexity index is not in the parsed fields, so the
++    /// common value 16 is assumed (informational; the decoder reads the JOC data from the bitstream itself).
++    func dec3(dataRate bitRate: Int64, isDolbyAtmos: Bool) -> [UInt8]? {
++        guard isEnhanced, !independent.isEmpty, independent.count <= 8 else { return nil }
++        var writer = BitWriter()
++        writer.write(UInt32(min(max(bitRate / 1000, 0), 0x1FFF)), bits: 13)
++        writer.write(UInt32(independent.count - 1), bits: 3)
++        for substream in independent {
++            writer.write(substream.fscod, bits: 2)
++            writer.write(substream.bsid, bits: 5)
++            writer.write(0, bits: 1) // reserved
++            writer.write(0, bits: 1) // asvc
++            writer.write(substream.bsmod, bits: 3)
++            writer.write(substream.acmod, bits: 3)
++            writer.write(substream.lfeon, bits: 1)
++            writer.write(0, bits: 3) // reserved
++            writer.write(substream.numDependentSubstreams, bits: 4)
++            if substream.numDependentSubstreams > 0 {
++                writer.write(substream.channelLocations, bits: 9)
++            } else {
++                writer.write(0, bits: 1) // reserved
++            }
++        }
++        if isDolbyAtmos {
++            writer.write(0, bits: 7) // reserved
++            writer.write(1, bits: 1) // flag_ec3_extension_type_a
++            writer.write(16, bits: 8) // complexity_index_type_a
++        }
++        return writer.bytes
++    }
++
++    /// AC-3 frame length in bytes (ETSI TS 102 366 Table 4.13); nil for reserved codes.
++    private static func ac3FrameLength(fscod: UInt32, frmsizecod: UInt32) -> Int? {
++        let bitRates = [32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640]
++        guard fscod < 3, frmsizecod < 38 else { return nil }
++        let kbps = bitRates[Int(frmsizecod / 2)]
++        switch fscod {
++        case 0: return kbps * 4 // 48 kHz: words = 2 * kbps
++        case 1: return (kbps * 320 / 147 + Int(frmsizecod & 1)) * 2 // 44.1 kHz
++        default: return kbps * 6 // 32 kHz
++        }
++    }
++}
++
++private struct BitReader {
++    private let data: UnsafeBufferPointer<UInt8>
++    private var bitOffset: Int
++
++    init(_ data: UnsafeBufferPointer<UInt8>, byteOffset: Int) {
++        self.data = data
++        bitOffset = byteOffset * 8
++    }
++
++    mutating func skip(_ bits: Int) {
++        bitOffset += bits
++    }
++
++    /// Reads up to 32 bits MSB first; bits past the end read as 0.
++    mutating func read(_ bits: Int) -> UInt32 {
++        var value: UInt32 = 0
++        for _ in 0 ..< bits {
++            let byte = bitOffset / 8
++            let bit = byte < data.count ? (data[byte] >> (7 - UInt8(bitOffset % 8))) & 1 : 0
++            value = value << 1 | UInt32(bit)
++            bitOffset += 1
++        }
++        return value
++    }
++}
++
++private struct BitWriter {
++    private(set) var bytes: [UInt8] = []
++    private var bitCount = 0
++
++    mutating func write(_ value: UInt32, bits: Int) {
++        for index in stride(from: bits - 1, through: 0, by: -1) {
++            if bitCount % 8 == 0 { bytes.append(0) }
++            if (value >> UInt32(index)) & 1 == 1 {
++                bytes[bytes.count - 1] |= 0x80 >> UInt8(bitCount % 8)
++            }
++            bitCount += 1
++        }
++    }
++}
+diff --git a/Sources/KSPlayer/MEPlayer/PassthroughVideoDecode.swift b/Sources/KSPlayer/MEPlayer/PassthroughVideoDecode.swift
+new file mode 100644
+index 0000000..57a3fbc
+--- /dev/null
++++ b/Sources/KSPlayer/MEPlayer/PassthroughVideoDecode.swift
+@@ -0,0 +1,161 @@
++//
++//  PassthroughVideoDecode.swift
++//  KSPlayer
++//
++//  Vela: compressed video passthrough (Dolby Vision profile 5 / 8 rendered by the system).
++//
++
++import AVFoundation
++import Libavcodec
++import Libavformat
++
++public extension FFmpegAssetTrack {
++    /// Vela: Dolby Vision profile from the container's configuration record (`dvcC` / `dvvC`), nil if none.
++    var doviProfile: UInt8? {
++        dovi?.dv_profile
++    }
++
++    /// Vela: format description for passing this HEVC track to `AVSampleBufferDisplayLayer` undecoded; nil if
++    /// unsupported. With a Dolby Vision configuration the codec is `dvh1` and the record is attached next to `hvcC`,
++    /// so the system decoder applies the RPU (profile 5 IPTPQc2 / profile 8 reshaping) instead of showing the base layer.
++    var passthroughVideoFormatDescription: CMVideoFormatDescription? {
++        guard codecpar.codec_id == AV_CODEC_ID_HEVC, let formatDescription,
++              var extensions = CMFormatDescriptionGetExtensions(formatDescription) as? [CFString: Any],
++              var atoms = extensions[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms] as? [String: Any],
++              atoms["hvcC"] != nil
++        else {
++            return nil
++        }
++        var codecType = kCMVideoCodecType_HEVC
++        if let dovi {
++            codecType = kCMVideoCodecType_DolbyVisionHEVC
++            atoms[dovi.dv_profile > 7 ? "dvvC" : "dvcC"] = dovi.configurationBox
++            extensions[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms] = atoms
++        }
++        // Decoder hints for VideoToolbox sessions; the display layer picks its own decoder.
++        extensions.removeValue(forKey: "EnableHardwareAcceleratedVideoDecoder" as CFString)
++        extensions.removeValue(forKey: kCVPixelBufferPixelFormatTypeKey)
++        var description: CMVideoFormatDescription?
++        let status = CMVideoFormatDescriptionCreate(allocator: kCFAllocatorDefault, codecType: codecType, width: codecpar.width, height: codecpar.height, extensions: extensions as CFDictionary, formatDescriptionOut: &description)
++        if status != noErr {
++            KSLog("[video] passthrough format description failed: \(status)")
++        }
++        return description
++    }
++}
++
++extension DOVIDecoderConfigurationRecord {
++    /// Payload of the `dvcC` / `dvvC` box (Dolby Vision streams within the ISO base media file format, 24 bytes).
++    var configurationBox: Data {
++        var bytes = [UInt8](repeating: 0, count: 24)
++        bytes[0] = dv_version_major
++        bytes[1] = dv_version_minor
++        bytes[2] = (dv_profile & 0x7F) << 1 | (dv_level >> 5) & 0x01
++        bytes[3] = (dv_level & 0x1F) << 3 | (rpu_present_flag & 1) << 2 | (el_present_flag & 1) << 1 | (bl_present_flag & 1)
++        bytes[4] = (dv_bl_signal_compatibility_id & 0x0F) << 4
++        return Data(bytes)
++    }
++}
++
++/// Vela: wraps each HEVC packet into a compressed `CMSampleBuffer` (demux order, presentation timestamps only).
++/// `MetalPlayView` enqueues them ahead of time into its `AVSampleBufferDisplayLayer`, whose timebase is
++/// the audio synchronizer's, so the system decodes and presents them (Dolby Vision mapping included).
++/// Costs: no decoded `CVPixelBuffer` (thumbnails, VR, burning subtitles into Picture in Picture frames).
++final class PassthroughVideoDecode: DecodeProtocol {
++    private let formatDescription: CMVideoFormatDescription
++    private let isConvertNALSize: Bool
++    private let fps: Float
++    private let isDovi: Bool
++    /// Queue position of the previous frame (see `decodeFrame`).
++    private var lastQueueTimestamp = Int64.min
++
++    init?(assetTrack: FFmpegAssetTrack) {
++        guard let formatDescription = assetTrack.passthroughVideoFormatDescription else {
++            return nil
++        }
++        self.formatDescription = formatDescription
++        isConvertNALSize = assetTrack.isConvertNALSize
++        fps = assetTrack.nominalFrameRate
++        isDovi = assetTrack.dovi != nil
++        KSLog("[video] passthrough \(formatDescription.mediaSubType) dovi=\(assetTrack.doviProfile.map(String.init) ?? "-")")
++    }
++
++    func decode() {}
++
++    func decodeFrame(from packet: Packet, completionHandler: @escaping (Result<MEFrame, Error>) -> Void) {
++        guard let corePacket = packet.corePacket?.pointee, let data = corePacket.data, corePacket.size > 0 else {
++            return
++        }
++        let timebase = packet.assetTrack.timebase
++        let pts = packet.timestamp
++        let duration = corePacket.duration
++        // No decode timestamp: Matroska stores none and the one libavformat guesses is not monotonic, so the layer
++        // decodes in enqueue order (= demux order, see below).
++        var timing = CMSampleTimingInfo(
++            duration: duration > 0 ? timebase.cmtime(for: duration) : .invalid,
++            presentationTimeStamp: timebase.cmtime(for: pts),
++            decodeTimeStamp: .invalid
++        )
++        guard let sampleBuffer = makeSampleBuffer(data: data, size: Int(corePacket.size), timing: &timing, isKeyFrame: packet.isKeyFrame) else {
++            completionHandler(.failure(NSError(domain: "KSPlayer.Passthrough", code: -1, userInfo: [NSLocalizedDescriptionKey: "cannot wrap compressed video packet"])))
++            return
++        }
++        let frame = VideoVTBFrame(fps: fps, isDovi: isDovi)
++        frame.compressedSampleBuffer = sampleBuffer
++        frame.timebase = timebase
++        // The frame queue is sorted by timestamp but the layer needs demux order: leading pictures after a key frame
++        // have earlier presentation times. Use a strictly increasing position that stays within 0.5 s of the
++        // presentation time, so buffering estimates based on frame times remain meaningful.
++        let queueTimestamp = max(lastQueueTimestamp == Int64.min ? Int64.min : lastQueueTimestamp + 1, pts - timebase.getPosition(from: 0.5))
++        lastQueueTimestamp = queueTimestamp
++        frame.timestamp = queueTimestamp
++        frame.duration = duration
++        frame.position = packet.position
++        frame.size = packet.size
++        completionHandler(.success(frame))
++    }
++
++    func doFlushCodec() {
++        lastQueueTimestamp = Int64.min
++    }
++
++    func shutdown() {}
++
++    private func makeSampleBuffer(data: UnsafeMutablePointer<UInt8>, size: Int, timing: inout CMSampleTimingInfo, isKeyFrame: Bool) -> CMSampleBuffer? {
++        // Copy: the packet is released after this call while the sample buffer waits in the queue.
++        var bytes = [UInt8](UnsafeBufferPointer(start: data, count: size))
++        if isConvertNALSize {
++            // 3-byte NAL length prefixes (hvcC lengthSizeMinusOne patched to 4 bytes in FFmpegAssetTrack).
++            var converted = [UInt8]()
++            converted.reserveCapacity(size + size / 64)
++            var offset = 0
++            while offset + 3 <= size {
++                let length = Int(bytes[offset]) << 16 | Int(bytes[offset + 1]) << 8 | Int(bytes[offset + 2])
++                offset += 3
++                guard offset + length <= size else { break }
++                converted.append(contentsOf: [UInt8(length >> 24 & 0xFF), UInt8(length >> 16 & 0xFF), UInt8(length >> 8 & 0xFF), UInt8(length & 0xFF)])
++                converted.append(contentsOf: bytes[offset ..< offset + length])
++                offset += length
++            }
++            bytes = converted
++        }
++        var blockBuffer: CMBlockBuffer?
++        guard CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: bytes.count, blockAllocator: kCFAllocatorDefault, customBlockSource: nil, offsetToData: 0, dataLength: bytes.count, flags: kCMBlockBufferAssureMemoryNowFlag, blockBufferOut: &blockBuffer) == noErr,
++              let blockBuffer,
++              CMBlockBufferReplaceDataBytes(with: bytes, blockBuffer: blockBuffer, offsetIntoDestination: 0, dataLength: bytes.count) == noErr
++        else {
++            return nil
++        }
++        var sampleBuffer: CMSampleBuffer?
++        var sampleSize = bytes.count
++        CMSampleBufferCreateReady(allocator: kCFAllocatorDefault, dataBuffer: blockBuffer, formatDescription: formatDescription, sampleCount: 1, sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleSizeEntryCount: 1, sampleSizeArray: &sampleSize, sampleBufferOut: &sampleBuffer)
++        // Sync flags let the layer resume decoding at a key frame after a flush.
++        if let sampleBuffer, !isKeyFrame,
++           let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true) as? [NSMutableDictionary],
++           let attachment = attachments.first
++        {
++            attachment[kCMSampleAttachmentKey_NotSync] = true
++        }
++        return sampleBuffer
++    }
++}

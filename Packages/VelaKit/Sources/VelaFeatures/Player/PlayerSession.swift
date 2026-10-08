@@ -854,6 +854,9 @@ final class PlayerSession {
                 self?.loadLocalSubtitle(from: subtitle)
             }
         }
+        if let script = ProcessInfo.processInfo.environment["VELA_DEBUG_SCRIPT"] {
+            runDebugScript(script)
+        }
         guard let list = ProcessInfo.processInfo.environment["VELA_DEBUG_SWITCH_ENGINES"] else { return }
         let modes = list.split(separator: ",").compactMap { PlaybackEngineMode(rawValue: String($0)) }
         Task { [weak self] in
@@ -864,6 +867,48 @@ final class PlayerSession {
                 self.restart(with: mode)
             }
         }
+    }
+
+    /// 仅 Debug：`VELA_DEBUG_SCRIPT="5:seek=30,10:rate=2,15:pause,18:play,20:mute,22:unmute,24:audio=1"`，
+    /// 起播后按秒数依次操作内核，每步操作前后与 2 秒后各记一行状态（时间、状态、倍速），
+    /// 用于在 Mac 上不经界面验证内核的跳转、倍速、暂停、静音、切换音轨（日志分类 player，前缀「Debug 脚本」）。
+    private func runDebugScript(_ script: String) {
+        let steps = script.split(separator: ",").compactMap { step -> (at: Double, action: Substring)? in
+            let parts = step.split(separator: ":", maxSplits: 1)
+            guard parts.count == 2, let at = Double(parts[0]) else { return nil }
+            return (at, parts[1])
+        }
+        Task { [weak self] in
+            var elapsed = 0.0
+            for step in steps.sorted(by: { $0.at < $1.at }) {
+                try? await Task.sleep(for: .seconds(step.at - elapsed))
+                elapsed = step.at
+                guard let self, !self.closed else { return }
+                let engine = self.controller.engine
+                self.logDebugState("前 \(step.action)")
+                let argument = step.action.split(separator: "=").last.map(String.init) ?? ""
+                switch step.action.split(separator: "=").first {
+                case "seek": await engine.seek(to: Double(argument) ?? 0)
+                case "rate": engine.setRate(Float(argument) ?? 1)
+                case "pause": engine.pause()
+                case "play": engine.play()
+                case "mute": engine.setMuted(true)
+                case "unmute": engine.setMuted(false)
+                case "audio": _ = await engine.selectAudioTrack(ordinal: Int(argument) ?? 0)
+                default: Log.player.error("Debug 脚本：未知操作 \(step.action, privacy: .public)")
+                }
+                self.logDebugState("后 \(step.action)")
+                Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(2))
+                    self?.logDebugState("2 秒后 \(step.action)")
+                }
+            }
+        }
+    }
+
+    private func logDebugState(_ label: String) {
+        let engine = controller.engine
+        Log.player.info("Debug 脚本 \(label, privacy: .public)：time=\(String(format: "%.2f", engine.preciseCurrentTime), privacy: .public) status=\(String(describing: engine.status), privacy: .public) rate=\(engine.rate)")
     }
     #endif
 
@@ -1317,6 +1362,7 @@ final class PlayerSession {
         if let preferences = app?.playerPreferences {
             engine.configuration.hardwareDecoding = preferences.decodeMode == .hardware
             engine.configuration.decodeThreads = preferences.softwareDecodeThreads
+            engine.configuration.dolbyPassthrough = preferences.enableAtmos
         }
         return engine
     }

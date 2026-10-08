@@ -38,6 +38,10 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
         public var asynchronousDecompression = true
         /// 软解线程数，0 为自动（按 CPU 核心数）。
         public var decodeThreads = 0
+        /// 杜比音频（AC-3 / E-AC-3，含 E-AC-3 JOC 杜比全景声）不解码，压缩数据直接交给系统渲染（「杜比全景声」设置）。
+        /// 开启时音频输出改用 `AVSampleBufferAudioRenderer`（KSPlayer 的 `AudioRendererPlayer`，PCM 音轨同样经它输出）；
+        /// 关闭时沿用 KSPlayer 默认的 `AVAudioEngine` 输出，全部解码为 PCM（macOS 上下混为立体声，全景声对象丢失）。
+        public var dolbyPassthrough = true
 
         public init() {}
     }
@@ -115,15 +119,49 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
         options.autoSelectEmbedSubtitle = false
         options.registerRemoteControll = false
         options.displayFrameTransform = Self.frameTransform(pictureInPictureBurner)
+        var dolbyPassthrough = configuration.dolbyPassthrough
+        #if DEBUG
+        // `VELA_DEBUG_NO_PASSTHROUGH=1`：关闭直通（与直通对比时用，不改设置）。
+        if ProcessInfo.processInfo.environment["VELA_DEBUG_NO_PASSTHROUGH"] == "1" { dolbyPassthrough = false }
+        #endif
+        if dolbyPassthrough {
+            options.audioPassthrough = { track in
+                guard track.passthroughAudioFormatID != nil else { return false }
+                Log.player.info("KSPlayer 音频直通：\(track.description, privacy: .public) atmos=\(track.isDolbyAtmos)")
+                return true
+            }
+            options.videoPassthrough = { track in
+                // 杜比视界 P5（IPTPQc2，无回退层）/ P8（HDR10 / HLG / SDR 兼容层）由系统解码并做杜比视界映射；
+                // P7（蓝光双层）系统不支持，仍按基础层解码（HDR10）。
+                var passthrough = track.doviProfile == 5 || track.doviProfile == 8
+                #if DEBUG
+                // `VELA_DEBUG_VIDEO_PASSTHROUGH=1`：任意 HEVC 都走直通（没有杜比视界片源时验证通路本身）。
+                if ProcessInfo.processInfo.environment["VELA_DEBUG_VIDEO_PASSTHROUGH"] == "1" { passthrough = true }
+                #endif
+                guard passthrough, track.passthroughVideoFormatDescription != nil else { return false }
+                Log.player.info("KSPlayer 视频直通：\(track.description, privacy: .public) dovi=\(track.doviProfile.map(String.init) ?? "-", privacy: .public)")
+                return true
+            }
+        }
         if source.forwardBufferDuration > 0 {
             options.maxBufferDuration = max(source.forwardBufferDuration, options.preferredForwardBufferDuration)
         }
         if !source.httpHeaders.isEmpty { options.appendHeader(source.httpHeaders) }
         self.options = options
 
+        // 音频输出在创建 KSMEPlayer 时按全局的 `KSOptions.audioPlayerType` 确定，替换片源时沿用；
+        // 直通设置改变时须重建播放器，否则压缩帧会送进不能渲染它的输出。
+        let audioOutputType: AudioOutput.Type = dolbyPassthrough ? AudioRendererPlayer.self : AudioEnginePlayer.self
+        if let player, type(of: player.audioOutput) != audioOutputType {
+            player.delegate = nil
+            player.shutdown()
+            player.view?.removeFromSuperview()
+            self.player = nil
+        }
         if let player {
             player.replace(url: source.url, options: options)
         } else {
+            KSOptions.audioPlayerType = audioOutputType
             let player = KSMEPlayer(url: source.url, options: options)
             player.delegate = self
             self.player = player
