@@ -1,6 +1,7 @@
 import AVFoundation
 import AVKit
 import SwiftUI
+import VelaCore
 
 #if os(iOS)
 public typealias PlayerPlatformView = UIView
@@ -163,10 +164,8 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
         guard nativePictureInPicture == nil, let engine = controller?.engine as? any EnginePictureInPictureProviding,
               let pip = engine.pictureInPictureController else { return }
         pip.delegate = self
-        #if os(iOS)
-        pip.canStartPictureInPictureAutomaticallyFromInline = controller?.preferences.autoPictureInPicture ?? false
-        #endif
         nativePictureInPicture = pip
+        updateAutomaticPictureInPicture()
     }
 
     /// 系统内核：开着字幕时由带字幕的内容源负责画中画（含切后台自动进入），否则交给原生画中画。画中画进行中不切换。
@@ -187,12 +186,22 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
             view.installPictureInPictureLayer(nil)
             subtitleSource = nil
         }
+        updateAutomaticPictureInPicture()
+    }
+
+    /// 「切后台自动画中画」只在开启设置且正在播放时允许：用户已暂停时切后台不应弹出小窗。
+    /// 播放状态变化时由 `PlayerSurface` 的更新再次调用。只让一个控制器负责自动进入：
+    /// 系统内核带字幕的内容源可用时用它，否则（含尚未就绪）用原生画中画；VLC 改写 libvlc 内部的控制器。
+    func updateAutomaticPictureInPicture() {
         #if os(iOS)
-        // 只让一个控制器负责「切后台自动画中画」：带字幕的内容源可用时用它，否则（含尚未就绪）回到原生画中画。
-        let auto = controller.preferences.autoPictureInPicture
+        guard let controller else { return }
+        let auto = controller.preferences.autoPictureInPicture && controller.isPlaying
         let useSubtitleSource = subtitleSource?.isPossible == true
         nativePictureInPicture?.canStartPictureInPictureAutomaticallyFromInline = auto && !useSubtitleSource
         subtitleSource?.pictureInPicture?.canStartPictureInPictureAutomaticallyFromInline = auto && useSubtitleSource
+        if var windowEngine, windowEngine.allowsAutomaticPictureInPicture != auto {
+            windowEngine.allowsAutomaticPictureInPicture = auto
+        }
         #endif
     }
 
@@ -290,6 +299,9 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
             engine.setPictureInPictureSubtitles(burner)
         }
         startSubtitleUpdates()
+        #if DEBUG
+        if let engine = controller?.engine as? KSPlayerEngine { Log.player.debug("画中画开始：\(engine.pictureInPictureDiagnostics(), privacy: .public)") }
+        #endif
         controller?.isPictureInPictureActive = true
         controller?.onPictureInPictureStart?()
     }
@@ -377,8 +389,9 @@ public struct PlayerSurface: PlayerPlatformViewRepresentable {
         }
         // 读取字幕状态：开 / 关字幕时切换系统内核的画中画内容源。
         host.refreshPictureInPictureSource(subtitlesActive: controller.hasActiveSubtitle)
-        // 读取播放状态：暂停 / 播放后刷新带字幕小窗的按钮。
+        // 读取播放状态：暂停 / 播放后刷新带字幕小窗的按钮，并同步是否允许切后台自动画中画。
         _ = controller.isPlaying
+        host.updateAutomaticPictureInPicture()
         host.invalidatePlaybackState()
         host.handleToggle(controller.pictureInPictureToggleRequest)
     }

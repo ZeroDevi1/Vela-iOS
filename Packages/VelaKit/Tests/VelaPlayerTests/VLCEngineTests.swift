@@ -3,7 +3,10 @@ import Foundation
 import Testing
 @testable import VelaPlayer
 
+/// 串行执行：并行时两个 VLC 播放器同时起播，macOS 的 OpenGL 视频输出与主线程上的 `applyGravity`
+/// （`libvlc_video_set_aspect_ratio` 需要视频输出的锁）互相等待而死锁。
 @MainActor
+@Suite(.serialized)
 struct VLCEngineTests {
     /// 回归：播放中关闭播放器（macOS 关窗口）会调用 `stop()`；曾因 `player.media = nil`
     /// 触发 VLCKit 4 内部 `libvlc_media_retain` 断言，整个进程中止。
@@ -30,6 +33,30 @@ struct VLCEngineTests {
         // 让 libvlc 的异步事件（媒体切换回调）有机会在主线程派发。
         try await Task.sleep(for: .milliseconds(500))
         #expect(engine.status == .idle)
+    }
+
+    /// 回归：切换内核时从当前位置起播。曾用 `:start-time` 媒体选项，VLCKit 4.0.0a19 下 `time` 读数变成相对起播点
+    /// （从 0 开始），切到 VLC 后进度从头开始、再切走时新内核也从错误位置起播。
+    @Test func startsFromRequestedPositionWithAbsoluteTime() async throws {
+        let url = try #require(Bundle.module.url(forResource: "embedded-subtitle", withExtension: "mkv", subdirectory: "Resources"))
+        let engine = VLCPlaybackEngine()
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 320, height: 180), styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        engine.containerView.frame = window.contentView!.bounds
+        window.contentView!.addSubview(engine.containerView)
+        window.orderBack(nil)
+        defer { window.close() }
+        engine.setMuted(true)
+        engine.load(PlaybackSource(url: url, title: "fixture", startTime: 5))
+        for _ in 0..<50 where engine.status != .playing {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        #expect(engine.status == .playing, "5 秒内未进入播放，状态 \(engine.status)")
+        try await Task.sleep(for: .milliseconds(1000))
+        // 片长约 10 秒：从 5 秒起播约 1 秒后应在 5～8 秒之间；若读数相对起播点会在 2 秒以内。
+        #expect((4.5...8).contains(engine.currentTime), "当前位置 \(engine.currentTime)")
+        engine.stop()
+        try await Task.sleep(for: .milliseconds(500))
     }
 }
 

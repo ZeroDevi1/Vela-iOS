@@ -277,6 +277,25 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
         status = .idle
     }
 
+    #if DEBUG
+    /// 画中画画面比例排查用：显示图层与视图尺寸、送出帧的像素尺寸与像素宽高比。
+    func pictureInPictureDiagnostics() -> String {
+        guard let output = player?.videoOutput else { return "无视频输出" }
+        let layer = output.displayLayer
+        var text = "layer.bounds=\(layer.bounds.size) gravity=\(layer.videoGravity.rawValue) superlayer=\(layer.superlayer?.bounds.size ?? .zero)"
+        if let buffer = output.pixelBuffer?.cvPixelBuffer {
+            let par = CVBufferCopyAttachment(buffer, kCVImageBufferPixelAspectRatioKey, nil)
+            let aperture = CVBufferCopyAttachment(buffer, kCVImageBufferCleanApertureKey, nil)
+            text += " frame=\(CVPixelBufferGetWidth(buffer))x\(CVPixelBufferGetHeight(buffer)) par=\(String(describing: par)) cleanAperture=\(String(describing: aperture))"
+        }
+        if let format = output.pixelBuffer?.formatDescription {
+            text += " formatDimensions=\(CMVideoFormatDescriptionGetDimensions(format))"
+        }
+        text += " pipActive=\(pictureInPictureController?.isPictureInPictureActive ?? false)"
+        return text
+    }
+    #endif
+
     // MARK: - 内部
 
     private func attachVideoView() {

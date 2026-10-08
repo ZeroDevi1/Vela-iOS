@@ -19,6 +19,9 @@ extension FocusedValues {
 /// 「发现」「订阅」只在宽屏（iPad / Mac）显示为标签；紧凑宽度下标签栏超过 5 项会折叠出「更多」并挤掉搜索，
 /// 因此 iPhone 从设置页进入。
 struct MainTabView: View {
+    #if DEBUG
+    @MainActor private static var didOpenDebugPlayURL = false
+    #endif
     @Environment(AppModel.self) private var app
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.playMedia) private var playMedia
@@ -102,7 +105,9 @@ struct MainTabView: View {
             }
             // `VELA_DEBUG_PLAY_URL`：直接播放该地址（可配合 `VELA_DEBUG_ENGINE` 指定内核），
             // 用公开测试片源验证内核，不触碰服务器上的播放记录。
-            if let url = environment["VELA_DEBUG_PLAY_URL"].flatMap(URL.init(string:)) {
+            // macOS 上 `onAppear` 会触发两次，只打开一次播放器。
+            if !Self.didOpenDebugPlayURL, let url = environment["VELA_DEBUG_PLAY_URL"].flatMap(URL.init(string:)) {
+                Self.didOpenDebugPlayURL = true
                 playMedia(PlaybackRequest(target: .url(url), title: url.lastPathComponent))
             }
             #endif

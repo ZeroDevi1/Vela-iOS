@@ -154,6 +154,9 @@ final class PlayerSession {
                 controller.load(PlaybackSource(url: url, title: request.title, vrLayout: vrLayout))
                 // 外部地址不涉及服务器转码会话，预览可以直接用同一地址。
                 controller.scrubPreview.configure(url.pathExtension.lowercased() == "m3u8" ? .stream(url) : .file(url))
+                #if DEBUG
+                scheduleDebugEngineSwitches()
+                #endif
             case .item(let serverID, let itemID):
                 guard let server = app.servers.servers.first(where: { $0.id == serverID }),
                       let client = app.client(forServerID: serverID) else {
@@ -724,9 +727,13 @@ final class PlayerSession {
         )
     }
 
-    /// 能否在两种内核间切换：只有服务器条目（可重新选流）且原文件可静态串流时才能用 KSPlayer。
-    /// 服务器条目都可切换：KSPlayer 按自己的能力向服务器请求，服务器不能直放时仍回到系统内核。
-    var canSwitchEngine: Bool { item != nil }
+    /// 能否切换内核。服务器条目都可切换：按新内核的能力重新向服务器选流，服务器不能直放时仍回到系统内核；
+    /// 离线文件 / 外部地址直接用新内核从当前位置重新打开同一地址（系统内核打不开的容器会显示播放出错）。
+    var canSwitchEngine: Bool {
+        if item != nil { return true }
+        if case .url = request.target { return controller.source != nil }
+        return false
+    }
 
     /// 这条字幕是否必须由播放器自己从视频流读取：系统框架打不开的容器（MKV 等，服务器转封装播放）中的内嵌文本字幕。
     /// 这类字幕若交给服务器提取，需要读完整个视频文件。
@@ -807,8 +814,11 @@ final class PlayerSession {
 
     /// 换内核从当前位置重新起播，保留当前版本、音轨与字幕选择。
     private func restart(with mode: PlaybackEngineMode, subtitle: Int?? = nil) {
-        guard let item else { return }
         let position = controller.engine.currentTime
+        guard let item else {
+            restartURL(with: mode, at: position)
+            return
+        }
         engineOverride = mode
         reporter?.stop(position: position)
         reporter = nil
@@ -827,6 +837,40 @@ final class PlayerSession {
                 phase = .failed(error.localizedDescription)
             }
         }
+    }
+
+    #if DEBUG
+    /// 仅 Debug：`VELA_DEBUG_SWITCH_ENGINES=system,vlc,…` 起播后每 8 秒依次切换到列出的内核，
+    /// 用于在模拟器上复现切换内核的问题（模拟器点击注入有数秒延迟，难以手动卡准时机）。
+    private func scheduleDebugEngineSwitches() {
+        // `VELA_DEBUG_AUTO_PIP=<秒>`：起播后到点自动进入画中画（核对 macOS 小窗画面与窗口去留）。
+        if let delay = ProcessInfo.processInfo.environment["VELA_DEBUG_AUTO_PIP"].flatMap(Double.init) {
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(delay))
+                self?.controller.requestPictureInPictureToggle()
+            }
+        }
+        guard let list = ProcessInfo.processInfo.environment["VELA_DEBUG_SWITCH_ENGINES"] else { return }
+        let modes = list.split(separator: ",").compactMap { PlaybackEngineMode(rawValue: String($0)) }
+        Task { [weak self] in
+            for mode in modes {
+                try? await Task.sleep(for: .seconds(8))
+                guard let self, !self.closed else { return }
+                Log.player.info("Debug 切换内核 → \(mode.rawValue, privacy: .public)，切换前 \(self.controller.engine.kind.title, privacy: .public) 位于 \(String(format: "%.1f", self.controller.engine.currentTime), privacy: .public)s")
+                self.restart(with: mode)
+            }
+        }
+    }
+    #endif
+
+    /// 离线文件 / 外部地址换内核：没有服务器选流，直接用新内核从当前位置打开同一地址。
+    private func restartURL(with mode: PlaybackEngineMode, at position: TimeInterval) {
+        guard var source = controller.source else { return }
+        engineOverride = mode
+        useEngine(PlaybackEngineChoice.requestedEngine(mode: mode, serverDownscaled: false))
+        source.startTime = position
+        Log.player.info("切换内核：\(self.controller.engine.kind.title, privacy: .public) 从 \(String(format: "%.1f", position), privacy: .public)s 起播")
+        controller.load(source, resetMetadata: false)
     }
 
     /// 在当前位置重新向服务器请求码流（切换音轨 / 烧录字幕）。
@@ -1228,7 +1272,8 @@ final class PlayerSession {
             && (engine.supportsLayerPictureInPicture
                 || (engine as? any EnginePictureInPictureProviding)?.pictureInPictureController != nil
                 || (engine as? any WindowPictureInPictureProviding)?.isPictureInPictureReady == true)
-        if preferences.autoPictureInPicture, canAutoPictureInPicture {
+        // 已暂停时不会自动进入（见 `PlayerSurfaceHost.updateAutomaticPictureInPicture`），按普通切后台处理。
+        if preferences.autoPictureInPicture, controller.isPlaying, canAutoPictureInPicture {
             return
         }
         if preferences.backgroundAudio {

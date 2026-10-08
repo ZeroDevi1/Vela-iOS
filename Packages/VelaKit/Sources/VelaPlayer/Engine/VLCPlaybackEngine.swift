@@ -1,4 +1,5 @@
 import AVFoundation
+import AVKit
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -40,8 +41,10 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
     @ObservationIgnored public var onPictureInPictureStateChange: ((Bool) -> Void)?
     @ObservationIgnored private var pollTimer: Timer?
     @ObservationIgnored private var wantsPlay = false
-    /// 起播位置（秒）：通过 `:start-time` 媒体选项交给 libvlc，避免先从 0 开始再跳。
-    @ObservationIgnored private var startTime: TimeInterval = 0
+    /// 尚未确认到达的起播位置。不用 `:start-time` 媒体选项：VLCKit 4.0.0a19 实测（模拟器，带时间码的测试片）
+    /// 会从该位置起播，但 `time` 的读写都变成相对起播点（读数从 0 开始，写入 16 秒实际到 32 秒），
+    /// 进度、续播上报和后续跳转全部错位。改为 `play()` 后立即按时间跳转，首次读到播放时间时再核对一次。
+    @ObservationIgnored private var pendingStartSeek: TimeInterval?
     @ObservationIgnored private var gravity: PlayerController.VideoGravity = .fit
     /// 起播前选择的内嵌字幕序号：轨道在打开媒体后才可用。
     @ObservationIgnored private var pendingSubtitleOrdinal: Int??
@@ -90,14 +93,13 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
         progress.reset()
         rates = VLCRateMeter()
         networkThroughput = nil
-        startTime = source.startTime
+        pendingStartSeek = source.startTime > 0 ? source.startTime : nil
         activateAudioSession()
 
         guard let media = VLCMedia(url: source.url) else {
             status = .failed("VLC 无法打开该地址")
             return
         }
-        if source.startTime > 0 { media.addOption(":start-time=\(String(format: "%.3f", source.startTime))") }
         if source.forwardBufferDuration > 0 {
             media.addOption(":network-caching=\(Int(source.forwardBufferDuration * 1000))")
         }
@@ -113,6 +115,7 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
         player.rate = rate
         player.audio?.isMuted = isMuted
         player.play()
+        if let target = pendingStartSeek { player.time = VLCTime(int: Int32(clamping: Int(target * 1000))) }
         startPolling()
     }
 
@@ -214,6 +217,7 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
         // 在 `libvlc_media_retain` 断言失败直接中止进程（macOS 关闭播放窗口时闪退）。媒体随播放器一起释放。
         player.drawable = nil
         status = .idle
+        VLCPlayerRetirement.retire(player)
     }
 
     // MARK: - 画中画
@@ -226,7 +230,9 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
             }
         }
         pictureInPicture = controller
-        Log.player.info("VLC 画中画就绪")
+        #if os(iOS)
+        Log.player.info("VLC 画中画就绪（可改写自动进入：\(self.systemPictureInPictureController != nil)）")
+        #endif
     }
 
     private func publishSnapshot() {
@@ -271,8 +277,18 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
     }
 
     private func poll() {
-        let time = player.time.value.map { $0.doubleValue / 1000 }
-        if let time { currentTime = time }
+        var time = player.time.value.map { $0.doubleValue / 1000 }
+        if let target = pendingStartSeek, let reported = time, player.isPlaying {
+            pendingStartSeek = nil
+            if abs(reported - target) > 1.5 {
+                Log.player.info("VLC 起播位置未生效（\(String(format: "%.1f", reported), privacy: .public)s），跳转到 \(String(format: "%.1f", target), privacy: .public)s")
+                player.time = VLCTime(int: Int32(clamping: Int(target * 1000)))
+                progress.reset()
+                time = nil
+            }
+        }
+        // 等待起播位置生效期间保持 `load` 时设置的位置，进度条不闪回 0。
+        if let time, pendingStartSeek == nil { currentTime = time }
         if let length = player.media?.length.value?.doubleValue, length > 0 {
             duration = length / 1000
         }
@@ -353,9 +369,22 @@ public final class VLCPlaybackEngine: NSObject, PlaybackEngine, EmbeddedSubtitle
 extension VLCPlaybackEngine: WindowPictureInPictureProviding {
     public var isPictureInPictureReady: Bool { pictureInPicture != nil }
 
+    /// 视频输出创建前写入绘制目标（libvlc 创建画中画控制器时读取一次）；之后（播放 / 暂停变化）直接改写
+    /// libvlc 内部的 `AVPictureInPictureController`：VLCKit 的窗口控制对象有只读属性 `avPipController`
+    /// （4.0.0a19 起，见 VLC 源码 `modules/video_output/apple/VLCPictureInPictureController.m`）。
+    /// 取不到时只影响下一次创建的视频输出。
     public var allowsAutomaticPictureInPicture: Bool {
         get { containerView.canStartPictureInPictureAutomaticallyFromInline() }
-        set { containerView.setAutomaticPictureInPictureAllowed(newValue) }
+        set {
+            containerView.setAutomaticPictureInPictureAllowed(newValue)
+            systemPictureInPictureController?.canStartPictureInPictureAutomaticallyFromInline = newValue
+        }
+    }
+
+    private var systemPictureInPictureController: AVPictureInPictureController? {
+        guard let object = pictureInPicture as? NSObject,
+              object.responds(to: NSSelectorFromString("avPipController")) else { return nil }
+        return object.value(forKey: "avPipController") as? AVPictureInPictureController
     }
 
     /// libvlc 的 `samplebufferdisplay` 把字幕画在独立的叠加视图上，送往小窗的帧不含字幕（VLCKit 内部固定，无法配置）。
@@ -371,6 +400,29 @@ extension VLCPlaybackEngine: WindowPictureInPictureProviding {
     }
 }
 #endif
+
+/// 停止后的 `VLCMediaPlayer` 延迟到主线程释放。
+///
+/// libvlc 计时器线程发出的时间通知持有播放器；若引擎释放后最后一个引用随该通知在计时器线程的
+/// 自动释放池里释放，`dealloc` → `libvlc_media_player_unwatch_time` 会在持有计时器锁的回调中再次加锁，
+/// 触发断言 `!vlc_mutex_held(&player->timer.lock)` 中止进程（切换内核时崩溃，模拟器可稳定复现）。
+/// 因此停止后保留引用，直到 libvlc 报告已停止再多等 1 秒，最后由主线程释放；最多等 5 秒。
+@MainActor
+enum VLCPlayerRetirement {
+    private static var retired: [ObjectIdentifier: VLCMediaPlayer] = [:]
+
+    static func retire(_ player: VLCMediaPlayer) {
+        let id = ObjectIdentifier(player)
+        retired[id] = player
+        Task { @MainActor in
+            for _ in 0..<25 where retired[id]?.state != .stopped {
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            try? await Task.sleep(for: .seconds(1))
+            retired[id] = nil
+        }
+    }
+}
 
 /// 判断 libvlc 的播放位置是否「近期在前进」。
 ///
