@@ -51,8 +51,7 @@ public protocol PlaybackEngine: AnyObject {
 // MARK: - 可选能力
 
 // 内核特有的能力拆成可选协议，功能层按「能不能」判断（`engine as? any EmbeddedSubtitleProviding`），
-// 不依赖具体内核类型。新增内核（VLCKit / MPVKit 等）时实现对应协议即可接入这些功能；未实现的能力，
-// 界面须明确提示并提供切换内核，不能静默失效（见 docs/PLAN.md 第 5 节）。
+// 不依赖具体内核类型。曾接入的 mpv / VLC 已移除（画中画、切换内核等问题多），只保留系统内核与 KSPlayer。
 
 /// 能直接从视频流读取内嵌文本字幕的内核（KSPlayer）。系统内核做不到，需服务器提取字幕。
 @MainActor
@@ -69,26 +68,6 @@ public protocol EmbeddedSubtitleProviding: PlaybackEngine {
 @MainActor
 public protocol EnginePictureInPictureProviding: PlaybackEngine {
     var pictureInPictureController: AVPictureInPictureController? { get }
-}
-
-/// 自己管理画中画窗口、不暴露 `AVPictureInPictureController` 的内核（VLC：libvlc 的视频输出内部创建控制器）。
-///
-/// 限制：内核只报告开始 / 结束，无法区分小窗上的「恢复」与「关闭」，由用户在小窗上结束时一律按恢复处理
-/// （回到播放页，不丢失会话）；也不会先回调「恢复界面」再结束，系统可能在播放页回来之前就暂停播放。
-@MainActor
-public protocol WindowPictureInPictureProviding: PlaybackEngine {
-    /// 视频输出已就绪、可以进入画中画（起播并创建视频输出后才为 true）。
-    var isPictureInPictureReady: Bool { get }
-    /// 是否允许切后台时自动进入画中画；须在视频输出创建（起播）前设置才生效。
-    var allowsAutomaticPictureInPicture: Bool { get set }
-    /// 画中画里能否显示字幕（VLC：字幕画在独立的叠加视图上，不进入送往小窗的帧）。
-    var showsSubtitlesInPictureInPicture: Bool { get }
-    /// 画中画开始（true）/ 结束（false）时调用，在主线程。
-    var onPictureInPictureStateChange: ((Bool) -> Void)? { get set }
-    func startPictureInPicture()
-    func stopPictureInPicture()
-    /// 播放 / 暂停或进度变化后刷新小窗按钮。
-    func invalidatePictureInPicturePlaybackState()
 }
 
 /// 画中画期间能把字幕叠进送出画面的内核（小窗里没有应用的字幕图层）。
@@ -135,9 +114,14 @@ extension PlaybackEngine {
         return self is any DecodedFrameProviding
     }
 
-    /// 内核能以任一方式进入画中画（原生图层、内核自带控制器或内核自管窗口）。
+    /// 内核能以任一方式进入画中画（原生图层或内核自带控制器）。
+    /// macOS 只认原生 `AVPlayerLayer` 画中画：KSPlayer 的样本缓冲区画中画在 macOS 上画面布局错误（见 `refreshPictureInPictureSource`）。
     public var supportsPictureInPicture: Bool {
-        supportsLayerPictureInPicture || self is any EnginePictureInPictureProviding || self is any WindowPictureInPictureProviding
+        #if os(macOS)
+        supportsLayerPictureInPicture
+        #else
+        supportsLayerPictureInPicture || self is any EnginePictureInPictureProviding
+        #endif
     }
 }
 
@@ -146,18 +130,12 @@ public enum PlaybackEngineKind: String, Sendable, CaseIterable {
     case avFoundation
     /// KSPlayer（FFmpeg 解封装 + VideoToolbox 硬解）：直放 MKV 等系统框架打不开的容器，同样支持画中画与 VR 转平面。
     case ksPlayer
-    /// mpv（libmpv + OpenGL 渲染 + VideoToolbox 硬解）：与 Android 版默认内核相同，字幕由 libass 渲染。
-    case mpv
-    /// VLC（VLCKit 4）：字幕由 libvlc 渲染。
-    case vlc
 
     /// 播放信息面板与切换菜单中显示的名称。
     public var title: String {
         switch self {
         case .avFoundation: "系统（AVPlayer）"
         case .ksPlayer: "KSPlayer"
-        case .mpv: "mpv"
-        case .vlc: "VLC"
         }
     }
 }

@@ -28,17 +28,7 @@ private struct EngineOptionRow: View {
         Button(action: select) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(mode.title).font(.body.weight(.semibold))
-                        if mode.isExperimental {
-                            Text("Beta")
-                                .font(.caption2.weight(.bold))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Capsule().fill(.orange.opacity(0.2)))
-                                .foregroundStyle(.orange)
-                        }
-                    }
+                    Text(mode.title).font(.body.weight(.semibold))
                     Text(mode.summary)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -59,9 +49,6 @@ private struct EngineOptionRow: View {
 }
 
 private extension PlaybackEngineMode {
-    /// mpv / VLC 为对比测试接入，能力尚未补齐（见 docs/PLAN.md 第 5.0 节能力矩阵）。
-    var isExperimental: Bool { self == .mpv || self == .vlc }
-
     /// 与能力矩阵一致的简要说明；矩阵变化时同步修改。
     var summary: String {
         switch self {
@@ -71,10 +58,6 @@ private extension PlaybackEngineMode {
             "始终使用 AVPlayer：原生 HDR / 杜比视界、空间音频、画中画、AirPlay 与 VR 转平面。不能直放的格式交给服务器处理。"
         case .ksPlayer:
             "基于 FFmpeg 直放原文件，同样硬件解码，支持画中画与 VR 转平面；不支持 AirPlay 视频，杜比视界按 HDR10 显示。"
-        case .mpv:
-            "与 Android 版默认内核相同，直放原文件，字幕（含 ASS 特效）由 libass 渲染，应用字幕样式不生效。暂不支持画中画、VR 转平面与 AirPlay 视频。"
-        case .vlc:
-            "直放原文件，字幕（含 ASS 特效）由 libvlc 渲染。支持画中画（仅 iPhone / iPad，不能切后台自动进入），暂不支持 VR 转平面与 AirPlay 视频。"
         }
     }
 }

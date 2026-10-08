@@ -148,18 +148,7 @@ struct PlayerControlsView: View {
             }
             if buttons.pictureInPicture {
                 circleButton(controller.isPictureInPictureActive ? "pip.exit" : "pip.enter", label: "画中画", size: size) {
-                    // mpv（及 macOS 上的 VLC）没有画中画：明确提示换内核，不让按钮点了没反应。
-                    let engine = controller.engine
-                    if engine.supportsPictureInPicture {
-                        controller.requestPictureInPictureToggle()
-                    } else {
-                        #if os(iOS)
-                        let alternatives = "系统、KSPlayer 或 VLC"
-                        #else
-                        let alternatives = "系统或 KSPlayer"
-                        #endif
-                        controller.showMessage("\(engine.kind.title) 内核暂不支持画中画，可在「更多 → 切换内核」换用\(alternatives)", symbol: "pip", duration: .seconds(3.5))
-                    }
+                    controller.requestPictureInPictureToggle()
                 }
             }
             circleButton("info.circle", label: "媒体信息", size: size) { open(.info) }
@@ -218,8 +207,6 @@ struct PlayerControlsView: View {
         switch kind {
         case .avFoundation: "AV"
         case .ksPlayer: "KS"
-        case .mpv: "MPV"
-        case .vlc: "VLC"
         }
     }
 

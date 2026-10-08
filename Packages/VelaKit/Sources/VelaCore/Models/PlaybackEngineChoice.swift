@@ -9,18 +9,13 @@ public enum PlaybackEngineMode: String, CaseIterable, Sendable {
     case system
     /// 始终使用 KSPlayer 直放原文件。
     case ksPlayer = "ksplayer"
-    /// 始终使用 mpv 直放原文件（测试用，与 Android 版默认内核相同）。
-    case mpv = "libmpv"
-    /// 始终使用 VLC 直放原文件（测试用）。
-    case vlc
+    // 曾短暂提供的 mpv（"libmpv"）/ VLC（"vlc"）已移除：旧存储值无法解析，读取时回到默认的「自动」。
 
     public var title: String {
         switch self {
         case .auto: "自动"
         case .system: "系统（AVPlayer）"
         case .ksPlayer: "KSPlayer"
-        case .mpv: "mpv"
-        case .vlc: "VLC"
         }
     }
 }
@@ -31,9 +26,9 @@ public enum PlaybackEngineMode: String, CaseIterable, Sendable {
 /// 3. 拿到服务器结果后由 `playbackEngine` 定出实际内核（服务器仍要求转码时 HLS 交给能效更高的系统内核）。
 public enum PlaybackEngineChoice {
     public enum Engine: Sendable, Equatable {
-        case system, ksPlayer, mpv, vlc
+        case system, ksPlayer
 
-        /// 是否直放原文件（按 FFmpeg 系内核能力向服务器请求，MKV 等不转码）。
+        /// 是否直放原文件（按 KSPlayer 能力向服务器请求，MKV 等不转码）。
         public var directPlaysOriginal: Bool { self != .system }
     }
 
@@ -43,8 +38,6 @@ public enum PlaybackEngineChoice {
         switch mode {
         case .auto, .system: return .system
         case .ksPlayer: return .ksPlayer
-        case .mpv: return .mpv
-        case .vlc: return .vlc
         }
     }
 

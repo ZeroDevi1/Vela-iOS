@@ -229,9 +229,6 @@ public struct PlayerScreen: View {
     #endif
 
     #if os(macOS)
-    /// macOS 的播放器是独立窗口，画中画开始时窗口原地只剩系统的「正以画中画播放」占位：
-    /// 开始时隐藏窗口（会话与视图都保留，`orderOut` 不触发 `onDisappear`），恢复时重新显示后再通知系统，
-    /// 用户在小窗上关闭时结束播放并关闭窗口。
     /// 窗口模式下 Esc 到不了菜单栏的快捷键（SwiftUI 宿主视图先处理掉了），在本窗口的按键事件进入分发前拦截。
     /// 只处理不带修饰键、发往本播放器窗口的 Esc；面板打开时交给面板（Esc 关闭面板）。
     private func installEscapeMonitor() {
@@ -244,23 +241,36 @@ public struct PlayerScreen: View {
         }
     }
 
+    /// macOS 的播放器是独立窗口，画中画开始时窗口原地只剩系统的「正以画中画播放」占位：开始时把窗口变为完全透明且不接收鼠标，
+    /// 恢复时再显示，用户在小窗上关闭时结束播放并关闭窗口。
+    /// 不用 `orderOut` 移出屏幕：原生画中画的画面来自窗口内的 `AVPlayerLayer`，窗口不在屏幕上时小窗只剩黑屏（用户实测）。
     private func adoptSessionInWindow() {
         let controller = session.controller
         controller.onPictureInPictureStart = {
-            window?.orderOut(nil)
+            setWindowHidden(true)
         }
         controller.onPictureInPictureRestore = { completion in
-            window?.makeKeyAndOrderFront(nil)
+            setWindowHidden(false)
             Task {
                 try? await Task.sleep(for: .milliseconds(120))
                 completion(true)
             }
         }
         controller.onPictureInPictureStop = { restored in
-            guard !restored else { return }
+            guard !restored else {
+                setWindowHidden(false)
+                return
+            }
             session.close()
             window?.close()
         }
+    }
+
+    private func setWindowHidden(_ hidden: Bool) {
+        guard let window else { return }
+        window.alphaValue = hidden ? 0 : 1
+        window.ignoresMouseEvents = hidden
+        if !hidden { window.makeKeyAndOrderFront(nil) }
     }
     #endif
 

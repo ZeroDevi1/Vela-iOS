@@ -116,7 +116,7 @@ public final class PlayerController {
         self.source = source
         if resetMetadata {
             // 新条目：识别为 VR 时默认转平面（与 Android 版一致），可在菜单中关闭或改选排布。
-            // 内核拿不到解码画面（mpv / VLC）时不自动开启，否则只有黑屏；手动开启会提示换内核。
+            // 内核拿不到解码画面时不自动开启，否则只有黑屏；手动开启会提示换内核（当前两个内核都支持）。
             vrLayoutOverride = nil
             vrState = VRViewState()
             vrIssue = nil
@@ -400,7 +400,7 @@ public final class PlayerController {
         flashHUD(.message("VR 转平面：\(layout.displayName)", symbol: "visionpro"), delay: .seconds(1.5))
     }
 
-    /// 当前内核拿不到解码画面（mpv / VLC）时提示换内核，而不是开启后只显示黑屏。
+    /// 当前内核拿不到解码画面时提示换内核，而不是开启后只显示黑屏。
     private func ensureVRFramesSupported() -> Bool {
         guard !engine.supportsVRFrames else { return true }
         showMessage("\(engine.kind.title) 内核暂不支持 VR 转平面，可在「更多 → 切换内核」换用系统或 KSPlayer", symbol: "visionpro", duration: .seconds(3.5))

@@ -45,10 +45,13 @@ final class SubtitlePictureInPictureSource: NSObject {
         }
     }
 
-    /// 开始画中画：先送一帧，小窗的放大动画才有画面。
-    func start() {
-        pump.renderOnce()
+    /// 开始画中画：先把一帧送进图层再启动。图层里还没有帧时视频尺寸为 0，macOS 的画中画宿主视图按 0/0 的宽高比
+    /// 计算出 NaN 坐标，AppKit 断言「Invalid view geometry: x is NaN」直接中止进程（iOS 不崩溃，但小窗没有画面）。
+    /// 取不到帧（尚未起播）时返回 false，由调用方改用原生画中画。
+    func start() -> Bool {
+        guard pump.renderNow() else { return false }
         pictureInPicture?.startPictureInPicture()
+        return true
     }
 
     func didStart() {
@@ -160,24 +163,28 @@ private final class FramePump: @unchecked Sendable {
         }
     }
 
-    func renderOnce() {
-        queue.async { [weak self] in self?.tick(force: true) }
+    /// 在出帧队列上同步送一帧（开始画中画前调用），返回是否送入成功。
+    func renderNow() -> Bool {
+        queue.sync { tick(force: true) }
     }
 
     /// - Parameter force: 即使没有新帧也重新取当前帧（开始画中画时先送一帧）。
-    private func tick(force: Bool) {
-        guard let output = lock.withLock({ output }) else { return }
+    /// - Returns: 是否送入了一帧。
+    @discardableResult
+    private func tick(force: Bool) -> Bool {
+        guard let output = lock.withLock({ output }) else { return false }
         let itemTime = output.itemTime(forHostTime: CACurrentMediaTime())
         // 暂停时没有新帧，小窗保持上一帧。
         guard force || output.hasNewPixelBuffer(forItemTime: itemTime),
-              let frame = output.pixelBufferAndDisplayTime(forItemTime: itemTime).pixelBuffer else { return }
+              let frame = output.pixelBufferAndDisplayTime(forItemTime: itemTime).pixelBuffer else { return false }
         // 只读取像素生成新帧，不修改原缓冲区（与 VR 渲染器取帧方式相同）。
         var rendered: CVPixelBuffer?
         frame.withUnsafeBuffer { rendered = burner.render($0) }
-        guard let rendered, let sample = Self.makeSampleBuffer(rendered) else { return }
+        guard let rendered, let sample = Self.makeSampleBuffer(rendered) else { return false }
         if renderer.status == .failed { renderer.flush() }
-        guard renderer.isReadyForMoreMediaData else { return }
+        guard renderer.isReadyForMoreMediaData else { return false }
         renderer.enqueue(sample)
+        return true
     }
 
     /// 立即显示的样本（不依赖图层的时间基准）。

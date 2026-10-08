@@ -25,19 +25,10 @@ struct PlaybackEngineChoiceTests {
         #expect(PlaybackEngineChoice.playbackEngine(requested: .system, isDirectPlay: true) == .system)
     }
 
-    /// mpv / VLC 与 KSPlayer 一样直放原文件；服务器坚持转码（HLS）时一律回到系统内核。
-    @Test func mpvAndVLCDirectPlayLikeKSPlayer() {
-        #expect(PlaybackEngineChoice.requestedEngine(mode: .mpv, serverDownscaled: false) == .mpv)
-        #expect(PlaybackEngineChoice.requestedEngine(mode: .vlc, serverDownscaled: false) == .vlc)
-        #expect(PlaybackEngineChoice.requestedEngine(mode: .vlc, serverDownscaled: true) == .system)
-        #expect(PlaybackEngineChoice.playbackEngine(requested: .mpv, isDirectPlay: true) == .mpv)
-        #expect(PlaybackEngineChoice.playbackEngine(requested: .vlc, isDirectPlay: false) == .system)
-        #expect(!PlaybackEngineChoice.switchesToKSPlayerForSubtitle(mode: .mpv, requested: .mpv, serverDownscaled: false, subtitleNeedsPlayer: true))
-    }
-
-    /// 新内核的存储值不能与旧版本保存的 "mpv"（已迁移为 KSPlayer）冲突。
-    @Test func newEngineRawValuesDoNotCollideWithLegacyValue() {
+    /// 已移除的 mpv / VLC 存储值不再解析（设置读取时回到默认值），旧版的 "mpv" 也不会被误认。
+    @Test func removedEngineRawValuesAreRejected() {
         #expect(PlaybackEngineMode(rawValue: "mpv") == nil)
-        #expect(PlaybackEngineMode.mpv.rawValue == "libmpv")
+        #expect(PlaybackEngineMode(rawValue: "libmpv") == nil)
+        #expect(PlaybackEngineMode(rawValue: "vlc") == nil)
     }
 }

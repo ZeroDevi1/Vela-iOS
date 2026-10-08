@@ -136,19 +136,7 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
         case .view(let content):
             view.host(content)
         }
-        if let engine = controller.engine as? any WindowPictureInPictureProviding {
-            engine.onPictureInPictureStateChange = { [weak self] started in
-                self?.windowPictureInPictureChanged(started: started)
-            }
-        }
     }
-
-    /// 内核自管的画中画窗口（VLC）。
-    private var windowEngine: (any WindowPictureInPictureProviding)? {
-        controller?.engine as? any WindowPictureInPictureProviding
-    }
-    /// 由应用（而非用户在小窗上）结束内核自管的画中画：此时不应再把播放页呈现回来。
-    private var windowStopRequestedByApp = false
 
     private var allControllers: [AVPictureInPictureController] {
         [nativePictureInPicture, subtitleSource?.pictureInPicture].compactMap { $0 }
@@ -170,6 +158,11 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
 
     /// 系统内核：开着字幕时由带字幕的内容源负责画中画（含切后台自动进入），否则交给原生画中画。画中画进行中不切换。
     func refreshPictureInPictureSource(subtitlesActive: Bool) {
+        #if os(macOS)
+        // macOS 不用带字幕的样本缓冲区内容源：系统把这类小窗的画面按源图层在播放器窗口中的尺寸摆放、不随小窗缩放
+        // （实测 macOS 27.2：小窗约 400×300，画面 960×720，只露出放大的一角），只用原生 AVPlayerLayer 画中画（无字幕）。
+        let subtitlesActive = false
+        #endif
         guard let player, AVPictureInPictureController.isPictureInPictureSupported(),
               let controller, activePictureInPicture == nil else { return }
         if subtitlesActive, subtitleSource == nil {
@@ -191,7 +184,7 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
 
     /// 「切后台自动画中画」只在开启设置且正在播放时允许：用户已暂停时切后台不应弹出小窗。
     /// 播放状态变化时由 `PlayerSurface` 的更新再次调用。只让一个控制器负责自动进入：
-    /// 系统内核带字幕的内容源可用时用它，否则（含尚未就绪）用原生画中画；VLC 改写 libvlc 内部的控制器。
+    /// 系统内核带字幕的内容源可用时用它，否则（含尚未就绪）用原生画中画。
     func updateAutomaticPictureInPicture() {
         #if os(iOS)
         guard let controller else { return }
@@ -199,33 +192,28 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
         let useSubtitleSource = subtitleSource?.isPossible == true
         nativePictureInPicture?.canStartPictureInPictureAutomaticallyFromInline = auto && !useSubtitleSource
         subtitleSource?.pictureInPicture?.canStartPictureInPictureAutomaticallyFromInline = auto && useSubtitleSource
-        if var windowEngine, windowEngine.allowsAutomaticPictureInPicture != auto {
-            windowEngine.allowsAutomaticPictureInPicture = auto
-        }
         #endif
     }
 
     func handleToggle(_ request: Int) {
         guard request != lastToggleRequest else { return }
         lastToggleRequest = request
-        if let windowEngine {
-            if controller?.isPictureInPictureActive == true {
-                stopPictureInPicture()
-            } else if windowEngine.isPictureInPictureReady {
-                if controller?.hasActiveSubtitle == true, !windowEngine.showsSubtitlesInPictureInPicture {
-                    controller?.showMessage("\(windowEngine.kind.title) 画中画不显示字幕，需要字幕可换用系统或 KSPlayer 内核", symbol: "captions.bubble", duration: .seconds(3))
-                }
-                windowEngine.startPictureInPicture()
-            } else {
-                controller?.showMessage("画面尚未就绪，起播后再试", symbol: "pip", duration: .seconds(2))
+        if let controller, !controller.isPictureInPictureActive {
+            guard controller.engine.supportsPictureInPicture else {
+                controller.showMessage("macOS 上 \(controller.engine.kind.title) 内核暂不支持画中画，可在「更多 → 切换内核」换用系统内核", symbol: "pip", duration: .seconds(3.5))
+                return
             }
-            return
+            #if os(macOS)
+            if controller.hasActiveSubtitle {
+                controller.showMessage("Mac 的画中画不显示字幕", symbol: "captions.bubble", duration: .seconds(2.5))
+            }
+            #endif
         }
         adoptEnginePictureInPicture()
         if let active = activePictureInPicture {
             active.stopPictureInPicture()
-        } else if let subtitleSource, subtitleSource.isPossible {
-            subtitleSource.start()
+        } else if let subtitleSource, subtitleSource.isPossible, subtitleSource.start() {
+            // 带字幕的小窗已启动。
         } else {
             // 带字幕的内容源不可用时回退到原生画中画（无字幕），保证画中画始终能打开。
             nativePictureInPicture?.startPictureInPicture()
@@ -240,53 +228,11 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
 
     func stopPictureInPicture() {
         activePictureInPicture?.stopPictureInPicture()
-        if let windowEngine, controller?.isPictureInPictureActive == true {
-            windowStopRequestedByApp = true
-            windowEngine.stopPictureInPicture()
-        }
     }
 
     /// 播放状态变化时让带字幕的小窗刷新播放 / 暂停按钮（原生画中画由系统自行跟踪）。
     func invalidatePlaybackState() {
         subtitleSource?.invalidatePlaybackState()
-        windowEngine?.invalidatePictureInPicturePlaybackState()
-    }
-
-    /// 内核自管画中画的开始 / 结束。内核不区分小窗的「恢复」与「关闭」：用户在小窗上结束时一律按恢复处理，
-    /// 先呈现播放页再回报结束（与 `restoreUserInterfaceForPictureInPictureStop` 的流程一致），不会意外关闭会话。
-    private func windowPictureInPictureChanged(started: Bool) {
-        guard let controller else { return }
-        if started {
-            guard !controller.isPictureInPictureActive else { return }
-            controller.isPictureInPictureActive = true
-            controller.onPictureInPictureStart?()
-            return
-        }
-        guard controller.isPictureInPictureActive else { return }
-        // 内核不实现「先恢复界面再结束」：小窗结束时播放页还没回来，视频视图不在屏幕上，系统会暂停播放。
-        // 记下结束前是否在播放，播放页恢复后再继续（等系统的暂停先到达，再判断）。
-        let wasPlaying = controller.isPlaying
-        let finish = { [weak controller] (restored: Bool) in
-            guard let controller else { return }
-            controller.isPictureInPictureActive = false
-            controller.isRestoringPictureInPicture = false
-            controller.onPictureInPictureStop?(restored)
-            guard restored, wasPlaying else { return }
-            Task { @MainActor [weak controller] in
-                try? await Task.sleep(for: .milliseconds(400))
-                guard let controller, !controller.isPlaying, controller.engine.status != .ended else { return }
-                controller.engine.play()
-            }
-        }
-        if windowStopRequestedByApp {
-            windowStopRequestedByApp = false
-            finish(false)
-        } else if let restore = controller.onPictureInPictureRestore {
-            controller.isRestoringPictureInPicture = true
-            restore { _ in finish(true) }
-        } else {
-            finish(true)
-        }
     }
 
     func pictureInPictureControllerDidStartPictureInPicture(_ pip: AVPictureInPictureController) {
@@ -301,6 +247,14 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
         startSubtitleUpdates()
         #if DEBUG
         if let engine = controller?.engine as? KSPlayerEngine { Log.player.debug("画中画开始：\(engine.pictureInPictureDiagnostics(), privacy: .public)") }
+        #if os(macOS)
+        if ProcessInfo.processInfo.environment["VELA_DEBUG_DUMP_PIP"] != nil {
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(2))
+                DebugPictureInPictureLayout.dump()
+            }
+        }
+        #endif
         #endif
         controller?.isPictureInPictureActive = true
         controller?.onPictureInPictureStart?()

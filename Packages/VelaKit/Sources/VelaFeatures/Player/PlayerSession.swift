@@ -134,11 +134,11 @@ final class PlayerSession {
         do {
             switch request.target {
             case .url(let url):
-                // 设置为直放内核（KSPlayer / mpv / VLC）时外部地址与离线文件都用它；
+                // 设置为 KSPlayer 时外部地址与离线文件都用它；
                 // 否则离线文件中系统框架打不开的容器（MKV 等）交给 KSPlayer。
                 var mode = preferences.engineMode
                 #if DEBUG
-                // 仅 Debug：`VELA_DEBUG_ENGINE=<auto|system|ksplayer|libmpv|vlc>` 指定外部地址使用的内核（内核对比测试）。
+                // 仅 Debug：`VELA_DEBUG_ENGINE=<auto|system|ksplayer>` 指定外部地址使用的内核（内核对比测试）。
                 if let forced = ProcessInfo.processInfo.environment["VELA_DEBUG_ENGINE"].flatMap(PlaybackEngineMode.init(rawValue:)) {
                     mode = forced
                 }
@@ -217,7 +217,6 @@ final class PlayerSession {
         let mode = engineOverride ?? app.playerPreferences.engineMode
         let downscaled = maxVideoWidthOverride?.itemID == item.id
         var requested = PlaybackEngineChoice.requestedEngine(mode: mode, serverDownscaled: downscaled)
-        // mpv / VLC 与 KSPlayer 一样基于 FFmpeg，按 KSPlayer 的能力档请求服务器（直放原文件）。
         var profile: DeviceProfile.Kind { requested.directPlaysOriginal ? .ksPlayer : .avFoundation }
         func resolve(_ profile: DeviceProfile.Kind) async throws -> ResolvedStream {
             try await app.playbackResolver.resolve(
@@ -746,14 +745,12 @@ final class PlayerSession {
         )
     }
 
-    /// 换用指定内核，从当前位置继续（与 Android 版「使用 ExoPlayer / MPV」对应）。
+    /// 换用另一个内核，从当前位置继续（与 Android 版「使用 ExoPlayer / MPV」对应）。
     func switchEngine(to kind: PlaybackEngineKind) {
         guard canSwitchEngine, kind != controller.engine.kind else { return }
         let mode: PlaybackEngineMode = switch kind {
         case .avFoundation: .system
         case .ksPlayer: .ksPlayer
-        case .mpv: .mpv
-        case .vlc: .vlc
         }
         restart(with: mode)
     }
@@ -840,7 +837,7 @@ final class PlayerSession {
     }
 
     #if DEBUG
-    /// 仅 Debug：`VELA_DEBUG_SWITCH_ENGINES=system,vlc,…` 起播后每 8 秒依次切换到列出的内核，
+    /// 仅 Debug：`VELA_DEBUG_SWITCH_ENGINES=system,ksplayer,…` 起播后每 8 秒依次切换到列出的内核，
     /// 用于在模拟器上复现切换内核的问题（模拟器点击注入有数秒延迟，难以手动卡准时机）。
     private func scheduleDebugEngineSwitches() {
         // `VELA_DEBUG_AUTO_PIP=<秒>`：起播后到点自动进入画中画（核对 macOS 小窗画面与窗口去留）。
@@ -848,6 +845,13 @@ final class PlayerSession {
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(delay))
                 self?.controller.requestPictureInPictureToggle()
+            }
+        }
+        // `VELA_DEBUG_SUBTITLE=<字幕地址>`：起播后加载外挂字幕（画中画叠字幕排查用）。
+        if let subtitle = ProcessInfo.processInfo.environment["VELA_DEBUG_SUBTITLE"].flatMap(URL.init(string:)) {
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(1))
+                self?.loadLocalSubtitle(from: subtitle)
             }
         }
         guard let list = ProcessInfo.processInfo.environment["VELA_DEBUG_SWITCH_ENGINES"] else { return }
@@ -1266,12 +1270,11 @@ final class PlayerSession {
         PlayerBrightness.leave()
         if controller.isPictureInPictureActive { return }
         // 即将自动进入画中画：此时小窗还没启动（isPictureInPictureActive 仍为 false），不能当作普通切后台暂停。
-        // 系统内核用 AVPlayerLayer，KSPlayer 用其 AVSampleBufferDisplayLayer 内容源，VLC 由 libvlc 的画中画控制器自动进入。
+        // 系统内核用 AVPlayerLayer，KSPlayer 用其 AVSampleBufferDisplayLayer 内容源。
         let engine = controller.engine
         let canAutoPictureInPicture = AVPictureInPictureController.isPictureInPictureSupported()
             && (engine.supportsLayerPictureInPicture
-                || (engine as? any EnginePictureInPictureProviding)?.pictureInPictureController != nil
-                || (engine as? any WindowPictureInPictureProviding)?.isPictureInPictureReady == true)
+                || (engine as? any EnginePictureInPictureProviding)?.pictureInPictureController != nil)
         // 已暂停时不会自动进入（见 `PlayerSurfaceHost.updateAutomaticPictureInPicture`），按普通切后台处理。
         if preferences.autoPictureInPicture, controller.isPlaying, canAutoPictureInPicture {
             return
@@ -1300,21 +1303,11 @@ final class PlayerSession {
         let kind: PlaybackEngineKind = switch engine {
         case .system: .avFoundation
         case .ksPlayer: .ksPlayer
-        case .mpv: .mpv
-        case .vlc: .vlc
         }
         guard controller.engine.kind != kind else { return }
         switch engine {
         case .system: controller.replaceEngine(AVPlayerEngine())
         case .ksPlayer: controller.replaceEngine(makeKSPlayerEngine())
-        case .mpv: controller.replaceEngine(MPVPlaybackEngine())
-        case .vlc:
-            let vlc = VLCPlaybackEngine()
-            #if os(iOS)
-            // libvlc 在起播创建视频输出时读取，必须在 load 之前设置（见 `WindowPictureInPictureProviding`）。
-            vlc.allowsAutomaticPictureInPicture = app?.playerPreferences.autoPictureInPicture ?? false
-            #endif
-            controller.replaceEngine(vlc)
         }
     }
 

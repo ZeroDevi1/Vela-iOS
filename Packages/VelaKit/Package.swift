@@ -17,11 +17,7 @@ let package = Package(
     dependencies: [
         // 第二播放内核 KSPlayer（FFmpeg + VideoToolbox + Metal，GPL-3.0），与本项目 GPLv3 兼容。
         // 本地镜像：由 scripts/fetch-ksplayer.sh 拉取到 Packages/KSPlayer 与 Packages/FFmpegKit。
-        .package(path: "../KSPlayer"),
-        // libmpv 由 FFmpegKit 提供（与 KSPlayer 共用同一份 FFmpeg，无符号冲突）。
-        .package(path: "../FFmpegKit"),
-        // VLC 内核：VideoLAN 官方 VLCKit 4（LGPL-2.1，动态库），由 scripts/fetch-vlckit.sh 拉取到 Packages/VLCKit。
-        .package(path: "../VLCKit")
+        .package(path: "../KSPlayer")
     ],
     targets: [
         .target(name: "VelaCore"),
@@ -29,9 +25,7 @@ let package = Package(
         .target(name: "VelaData", dependencies: ["VelaCore", "VelaNetwork"]),
         .target(name: "VelaPlayer", dependencies: [
             "VelaCore",
-            .product(name: "KSPlayer", package: "KSPlayer"),
-            .product(name: "libmpv", package: "FFmpegKit"),
-            .product(name: "VLCKit", package: "VLCKit")
+            .product(name: "KSPlayer", package: "KSPlayer")
         ]),
         .target(name: "VelaDesignSystem", dependencies: ["VelaCore"]),
         .target(
@@ -43,10 +37,7 @@ let package = Package(
         .testTarget(
             name: "VelaPlayerTests",
             dependencies: ["VelaPlayer"],
-            resources: [.copy("Resources")],
-            // VLCKit 是二进制动态框架，`swift test` 把它放在 Products/Debug 下，测试包默认的 rpath 找不到：
-            // 测试可执行文件位于 Products/Debug/VelaPlayerTests.xctest/Contents/MacOS，向上三级即框架目录。
-            linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@loader_path/../../.."])]
+            resources: [.copy("Resources")]
         )
     ],
     swiftLanguageModes: [.v6]

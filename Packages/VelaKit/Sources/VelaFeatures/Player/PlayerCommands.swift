@@ -56,7 +56,7 @@ public struct PlayerCommands: Commands {
         Divider()
         Button(controller.engine.isMuted ? "取消静音" : "静音") { controller.engine.setMuted(!controller.engine.isMuted) }
             .keyboardShortcut("m", modifiers: [])
-        Button(controller.isPictureInPictureActive ? "退出画中画" : "画中画") { togglePictureInPicture(controller) }
+        Button(controller.isPictureInPictureActive ? "退出画中画" : "画中画") { controller.requestPictureInPictureToggle() }
             .keyboardShortcut("p", modifiers: [.command, .option])
         Button("截图") { session.captureScreenshot() }
             .keyboardShortcut("s", modifiers: [.command, .shift])
@@ -86,12 +86,5 @@ public struct PlayerCommands: Commands {
         controller.flash("\(controller.engine.rate.formatted())×", symbol: "speedometer")
     }
 
-    private func togglePictureInPicture(_ controller: PlayerController) {
-        if controller.engine.supportsPictureInPicture {
-            controller.requestPictureInPictureToggle()
-        } else {
-            controller.showMessage("\(controller.engine.kind.title) 内核暂不支持画中画，可在「更多 → 切换内核」换用系统或 KSPlayer", symbol: "pip", duration: .seconds(3.5))
-        }
-    }
 }
 #endif

@@ -13,7 +13,7 @@ Packages/VelaKit/.swiftpm/
 Packages/KSPlayer/
 Packages/FFmpegKit/
 
-# VLCKit 官方预编译包：由 scripts/fetch-vlckit.sh 拉取，体积大，不入库
+# 已移除的 VLC 内核曾拉取的预编译包（本地残留时忽略，可直接删除）
 Packages/VLCKit/
 
 # xcodebuild 未指定 -derivedDataPath 时的本地产物
