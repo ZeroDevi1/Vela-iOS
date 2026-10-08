@@ -1,0 +1,50 @@
+Vela：软解的 yuv420p 帧改为交织成 NV12（双平面）再送显示图层。
+
+原先只有全范围 yuvj420p 交织成双平面，普通 yuv420p 保留三平面 `y420`。App 自己的显示图层能显示，
+但画中画由系统进程渲染，三平面帧在小窗里显示为白底加放大错位的一角（528p 等走软解的片源，iOS / macOS 都会出现）。
+同时为 8 位交织加快速路径：原循环每个样本调用两次 copyMemory，1080p 每帧约一百万次。
+
+diff --git a/Sources/KSPlayer/MEPlayer/AVFFmpegExtension.swift b/Sources/KSPlayer/MEPlayer/AVFFmpegExtension.swift
+index 5ecd56c..76998ec 100644
+--- a/Sources/KSPlayer/MEPlayer/AVFFmpegExtension.swift
++++ b/Sources/KSPlayer/MEPlayer/AVFFmpegExtension.swift
+@@ -301,7 +301,10 @@ extension AVPixelFormat {
+         case AV_PIX_FMT_BGR48BE, AV_PIX_FMT_BGR48LE: return kCVPixelFormatType_48RGB
+         case AV_PIX_FMT_NV12: return fullRange ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+         //  AVSampleBufferDisplayLayer不能显示 kCVPixelFormatType_420YpCbCr8PlanarFullRange,所以换成是kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+-        case AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUVJ420P: return fullRange ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange : kCVPixelFormatType_420YpCbCr8Planar
++        // Vela: limited range 4:2:0 planar is also interleaved into NV12. Three-plane `y420` buffers render fine in the
++        // app's own display layer, but Picture in Picture (rendered out of process) shows them as a white frame with a
++        // shifted, enlarged corner of the picture.
++        case AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUVJ420P: return fullRange ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+         case AV_PIX_FMT_P010BE, AV_PIX_FMT_P010LE, AV_PIX_FMT_YUV420P10BE, AV_PIX_FMT_YUV420P10LE: return fullRange ? kCVPixelFormatType_420YpCbCr10BiPlanarFullRange : kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+         case AV_PIX_FMT_UYVY422: return kCVPixelFormatType_422YpCbCr8
+         case AV_PIX_FMT_YUYV422: return kCVPixelFormatType_422YpCbCr8_yuvs
+diff --git a/Sources/KSPlayer/MEPlayer/Resample.swift b/Sources/KSPlayer/MEPlayer/Resample.swift
+index 5c7cea9..e7f3851 100644
+--- a/Sources/KSPlayer/MEPlayer/Resample.swift
++++ b/Sources/KSPlayer/MEPlayer/Resample.swift
+@@ -173,7 +173,22 @@ class VideoSwresample: FrameChange {
+                     let bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pbuf, i)
+                     var contents = pbuf.baseAddressOfPlane(at: i)
+                     var source = data[i]!
+-                    if bufferPlaneCount < planeCount, i + 2 == planeCount {
++                    if bufferPlaneCount < planeCount, i + 2 == planeCount, byteCount == 1, let destination = contents?.assumingMemoryBound(to: UInt8.self) {
++                        // Vela: 8-bit fast path for interleaving U / V into the CbCr plane (the generic loop below issues
++                        // two copyMemory calls per sample, about a million per 1080p frame).
++                        let sourceU = data[i]!
++                        let sourceV = data[i + 1]!
++                        let width = min(pbuf.widthOfPlane(at: i), size)
++                        for row in 0 ..< height {
++                            let u = sourceU.advanced(by: row * size)
++                            let v = sourceV.advanced(by: row * size)
++                            let out = destination.advanced(by: row * bytesPerRow)
++                            for column in 0 ..< width {
++                                out[2 * column] = u[column]
++                                out[2 * column + 1] = v[column]
++                            }
++                        }
++                    } else if bufferPlaneCount < planeCount, i + 2 == planeCount {
+                         var sourceU = data[i]!
+                         var sourceV = data[i + 1]!
+                         var k = 0

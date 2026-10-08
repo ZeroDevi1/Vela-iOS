@@ -4,6 +4,7 @@ import CoreVideo
 import Foundation
 @preconcurrency import KSPlayer
 import Observation
+import os
 import VelaCore
 
 /// KSPlayer 内核（KSMEPlayer：FFmpeg 解封装 + VideoToolbox 硬解 + `AVSampleBufferDisplayLayer` 显示）。
@@ -241,6 +242,20 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
 
     private static func frameTransform(_ burner: SubtitleBurner?) -> ((CVPixelBuffer) -> CVPixelBuffer?)? {
         guard let burner else { return nil }
+        #if DEBUG
+        // `VELA_DEBUG_DUMP_PIP=1`：把画中画期间第一帧叠字幕前后的画面写成 PNG（系统小窗无法截图，排查画面错位用）。
+        if ProcessInfo.processInfo.environment["VELA_DEBUG_DUMP_PIP"] != nil {
+            let dumped = OSAllocatedUnfairLock(initialState: false)
+            return { source in
+                let output = burner.burnPreservingFormat(source)
+                if !dumped.withLock({ let was = $0; $0 = true; return was }) {
+                    DebugFrameDump.write(source, name: "pip-source")
+                    if let output { DebugFrameDump.write(output, name: "pip-burned") }
+                }
+                return output
+            }
+        }
+        #endif
         return { burner.burnPreservingFormat($0) }
     }
 

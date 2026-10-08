@@ -50,8 +50,9 @@ final class SubtitleBurner: @unchecked Sendable {
     /// 用于 KSPlayer：它在帧格式变化时会重建显示图层，而画中画绑定在该图层上，因此不能改变格式或缩小。
     /// 色彩空间沿用原帧，HDR 片源仍以 HDR 显示。
     ///
-    /// CoreImage 只支持部分像素格式：KSPlayer 软解输出的三平面 8 位 YUV（`y420` / `f420`）CoreImage 读写都会失败，
-    /// 渲染目标保持未写入的全 0 内容（YUV 全 0 显示为绿色），因此这两种格式改在 CPU 上混合；
+    /// CoreImage 只支持部分像素格式：三平面 8 位 YUV（`y420` / `f420`）CoreImage 读写都会失败，
+    /// 渲染目标保持未写入的全 0 内容（YUV 全 0 显示为绿色），因此这两种格式改在 CPU 上混合
+    /// （KSPlayer 补丁 0003 起软解已输出 NV12，此路径保留给仍输出三平面的来源）；
     /// 两条路径都不支持的格式返回 nil，显示不带字幕的原帧，而不是送出错误画面。
     func burnPreservingFormat(_ source: CVPixelBuffer) -> CVPixelBuffer? {
         guard let text = lock.withLock({ text }) else { return nil }
