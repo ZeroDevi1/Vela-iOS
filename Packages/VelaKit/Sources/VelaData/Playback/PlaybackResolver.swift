@@ -36,16 +36,20 @@ public struct ResolvedStream: Sendable {
 public enum PlaybackResolveError: LocalizedError {
     case noMediaSource
     case unsupported
+    /// 蓝光 / DVD 原盘只能由服务器读取后转封装，服务器没有给出转码地址（通常是用户没有转码权限）。
+    case discNeedsServer
 
     public var errorDescription: String? {
         switch self {
         case .noMediaSource: "服务器没有返回可用的媒体源"
         case .unsupported: "当前播放内核无法播放该媒体源，且服务器未提供转码"
+        case .discNeedsServer: "蓝光 / DVD 原盘需要服务器转封装播放，请在服务器上为该用户开启转码"
         }
     }
 }
 
 /// 根据 PlaybackInfo 选择播放方式：能直放就直放（画质与 HDR 元数据完整保留），否则使用服务器给出的转码地址。
+/// 蓝光 / DVD 原盘（`MediaSourceInfo.isDiscImage`）始终用服务器的转封装 / 转码地址：播放器读不了原盘结构。
 public struct PlaybackResolver: Sendable {
     public init() {}
 
@@ -72,6 +76,13 @@ public struct PlaybackResolver: Sendable {
         )
         let source = info.mediaSources.first { $0.id == mediaSourceID } ?? MediaSelection.preferredSource(info.mediaSources, by: versionPreference)
         guard let source else { throw PlaybackResolveError.noMediaSource }
+
+        if source.isDiscImage {
+            guard let relative = source.transcodingURL else { throw PlaybackResolveError.discNeedsServer }
+            let url = try client.absoluteURL(forServerRelative: relative)
+            return ResolvedStream(url: url, method: .transcode, mediaSource: source, playSessionID: info.playSessionID,
+                                  audioStreamIndex: audioStreamIndex, burnedSubtitleIndex: burnSubtitleIndex)
+        }
 
         // STRM：Path 是 http(s) 时按用户偏好直接播放原始地址，不经服务器中转。
         if server.preferStrmOriginalPath,
@@ -103,9 +114,10 @@ public struct PlaybackResolver: Sendable {
         throw PlaybackResolveError.unsupported
     }
 
-    /// 原文件静态串流（不经转码），供 MPV 内核直放。STRM 原始地址已是直放时原样返回。
+    /// 原文件静态串流（不经转码），供 KSPlayer 直放。STRM 原始地址已是直放时原样返回；原盘不能直放。
     public func originalFileStream(for stream: ResolvedStream, item: MediaItem, client: MediaServerClient) throws -> ResolvedStream {
         guard stream.method == .transcode else { return stream }
+        guard !stream.mediaSource.isDiscImage else { throw PlaybackResolveError.discNeedsServer }
         let source = stream.mediaSource
         let url = try client.directStreamURL(
             itemID: item.id,
@@ -144,7 +156,8 @@ public struct PlaybackResolver: Sendable {
         let container = source.container?.split(separator: ",").first.map(String.init) ?? "mkv"
 
         let withinLimit = quality.maxBitrate.map { (source.bitrate ?? .max) <= $0 } ?? true
-        if quality == .original || (source.supportsDirectPlay && withinLimit) {
+        // 原盘的原文件是 ISO / 文件夹，离线播放不了，总是下载服务器转封装的 HLS。
+        if !source.isDiscImage, quality == .original || (source.supportsDirectPlay && withinLimit) {
             let url = try client.directStreamURL(itemID: item.id, mediaSourceID: source.id, playSessionID: info.playSessionID, container: container)
             return DownloadSource(url: url, isHLS: false, fileExtension: container, playSessionID: nil)
         }
@@ -186,7 +199,7 @@ public struct PlaybackResolver: Sendable {
             let url = try client.absoluteURL(forServerRelative: relative)
             return ResolvedStream(url: url, method: .transcode, mediaSource: source, playSessionID: info.playSessionID)
         }
-        if source.supportsDirectPlay {
+        if source.supportsDirectPlay, !source.isDiscImage {
             let url = try client.directStreamURL(
                 itemID: item.id,
                 mediaSourceID: source.id,

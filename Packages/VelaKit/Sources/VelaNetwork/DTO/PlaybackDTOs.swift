@@ -76,6 +76,10 @@ public struct MediaSourceInfo: Decodable, Sendable, Identifiable {
     /// 服务器按用户语言偏好选出的默认音轨 / 字幕（`MediaStream.Index`）；字幕为 nil 或 -1 表示默认不显示。
     public var defaultAudioStreamIndex: Int?
     public var defaultSubtitleStreamIndex: Int?
+    /// `VideoFile` / `Iso` / `Dvd` / `BluRay`（原盘文件夹或镜像）。
+    public var videoType: String?
+    /// 镜像类型：`Dvd` / `BluRay`；非镜像为 nil。
+    public var isoType: String?
 
     enum CodingKeys: String, CodingKey {
         case id = "Id"
@@ -94,6 +98,8 @@ public struct MediaSourceInfo: Decodable, Sendable, Identifiable {
         case runTimeTicks = "RunTimeTicks"
         case defaultAudioStreamIndex = "DefaultAudioStreamIndex"
         case defaultSubtitleStreamIndex = "DefaultSubtitleStreamIndex"
+        case videoType = "VideoType"
+        case isoType = "IsoType"
     }
 
     public init(from decoder: any Decoder) throws {
@@ -114,6 +120,20 @@ public struct MediaSourceInfo: Decodable, Sendable, Identifiable {
         mediaStreams = try c.decodeIfPresent([MediaStreamInfo].self, forKey: .mediaStreams) ?? []
         defaultAudioStreamIndex = try c.decodeIfPresent(Int.self, forKey: .defaultAudioStreamIndex)
         defaultSubtitleStreamIndex = try c.decodeIfPresent(Int.self, forKey: .defaultSubtitleStreamIndex)
+        videoType = try c.decodeIfPresent(String.self, forKey: .videoType)
+        isoType = try c.decodeIfPresent(String.self, forKey: .isoType)
+    }
+
+    /// 蓝光 / DVD 原盘（BDMV、VIDEO_TS 文件夹或 ISO 镜像）。播放器读不了原盘结构（KSPlayer GPL 版不含蓝光读取，
+    /// iOS 的 FFmpegKit 也没有 libbluray），只能由服务器读取后转封装 / 转码。服务器字段缺失时按容器与路径判断。
+    public var isDiscImage: Bool {
+        if let videoType, ["iso", "dvd", "bluray"].contains(videoType.lowercased()) { return true }
+        if isoType != nil { return true }
+        let containers = (container ?? "").lowercased().split(separator: ",").map(String.init)
+        if containers.contains(where: { ["iso", "bluray", "dvd", "bdmv"].contains($0) }) { return true }
+        let path = (path ?? "").lowercased().replacingOccurrences(of: "\\", with: "/")
+        return path.hasSuffix(".iso") || path.hasSuffix("/bdmv") || path.contains("/bdmv/") || path.hasSuffix("/video_ts")
+            || path.contains("/video_ts/")
     }
 
     public var videoStream: MediaStreamInfo? { mediaStreams.first { $0.type == "Video" } }
@@ -151,6 +171,10 @@ public struct MediaStreamInfo: Decodable, Sendable, Hashable {
     public var extendedVideoType: String?
     /// 传递函数：`smpte2084`（PQ，HDR10 / 杜比视界）、`arib-std-b67`（HLG）、`bt709`（SDR）。
     public var colorTransfer: String?
+    /// Jellyfin：杜比视界 Profile（5 / 7 / 8 …）。
+    public var dvProfile: Int?
+    /// Emby：杜比视界细分类型，如 `DoviProfile81`（Profile 8.1）、`DoviProfile76`、`DoviProfile50`。
+    public var extendedVideoSubType: String?
     public var channels: Int?
     public var isDefault: Bool?
     public var isExternal: Bool?
@@ -182,6 +206,8 @@ public struct MediaStreamInfo: Decodable, Sendable, Hashable {
         case videoRange = "VideoRange"
         case extendedVideoType = "ExtendedVideoType"
         case colorTransfer = "ColorTransfer"
+        case dvProfile = "DvProfile"
+        case extendedVideoSubType = "ExtendedVideoSubType"
         case channels = "Channels"
         case isDefault = "IsDefault"
         case isExternal = "IsExternal"
@@ -191,6 +217,21 @@ public struct MediaStreamInfo: Decodable, Sendable, Hashable {
 
     /// 图形字幕编码；服务器未给 `IsTextSubtitleStream` 时按编码判断。
     private static let imageSubtitleCodecs: Set<String> = ["pgssub", "pgs", "hdmv_pgs_subtitle", "dvdsub", "dvd_subtitle", "dvbsub", "dvb_subtitle", "vobsub"]
+
+    /// 杜比视界 Profile；不是杜比视界或服务器未给出时为 nil。
+    public var dolbyVisionProfile: Int? {
+        if let dvProfile, dvProfile > 0 { return dvProfile }
+        guard let subType = extendedVideoSubType?.lowercased(), subType.hasPrefix("doviprofile") else { return nil }
+        let digits = subType.dropFirst("doviprofile".count).prefix { $0.isNumber }
+        // 末位是兼容 ID（81 → Profile 8 / 兼容 1）；Profile 10 写作 101 / 102 等三位数。
+        guard digits.count >= 2 else { return Int(digits) }
+        return Int(digits.dropLast())
+    }
+
+    /// 音轨是否为杜比全景声（服务器在 Profile / 标题中注明，如 `Dolby Digital Plus + Dolby Atmos`）。
+    public var isDolbyAtmos: Bool {
+        [profile, displayTitle, title].contains { $0?.localizedCaseInsensitiveContains("atmos") == true }
+    }
 
     public var isTextSubtitle: Bool {
         if let isTextSubtitleStream { return isTextSubtitleStream }

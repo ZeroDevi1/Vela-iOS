@@ -240,11 +240,13 @@ final class PlayerSession {
         }
         configureTracks(for: stream)
         var initialSubtitle = initialSubtitleChoice(for: stream, preferredSubtitle: options.subtitleStreamIndex)
+        let limitation = ksPlayerLimitation(for: stream, audioStreamIndex: options.audioStreamIndex)
         // 自动模式：要显示 MKV 等系统打不开的容器里的内嵌文本字幕时改用 KSPlayer 直放，由播放器从视频流读取字幕
         // （Android 用 MPV 也是如此）。否则服务器要读完整个文件才能提取字幕，文件在网盘上时实测超过 2 分钟。
+        // 片源有系统内核更擅长的特性（全景声、未直通的杜比视界、原盘）时不切换。
         if let subtitle = initialSubtitle, PlaybackEngineChoice.switchesToKSPlayerForSubtitle(
             mode: mode, requested: requested, serverDownscaled: downscaled,
-            subtitleNeedsPlayer: needsPlayerSideSubtitle(subtitle, in: stream)
+            subtitleNeedsPlayer: needsPlayerSideSubtitle(subtitle, in: stream), limitation: limitation
         ) {
             Log.player.info("内嵌字幕 #\(subtitle) 需要播放器读取，改用 KSPlayer 直放")
             requested = .ksPlayer
@@ -253,7 +255,15 @@ final class PlayerSession {
             initialSubtitle = initialSubtitleChoice(for: stream, preferredSubtitle: options.subtitleStreamIndex ?? subtitle)
         }
         // 服务器即使按直放能力也要求转码（编码不支持等）时，HLS 交给能效更高的系统内核。
-        useEngine(PlaybackEngineChoice.playbackEngine(requested: requested, isDirectPlay: stream.method == .directPlay))
+        let engine = PlaybackEngineChoice.playbackEngine(requested: requested, isDirectPlay: stream.method == .directPlay)
+        useEngine(engine)
+        if let limitation {
+            Log.player.info("片源限制：\(String(describing: limitation), privacy: .public) 请求 \(String(describing: requested), privacy: .public) 实际 \(String(describing: engine), privacy: .public)")
+            // 用户要求 KSPlayer（设置或手动切换）时说明差异；原盘即使要求 KSPlayer 也由系统内核播放。
+            if requested == .ksPlayer, engine == .ksPlayer || limitation == .discImage {
+                controller.showMessage(limitation.message, symbol: "info.circle", duration: .seconds(6))
+            }
+        }
         apply(stream: stream, item: item, startTime: startTime, resetMetadata: true)
         configurePreview(for: stream, item: item)
         if let initialSubtitle {
@@ -535,7 +545,8 @@ final class PlayerSession {
         }
         // 系统内核在转封装播放 MKV 等容器时选了内嵌文本字幕：除非设置为只用系统内核，否则换到 KSPlayer 直放读取字幕。
         if controller.engine.kind == .avFoundation, (engineOverride ?? app?.playerPreferences.engineMode) != .system,
-           maxVideoWidthOverride?.itemID != item.id, needsPlayerSideSubtitle(index, in: stream) {
+           maxVideoWidthOverride?.itemID != item.id, needsPlayerSideSubtitle(index, in: stream),
+           ksPlayerLimitation(for: stream, audioStreamIndex: selectedAudioIndex)?.prefersSystem != true {
             controller.showMessage("切换到 KSPlayer，直接读取内嵌字幕", symbol: "captions.bubble", duration: .seconds(3))
             restart(with: .ksPlayer, subtitle: index)
             return
@@ -745,9 +756,31 @@ final class PlayerSession {
         )
     }
 
+    /// KSPlayer 播放当前片源时不如系统内核之处（阶段 4c 规则见 `PlaybackEngineChoice.ksPlayerLimitation`）。
+    /// - Parameter audioStreamIndex: 要播放的音轨；nil 为服务器默认音轨。
+    private func ksPlayerLimitation(for stream: ResolvedStream, audioStreamIndex: Int?) -> KSPlayerLimitation? {
+        let source = stream.mediaSource
+        let audioIndex = audioStreamIndex ?? stream.audioStreamIndex ?? source.defaultAudioStreamIndex
+        let audio = source.audioStreams.first { $0.index == audioIndex } ?? source.audioStreams.first
+        let traits = PlaybackEngineChoice.SourceTraits(
+            isDiscImage: source.isDiscImage,
+            dolbyVisionProfile: source.videoStream?.dolbyVisionProfile,
+            isAtmosEAC3: audio.map { $0.isDolbyAtmos && $0.codec?.lowercased() == "eac3" } ?? false
+        )
+        return PlaybackEngineChoice.ksPlayerLimitation(traits, passthrough: app?.playerPreferences.enableAtmos ?? true)
+    }
+
+    /// 原盘只能由服务器转封装后用系统内核播放，不能换到 KSPlayer。
+    private func refusesKSPlayerForDisc() -> Bool {
+        guard let stream, stream.mediaSource.isDiscImage else { return false }
+        controller.showMessage(KSPlayerLimitation.discImage.message, symbol: "info.circle", duration: .seconds(4))
+        return true
+    }
+
     /// 换用另一个内核，从当前位置继续（与 Android 版「使用 ExoPlayer / MPV」对应）。
     func switchEngine(to kind: PlaybackEngineKind) {
         guard canSwitchEngine, kind != controller.engine.kind else { return }
+        if kind == .ksPlayer, refusesKSPlayerForDisc() { return }
         let mode: PlaybackEngineMode = switch kind {
         case .avFoundation: .system
         case .ksPlayer: .ksPlayer
@@ -757,7 +790,7 @@ final class PlayerSession {
 
     /// 系统内核播放失败（或解不出画面）时改用 KSPlayer 从当前位置重试。
     func retryWithKSPlayer() {
-        guard controller.engine.kind == .avFoundation else { return }
+        guard controller.engine.kind == .avFoundation, !refusesKSPlayerForDisc() else { return }
         restart(with: .ksPlayer)
     }
 

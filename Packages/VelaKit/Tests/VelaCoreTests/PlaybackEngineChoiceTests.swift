@@ -19,6 +19,37 @@ struct PlaybackEngineChoiceTests {
         #expect(!PlaybackEngineChoice.switchesToKSPlayerForSubtitle(mode: .ksPlayer, requested: .ksPlayer, serverDownscaled: false, subtitleNeedsPlayer: true))
     }
 
+    /// 阶段 4c：片源有系统内核更擅长的特性时，自动模式不为字幕切到 KSPlayer；P7 两个内核相当，照常切换。
+    @Test func autoModeKeepsSystemEngineForSystemOnlyFeatures() {
+        func switches(_ limitation: KSPlayerLimitation?) -> Bool {
+            PlaybackEngineChoice.switchesToKSPlayerForSubtitle(
+                mode: .auto, requested: .system, serverDownscaled: false, subtitleNeedsPlayer: true, limitation: limitation)
+        }
+        #expect(!switches(.atmosObjects))
+        #expect(!switches(.discImage))
+        #expect(!switches(.dolbyVisionDecoded(profile: 5)))
+        #expect(switches(.dolbyVisionProfile7))
+        #expect(switches(nil))
+    }
+
+    @Test func ksPlayerLimitationsBySource() {
+        typealias Traits = PlaybackEngineChoice.SourceTraits
+        func limitation(_ traits: Traits, passthrough: Bool = true) -> KSPlayerLimitation? {
+            PlaybackEngineChoice.ksPlayerLimitation(traits, passthrough: passthrough)
+        }
+        #expect(limitation(Traits()) == nil)
+        // 原盘优先：KSPlayer 无论如何读不了。
+        #expect(limitation(Traits(isDiscImage: true, dolbyVisionProfile: 5, isAtmosEAC3: true)) == .discImage)
+        // 杜比直通时 P5 / P8 由系统做杜比视界映射，与系统内核相同。
+        #expect(limitation(Traits(dolbyVisionProfile: 5)) == nil)
+        #expect(limitation(Traits(dolbyVisionProfile: 8)) == nil)
+        #expect(limitation(Traits(dolbyVisionProfile: 5), passthrough: false) == .dolbyVisionDecoded(profile: 5))
+        #expect(limitation(Traits(dolbyVisionProfile: 8, isAtmosEAC3: true), passthrough: false) == .dolbyVisionDecoded(profile: 8))
+        #expect(limitation(Traits(dolbyVisionProfile: 8, isAtmosEAC3: true)) == .atmosObjects)
+        #expect(limitation(Traits(dolbyVisionProfile: 7)) == .dolbyVisionProfile7)
+        #expect(limitation(Traits(isAtmosEAC3: true), passthrough: false) == .atmosObjects)
+    }
+
     @Test func transcodedStreamAlwaysUsesSystemEngine() {
         #expect(PlaybackEngineChoice.playbackEngine(requested: .ksPlayer, isDirectPlay: true) == .ksPlayer)
         #expect(PlaybackEngineChoice.playbackEngine(requested: .ksPlayer, isDirectPlay: false) == .system)

@@ -53,11 +53,11 @@ private extension PlaybackEngineMode {
     var summary: String {
         switch self {
         case .auto:
-            "推荐。优先 AVPlayer 内核（硬件解码、最省电），MKV 等格式由服务器转封装；需要读取内嵌字幕时自动改用 KSPlayer。AVPlayer 播放失败时可选择「用 KSPlayer 内核重试」。"
+            "推荐。优先 AVPlayer 内核（硬件解码、最省电），MKV 等格式由服务器转封装；需要读取内嵌字幕时自动改用 KSPlayer，但杜比全景声、蓝光原盘等 AVPlayer 更合适的片源保持 AVPlayer。AVPlayer 播放失败时可选择「用 KSPlayer 内核重试」。"
         case .system:
             "始终使用 AVPlayer：原生 HDR / 杜比视界、空间音频、画中画、AirPlay 与 VR 转平面。不能直放的格式交给服务器处理。"
         case .ksPlayer:
-            "基于 FFmpeg 直放原文件，同样硬件解码，支持画中画与 VR 转平面；不支持 AirPlay 视频，杜比视界按 HDR10 显示。"
+            "基于 FFmpeg 直放原文件，同样硬件解码，支持画中画、VR 转平面、HDR10 / HDR10+ 元数据；开启「杜比全景声」时杜比视界 P5 / P8 与杜比音频交给系统解码（全景声只输出 5.1 声道）。不支持 AirPlay 视频与蓝光原盘。"
         }
     }
 }
@@ -210,7 +210,7 @@ struct AudioSettingsView: View {
             Section {
                 Toggle("杜比全景声", isOn: $prefs.enableAtmos)
             } footer: {
-                Text("杜比音频（AC3 / E-AC3，含 E-AC3 Atmos）原样交给系统解码，保留全景声与多声道；关闭后系统内核由服务器转换为 AC3 / AAC，KSPlayer 自行解码为 PCM。下次起播生效。")
+                Text("杜比音频（AC3 / E-AC3，含 E-AC3 Atmos）原样交给系统解码，保留全景声与多声道；KSPlayer 下同时把杜比视界 P5 / P8 交给系统解码（全景声只输出 5.1 声道）。关闭后系统内核由服务器转换为 AC3 / AAC，KSPlayer 自行解码为 PCM，杜比视界只显示基础层。下次起播生效。")
             }
             Section {
                 Toggle("原生音频", isOn: $prefs.nativeAudio)

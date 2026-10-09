@@ -42,11 +42,42 @@ public enum PlaybackEngineChoice {
     }
 
     /// 自动模式下，按系统内核请求后要显示的字幕需要播放器读取（见 `needsPlayerSideSubtitle`）时改用 KSPlayer。
-    /// 用户选了「系统」时不切换（字幕交给服务器提取，可能较慢）。
+    /// 用户选了「系统」时不切换（字幕交给服务器提取，可能较慢）；片源有系统内核更擅长的特性
+    /// （`KSPlayerLimitation.prefersSystem`）时也不切换，画质 / 音质优先于字幕等待时间。
     public static func switchesToKSPlayerForSubtitle(
-        mode: PlaybackEngineMode, requested: Engine, serverDownscaled: Bool, subtitleNeedsPlayer: Bool
+        mode: PlaybackEngineMode, requested: Engine, serverDownscaled: Bool, subtitleNeedsPlayer: Bool,
+        limitation: KSPlayerLimitation? = nil
     ) -> Bool {
         requested == .system && mode == .auto && !serverDownscaled && subtitleNeedsPlayer
+            && limitation?.prefersSystem != true
+    }
+
+    /// 片源中与内核选择有关的特性（来自服务器媒体信息）。
+    public struct SourceTraits: Sendable, Equatable {
+        /// 蓝光 / DVD 原盘（BDMV、VIDEO_TS 或 ISO）。
+        public var isDiscImage: Bool
+        /// 杜比视界 Profile；非杜比视界为 nil。
+        public var dolbyVisionProfile: Int?
+        /// 要播放的音轨是 E-AC-3 杜比全景声（TrueHD 全景声两个内核都只能解码为 PCM，不计入）。
+        public var isAtmosEAC3: Bool
+
+        public init(isDiscImage: Bool = false, dolbyVisionProfile: Int? = nil, isAtmosEAC3: Bool = false) {
+            self.isDiscImage = isDiscImage
+            self.dolbyVisionProfile = dolbyVisionProfile
+            self.isAtmosEAC3 = isAtmosEAC3
+        }
+    }
+
+    /// KSPlayer 播放该片源时不如系统内核之处；nil 为没有差别（HDR10 / HDR10+ / 杜比直通下的杜比视界 P5、P8 等）。
+    /// - Parameter passthrough: KSPlayer 杜比直通是否开启（设置「杜比全景声」）。
+    public static func ksPlayerLimitation(_ traits: SourceTraits, passthrough: Bool) -> KSPlayerLimitation? {
+        if traits.isDiscImage { return .discImage }
+        if let profile = traits.dolbyVisionProfile, profile == 5 || profile == 8, !passthrough {
+            return .dolbyVisionDecoded(profile: profile)
+        }
+        if traits.isAtmosEAC3 { return .atmosObjects }
+        if traits.dolbyVisionProfile == 7 { return .dolbyVisionProfile7 }
+        return nil
     }
 
     /// 实际使用的内核：只有按直放内核请求且服务器允许直放原文件时才用该内核，否则（服务器转码为 HLS）用系统内核。
@@ -68,6 +99,40 @@ public enum PlaybackEngineChoice {
         reasons.contains {
             $0.hasPrefix("Video") || $0.contains("Bitrate") || $0.hasPrefix("Subtitle") || $0.hasPrefix("Interlaced")
                 || $0.hasPrefix("RefFrames") || $0.hasPrefix("AnamorphicVideo")
+        }
+    }
+}
+
+/// KSPlayer 相对系统内核的限制（阶段 4c）：自动模式据此留在系统内核，用户手动使用 KSPlayer 时提示。
+public enum KSPlayerLimitation: Sendable, Equatable {
+    /// 原盘：KSPlayer 读不了原盘结构（GPL 版不含蓝光读取），只能由服务器转封装后用系统内核播放。
+    case discImage
+    /// 杜比视界 P5 / P8 未开杜比直通：KSPlayer 只解码基础层（P5 为 IPTPQc2，颜色异常；P8 按 HDR10 显示）。
+    case dolbyVisionDecoded(profile: Int)
+    /// E-AC-3 杜比全景声：KSPlayer 直通时系统渲染器只输出 5.1 床声道（`AVSampleBufferAudioRenderer` 不开放全景声对象渲染），
+    /// 关闭直通则解码为 PCM；系统内核（AVPlayer）可渲染全景声对象。
+    case atmosObjects
+    /// 杜比视界 P7（蓝光双层）：Apple 系统不支持，KSPlayer 按 HDR10 基础层播放，与系统内核经服务器转码的效果相当。
+    case dolbyVisionProfile7
+
+    /// 自动模式是否因此留在系统内核。P7 两个内核都只能按基础层播放，不影响选择。
+    public var prefersSystem: Bool {
+        self != .dolbyVisionProfile7
+    }
+
+    /// 播放页提示。
+    public var message: String {
+        switch self {
+        case .discImage:
+            "蓝光 / DVD 原盘由服务器转封装播放，已使用系统内核"
+        case .dolbyVisionDecoded(profile: 5):
+            "未开启杜比直通，KSPlayer 播放杜比视界 Profile 5 颜色会异常。请在「音频设置」开启「杜比全景声」或使用系统内核"
+        case .dolbyVisionDecoded:
+            "未开启杜比直通，KSPlayer 按 HDR10 显示杜比视界。开启「音频设置 → 杜比全景声」或使用系统内核可获得杜比视界"
+        case .atmosObjects:
+            "KSPlayer 下杜比全景声只输出 5.1 声道，完整全景声请使用系统内核"
+        case .dolbyVisionProfile7:
+            "杜比视界 Profile 7 按 HDR10 基础层播放（系统不支持 Profile 7）"
         }
     }
 }

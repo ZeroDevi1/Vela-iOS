@@ -215,4 +215,33 @@ struct SubtitleDecodingTests {
         #expect(MediaServerClient.decodeSubtitleText(data) == "沈家灭门")
         #expect(MediaServerClient.decodeSubtitleText(Data("字幕".utf8)) == "字幕")
     }
+
+    /// 原盘识别：Jellyfin 的 `VideoType` / `IsoType`，字段缺失时按容器与路径。
+    @Test func detectsDiscImages() throws {
+        func source(_ fields: String) throws -> MediaSourceInfo {
+            try JSONDecoder().decode(MediaSourceInfo.self, from: Data("{\"Id\":\"a\",\(fields)}".utf8))
+        }
+        #expect(try source(#""VideoType":"BluRay","Container":"m2ts""#).isDiscImage)
+        #expect(try source(#""IsoType":"Dvd""#).isDiscImage)
+        #expect(try source(#""Container":"iso""#).isDiscImage)
+        #expect(try source(#""Path":"D:\\Movies\\Film\\BDMV""#).isDiscImage)
+        #expect(try source(#""Path":"/media/Film/BDMV/index.bdmv""#).isDiscImage)
+        #expect(try source(#""Path":"/media/Film.ISO""#).isDiscImage)
+        #expect(try !source(#""VideoType":"VideoFile","Container":"mkv","Path":"/media/Film.mkv""#).isDiscImage)
+    }
+
+    /// 杜比视界 Profile（Jellyfin `DvProfile`、Emby `ExtendedVideoSubType`）与全景声音轨识别。
+    @Test func parsesDolbyVisionProfileAndAtmos() throws {
+        func stream(_ fields: String) throws -> MediaStreamInfo {
+            try JSONDecoder().decode(MediaStreamInfo.self, from: Data("{\"Index\":0,\"Type\":\"Video\",\(fields)}".utf8))
+        }
+        #expect(try stream(#""DvProfile":8"#).dolbyVisionProfile == 8)
+        #expect(try stream(#""ExtendedVideoSubType":"DoviProfile81""#).dolbyVisionProfile == 8)
+        #expect(try stream(#""ExtendedVideoSubType":"DoviProfile76""#).dolbyVisionProfile == 7)
+        #expect(try stream(#""ExtendedVideoSubType":"DoviProfile50""#).dolbyVisionProfile == 5)
+        #expect(try stream(#""ExtendedVideoSubType":"None""#).dolbyVisionProfile == nil)
+        #expect(try stream(#""Profile":"Dolby Digital Plus + Dolby Atmos""#).isDolbyAtmos)
+        #expect(try stream(#""DisplayTitle":"English EAC3 5.1 Atmos""#).isDolbyAtmos)
+        #expect(try !stream(#""Profile":"Dolby Digital Plus""#).isDolbyAtmos)
+    }
 }
