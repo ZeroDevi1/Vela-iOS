@@ -170,6 +170,23 @@ extension MediaServerClient {
         return result.items.map { $0.toMediaItem(serverID: serverID) }
     }
 
+    /// 批量下载用：某一季（`seasonID` 为 nil 时全剧）的单集及其第一个媒体源（文件大小、码率、音轨），
+    /// 用于下载前估算占用空间与选择音轨。
+    public func episodesWithMediaSources(seriesID: String, seasonID: String?) async throws -> [ItemWithMediaSource] {
+        var query: [URLQueryItem] = [
+            .init(name: "UserId", value: userID),
+            .init(name: "Fields", value: "MediaSources,ParentBackdropItemId,ParentBackdropImageTags")
+        ]
+        if let seasonID { query.append(.init(name: "SeasonId", value: seasonID)) }
+        let result = try await httpClient.decode(
+            QueryResult<BaseItemDTO>.self,
+            APIRequest("/Shows/\(seriesID)/Episodes", query: query),
+            baseURL: baseURL,
+            headers: requestHeaders
+        )
+        return result.items.map { ItemWithMediaSource(item: $0.toMediaItem(serverID: serverID), source: $0.mediaSources?.first) }
+    }
+
     public func similarItems(itemID: String, limit: Int = 20) async throws -> [MediaItem] {
         let result = try await httpClient.decode(
             QueryResult<BaseItemDTO>.self,
@@ -281,4 +298,11 @@ extension MediaServerClient {
             ]
         )
     }
+}
+
+/// 条目与其第一个媒体源（服务器未返回时为 nil）。
+public struct ItemWithMediaSource: Sendable, Identifiable {
+    public var item: MediaItem
+    public var source: MediaSourceInfo?
+    public var id: String { item.id }
 }

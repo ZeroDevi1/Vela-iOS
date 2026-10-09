@@ -189,13 +189,30 @@ struct SeasonEpisodesSection: View {
     @Environment(\.velaLayout) private var layout
     @State private var rangeIndex = 0
     @State private var scrollTarget: String?
+    @State private var showsSeasonDownload = false
 
     private static var pageSize: Int { EpisodePaging.pageSize }
     private static let cardSpacing: CGFloat = 20
 
     var body: some View {
         VStack(alignment: .leading, spacing: VelaTheme.Spacing.m) {
-            seasonMenu.velaPageMargin()
+            HStack {
+                seasonMenu
+                Spacer()
+                if model.selectedSeasonID != nil {
+                    Button("下载本季", systemImage: "arrow.down.circle") { showsSeasonDownload = true }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.bordered)
+                        .buttonBorderShape(.circle)
+                }
+            }
+            .velaPageMargin()
+            .sheet(isPresented: $showsSeasonDownload) {
+                SeasonDownloadSheet(
+                    seriesID: model.item.id, seasonID: model.selectedSeasonID,
+                    title: "下载 \(selectedSeason?.name ?? model.item.name)", serverID: model.item.serverID
+                )
+            }
             switch model.seasonEpisodes {
             case .loaded(let episodes):
                 if episodes.isEmpty {

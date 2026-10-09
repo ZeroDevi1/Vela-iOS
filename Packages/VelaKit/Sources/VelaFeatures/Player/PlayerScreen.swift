@@ -67,7 +67,10 @@ public struct PlayerScreen: View {
                 .allowsHitTesting(false)
             }
 
-            SubtitleOverlay(controller: session.controller, preferences: app.playerPreferences, fitsSmallWindow: isMiniWindow)
+            // macOS 系统画中画期间窗口里没有画面，字幕改由小窗里的码流字幕轨显示。
+            if !isSystemPictureInPictureOnMac {
+                SubtitleOverlay(controller: session.controller, preferences: app.playerPreferences, fitsSmallWindow: isMiniWindow)
+            }
 
             if isMiniWindow {
                 #if os(macOS)
@@ -189,6 +192,14 @@ public struct PlayerScreen: View {
     }
 
     /// macOS 小窗模式（iOS 恒为 false）。
+    private var isSystemPictureInPictureOnMac: Bool {
+        #if os(macOS)
+        session.controller.isPictureInPictureActive
+        #else
+        false
+        #endif
+    }
+
     private var isMiniWindow: Bool {
         #if os(macOS)
         session.controller.isMiniWindow

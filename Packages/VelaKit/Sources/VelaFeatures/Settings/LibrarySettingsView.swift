@@ -8,7 +8,7 @@ struct LibrarySettingsView: View {
     var body: some View {
         @Bindable var prefs = app.libraryPreferences
         Form {
-            Section("首页配置") {
+            Section {
                 Toggle("显示我的媒体", isOn: $prefs.showMyMedia)
                 Toggle("显示轮播图片", isOn: $prefs.showHero)
                 if prefs.showHero {
@@ -21,8 +21,15 @@ struct LibrarySettingsView: View {
                         .pickerStyle(.segmented)
                         .labelsHidden()
                     }
+                    Toggle("轮播自动播放预告片", isOn: $prefs.autoplayTrailers)
                 }
                 Toggle("隐藏已观看项目", isOn: $prefs.hideWatched)
+            } header: {
+                Text("首页配置")
+            } footer: {
+                if prefs.showHero {
+                    Text("预告片静音播放，只使用服务器上的本地预告片，蜂窝网络或低数据模式下不播放。")
+                }
             }
 
             Section("继续观看") {

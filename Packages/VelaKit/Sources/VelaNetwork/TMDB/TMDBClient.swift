@@ -102,6 +102,13 @@ public struct TMDBClient: Sendable {
         )
     }
 
+    /// 只取条目基本信息（标题、海报、日期），不附带演职员与推荐；获奖作品列表按 TMDB id 补全用。
+    public func title(_ type: CatalogTitle.MediaType, id: Int) async throws -> CatalogTitle {
+        let dto: DetailDTO = try await get("\(type.rawValue)/\(id)", [:])
+        guard let title = dto.base.toTitle(defaultType: type) else { throw TMDBError.http(404) }
+        return title
+    }
+
     /// 按 IMDb id 查找（豆瓣条目只有 IMDb id 时换算 TMDB 身份）。
     public func find(imdbID: String) async throws -> [CatalogTitle] {
         guard imdbID.range(of: #"^tt[0-9]+$"#, options: .regularExpression) != nil else { return [] }

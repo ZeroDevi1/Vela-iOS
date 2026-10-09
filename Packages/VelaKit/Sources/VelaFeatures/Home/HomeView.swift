@@ -19,6 +19,15 @@ struct HomeView: View {
     @State private var path = NavigationPath()
 
     var body: some View {
+        if app.network.isOnline {
+            onlineBody
+        } else {
+            // 无网络：首页回退到已下载内容（与 Android 版一致），恢复联网后自动回到服务器首页。
+            NavigationStack { DownloadsView(isOffline: true) }
+        }
+    }
+
+    private var onlineBody: some View {
         NavigationStack(path: $path) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: VelaTheme.Spacing.xl) {
@@ -337,11 +346,15 @@ private struct HomeCarousel: View {
         var visible: Slot?
         var isScrolling: Bool
         var itemIDs: [String]
+        var trailerPlaying: Bool
     }
 
     @State private var position: ScrollPosition
     @State private var visible: Slot?
     @State private var isScrolling = false
+    /// 居中卡片正在播放预告片：暂停自动翻页，播完后立即翻到下一页。
+    @State private var trailerPlaying = false
+    @Environment(AppModel.self) private var app
 
     private static let interval: Duration = .seconds(8)
 
@@ -397,6 +410,18 @@ private struct HomeCarousel: View {
                                 }
                             }
                             .frame(width: cardWidth, height: proxy.size.height)
+                            .overlay {
+                                if slot == visible, !isScrolling, app.libraryPreferences.autoplayTrailers {
+                                    InlineTrailerOverlay(item: items[slot.index]) {
+                                        trailerPlaying = true
+                                    } onFinish: {
+                                        guard trailerPlaying else { return }
+                                        trailerPlaying = false
+                                        advance()
+                                    }
+                                    .clipShape(.rect(cornerRadius: immersive ? 0 : 28))
+                                }
+                            }
                         }
                         .buttonStyle(.plain)
                     }
@@ -424,19 +449,25 @@ private struct HomeCarousel: View {
                     .padding(.bottom, VelaTheme.Spacing.l)
             }
         }
-        .task(id: AdvanceKey(visible: visible, isScrolling: isScrolling, itemIDs: items.map(\.id))) {
+        .task(id: AdvanceKey(visible: visible, isScrolling: isScrolling, itemIDs: items.map(\.id), trailerPlaying: trailerPlaying)) {
             try? await Task.sleep(for: Self.interval)
-            guard !Task.isCancelled, !isScrolling, items.count > 1 else { return }
-            let current = visible ?? Slot(copy: middle, index: 0)
-            let next = current.index + 1 < items.count
-                ? Slot(copy: current.copy, index: current.index + 1)
-                : Slot(copy: min(current.copy + 1, copies - 1), index: 0)
-            withAnimation(.easeInOut(duration: 0.6)) { position.scrollTo(id: next, anchor: .center) }
+            guard !Task.isCancelled, !isScrolling, !trailerPlaying else { return }
+            advance()
         }
+        .onChange(of: visible) { trailerPlaying = false }
         .onChange(of: items.map(\.id)) {
             visible = nil
             position.scrollTo(id: Slot(copy: middle, index: 0), anchor: .center)
         }
+    }
+
+    private func advance() {
+        guard items.count > 1 else { return }
+        let current = visible ?? Slot(copy: middle, index: 0)
+        let next = current.index + 1 < items.count
+            ? Slot(copy: current.copy, index: current.index + 1)
+            : Slot(copy: min(current.copy + 1, copies - 1), index: 0)
+        withAnimation(.easeInOut(duration: 0.6)) { position.scrollTo(id: next, anchor: .center) }
     }
 
     /// 停在首尾两份副本时跳回中间一份的同一条目（无动画，画面不变）。

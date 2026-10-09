@@ -297,7 +297,7 @@ struct MoviePilotConnectionForm: View {
             } header: {
                 Text(app.subscriptions.isConnected ? "重新连接" : "连接 MoviePilot")
             } footer: {
-                Text("密码只用于换取访问令牌，不会保存；令牌保存在本机钥匙串。")
+                Text("访问令牌与密码保存在本机钥匙串，令牌过期后用密码自动重新登录；填写了两步验证码的账号不保存密码，过期后需重新连接。")
             }
             if let error {
                 Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red)

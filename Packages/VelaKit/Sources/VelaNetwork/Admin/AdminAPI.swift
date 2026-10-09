@@ -94,6 +94,35 @@ public struct ScheduledTask: Decodable, Identifiable, Sendable {
     }
 }
 
+/// 服务器活动日志的一条记录（`/System/ActivityLog/Entries`，Jellyfin 与 Emby 相同）。
+public struct ActivityLogEntry: Decodable, Identifiable, Sendable {
+    public var id: Int64
+    public var name: String
+    public var overview: String?
+    public var shortOverview: String?
+    /// 例如 `SessionStarted`、`VideoPlayback`、`UserCreated`。
+    public var type: String?
+    public var date: Date?
+    /// `Information` / `Warning` / `Error`（Emby 为 `Info` / `Warn` / `Error`）。
+    public var severity: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id = "Id", name = "Name", overview = "Overview", shortOverview = "ShortOverview"
+        case type = "Type", date = "Date", severity = "Severity"
+    }
+
+    /// 严重级别归一：警告或错误时返回对应值，信息类为 nil。
+    public var level: Level? {
+        switch severity?.lowercased() {
+        case "warning", "warn": .warning
+        case "error", "critical", "fatal": .error
+        default: nil
+        }
+    }
+
+    public enum Level: Sendable { case warning, error }
+}
+
 private struct UserPolicyDTO: Decodable {
     struct Policy: Decodable {
         var isAdministrator: Bool?
@@ -133,6 +162,19 @@ extension MediaServerClient {
 
     public func runScheduledTask(id: String) async throws {
         _ = try await httpClient.data(APIRequest("/ScheduledTasks/Running/\(id)", method: .post), baseURL: baseURL, headers: requestHeaders)
+    }
+
+    /// 活动日志（新的在前），分页读取；返回本页记录与总数。
+    public func activityLog(startIndex: Int, limit: Int = 50) async throws -> (entries: [ActivityLogEntry], total: Int?) {
+        let result = try await httpClient.decode(
+            QueryResult<ActivityLogEntry>.self,
+            APIRequest("/System/ActivityLog/Entries", query: [
+                .init(name: "StartIndex", value: String(startIndex)),
+                .init(name: "Limit", value: String(limit)),
+            ]),
+            baseURL: baseURL, headers: requestHeaders
+        )
+        return (result.items, result.totalRecordCount)
     }
 
     /// 扫描全部媒体库。

@@ -21,6 +21,12 @@ public struct PlaybackSegment: Hashable, Sendable {
         self.end = end
     }
 
+    /// 服务器区段优先；社区来源只补充服务器没有的类型（与 Android `applyingPlaybackSegments(overrideExisting = false)` 一致）。
+    public static func merging(server: [PlaybackSegment], community: [PlaybackSegment]) -> [PlaybackSegment] {
+        let kinds = Set(server.map(\.kind))
+        return (server + community.filter { !kinds.contains($0.kind) }).sorted { $0.start < $1.start }
+    }
+
     /// `time` 是否落在区段内。区段起点前 0.5 秒也算，抵消 0.25 秒进度刷新的延迟。
     public func contains(_ time: TimeInterval, duration: TimeInterval) -> Bool {
         let upper = end ?? (duration > 0 ? duration : .greatestFiniteMagnitude)

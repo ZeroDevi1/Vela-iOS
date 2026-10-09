@@ -1,7 +1,6 @@
 import CoreGraphics
 import Foundation
 import ImageIO
-import Network
 import Photos
 import UniformTypeIdentifiers
 import VelaCore
@@ -77,25 +76,6 @@ enum ScreenshotSaver {
             Log.player.error("截图保存到相册失败：\(error.localizedDescription, privacy: .public)")
             return false
         }
-    }
-}
-
-// MARK: - 网络类型
-
-/// 当前网络是否为蜂窝 / 个人热点 / 低数据模式，用于选择 Wi-Fi 或流量下的磁盘预缓存大小。
-@MainActor
-final class NetworkStatus {
-    static let shared = NetworkStatus()
-
-    private(set) var isExpensive = false
-    private let monitor = NWPathMonitor()
-
-    private init() {
-        monitor.pathUpdateHandler = { path in
-            let expensive = path.isExpensive || path.isConstrained
-            Task { @MainActor in NetworkStatus.shared.isExpensive = expensive }
-        }
-        monitor.start(queue: DispatchQueue(label: "app.vela.network-status"))
     }
 }
 

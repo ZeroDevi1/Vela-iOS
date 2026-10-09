@@ -95,6 +95,15 @@ public protocol VideoDecodeDiagnosing: PlaybackEngine {
     var videoDecodeIssue: String? { get }
 }
 
+/// 码流自带字幕轨（服务器 HLS 的 `SUBTITLES` 组，见 `ResolvedStream.urlWithSubtitlesInManifest`）的内核：
+/// 平时字幕由应用绘制、字幕轨不选中；系统画中画（只渲染播放器自己的字幕轨）期间选中对应的轨。
+@MainActor
+public protocol ManifestSubtitleSelecting: PlaybackEngine {
+    /// 选中码流中的字幕轨：优先按名称（服务器写入的 `NAME`，即字幕流的显示标题）匹配，否则按播放列表中的序号；
+    /// `ordinal` 为 nil 时取消选中。返回是否成功（码流没有字幕组或该轨时为 false）。
+    func selectManifestSubtitle(ordinal: Int?, name: String?) async -> Bool
+}
+
 /// 能报告送显画面 HDR10 静态元数据的内核（播放信息显示）。系统内核由 AVPlayer 内部处理，不报告。
 @MainActor
 public protocol HDRMetadataReporting: PlaybackEngine {

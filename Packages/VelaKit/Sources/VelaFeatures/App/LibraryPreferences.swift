@@ -11,6 +11,8 @@ public final class LibraryPreferences {
     // MARK: 首页
     public var showMyMedia: Bool { didSet { save(showMyMedia, "library.showMyMedia") } }
     public var showHero: Bool { didSet { save(showHero, "library.showHero") } }
+    /// 轮播居中的条目自动静音播放服务器上的本地预告片（与 Android 版一致：默认关闭，只在非蜂窝 / 非低数据模式下播放）。
+    public var autoplayTrailers: Bool { didSet { save(autoplayTrailers, "library.autoplayTrailers") } }
     /// 首页「最近添加」等分区隐藏已看完的条目（继续观看不受影响）。
     public var hideWatched: Bool { didSet { save(hideWatched, "library.hideWatched") } }
 
@@ -55,6 +57,7 @@ public final class LibraryPreferences {
         }
         showMyMedia = value("library.showMyMedia", true)
         showHero = value("library.showHero", true)
+        autoplayTrailers = value("library.autoplayTrailers", false)
         hideWatched = value("library.hideWatched", false)
         showResume = value("library.showResume", true)
         showNextUp = value("library.showNextUp", true)

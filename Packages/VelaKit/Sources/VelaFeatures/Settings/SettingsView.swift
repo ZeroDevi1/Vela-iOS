@@ -56,6 +56,11 @@ public struct SettingsView: View {
                     } label: {
                         LabeledContent("MoviePilot", value: app.subscriptions.isConnected ? "已连接" : "未连接")
                     }
+                    NavigationLink {
+                        SeerrConnectionForm()
+                    } label: {
+                        LabeledContent("Seerr", value: app.seerr.connection(for: app.servers.activeServer?.id) != nil ? "已连接" : "未连接")
+                    }
                 }
 
                 Section("同步") {

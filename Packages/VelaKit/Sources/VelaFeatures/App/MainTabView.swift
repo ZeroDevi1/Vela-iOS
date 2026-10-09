@@ -81,15 +81,24 @@ struct MainTabView: View {
     /// iPad 常规宽度下系统 `TabView` 会把标签栏画在顶部：对 `TabView` 声明紧凑宽度让它画成底部悬浮标签栏，
     /// 各页再恢复真实的宽度档（详情页宽屏版式、播放器面板等依赖它）。
     private var shell: some View {
-        TabView(selection: $selection) {
+        // 无网络时只保留首页（显示已下载内容）与设置，与 Android 版一致。
+        let online = app.network.isOnline
+        return TabView(selection: $selection) {
             Tab("首页", systemImage: "house", value: AppTab.home) { page(.home) }
-            Tab("我的媒体", systemImage: "play.square.stack", value: AppTab.media) { page(.media) }
-            Tab("收藏", systemImage: "heart", value: AppTab.favorites) { page(.favorites) }
+            if online {
+                Tab("我的媒体", systemImage: "play.square.stack", value: AppTab.media) { page(.media) }
+                Tab("收藏", systemImage: "heart", value: AppTab.favorites) { page(.favorites) }
+            }
             Tab("设置", systemImage: "gearshape", value: AppTab.settings) { page(.settings) }
-            Tab(value: AppTab.search, role: .search) { page(.search) }
+            if online {
+                Tab(value: AppTab.search, role: .search) { page(.search) }
+            }
         }
         .tabBarMinimizeBehavior(.onScrollDown)
         .environment(\.horizontalSizeClass, .compact)
+        .onChange(of: online) { _, isOnline in
+            if !isOnline, selection != .home, selection != .settings { selection = .home }
+        }
     }
     #else
     /// 系统侧边栏容器 + 自绘内容。系统在工具栏提供显示 / 隐藏边栏按钮，各页不再画自己的边栏按钮。

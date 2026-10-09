@@ -17,6 +17,9 @@ struct MyMediaView: View {
                     ContentUnavailableView("没有媒体库", systemImage: "square.stack")
                 case .loaded(let items):
                     ScrollView {
+                        // 发现入口：为你推荐、已观看、获奖作品（与 Android 版「发现」页一致）。
+                        DiscoverFeedEntries()
+                            .padding(.top, VelaTheme.Spacing.s)
                         LazyVGrid(columns: columns, spacing: VelaTheme.Spacing.xl) {
                             ForEach(items) { library in
                                 NavigationLink(value: LibraryRoute(library: library)) {
@@ -41,6 +44,8 @@ struct MyMediaView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) { ServerSwitcherMenu() }
             }
+            .navigationDestination(for: DiscoverFeed.self) { DiscoverFeedView(feed: $0) }
+            .navigationDestination(for: CatalogTitle.self) { CatalogDetailView(title: $0) }
             .navigationDestination(for: LibraryRoute.self) { LibraryItemsView(library: $0.library, initialSort: $0.initialSort, mixedContentView: app.libraryPreferences.mixedContentView) }
             .detailDestinations()
             .refreshable { await load() }

@@ -67,10 +67,14 @@ public final class PlayerController {
     /// 正在从画中画恢复界面（系统已调用恢复回调、尚未结束画中画）。
     public internal(set) var isRestoringPictureInPicture = false
     #if os(macOS)
-    /// macOS 的「画中画」是播放器窗口原地变成的置顶小窗（`MiniPlayerWindow`），不走系统画中画：
-    /// 样本缓冲区画中画在 macOS 上不随小窗缩放，原生画中画又不显示应用渲染的字幕（见 PLAN 第 13、14 轮）。
+    /// macOS 的「画中画」按钮是播放器窗口原地变成的置顶小窗（`MiniPlayerWindow`），字幕由应用绘制；
+    /// 另有菜单项「系统画中画」（`requestSystemPictureInPicture`）：只支持系统内核的原生画中画（样本缓冲区画中画在
+    /// macOS 上不随小窗缩放，见 PLAN 第 13 轮），字幕靠码流自带的字幕轨（`manifestSubtitle`）。
     public var isMiniWindow = false
     #endif
+    /// 当前字幕在码流自带字幕组中的位置（序号与名称，见 `ManifestSubtitleSelecting`）；没有对应轨时返回 nil。
+    /// 由会话提供，系统画中画（macOS）开始时据此选中字幕轨。
+    @ObservationIgnored public var manifestSubtitle: (() -> (ordinal: Int, name: String?)?)?
 
     /// 画中画事件，由上层决定播放页的去留：开始时可收起播放页（会话继续由上层持有）；
     /// 恢复时重新呈现播放页，完成后调用传入的回调；结束时参数表示是否经由「恢复」结束（否则为用户关闭小窗）。
@@ -436,6 +440,14 @@ public final class PlayerController {
         pictureInPictureToggleRequest &+= 1
         #endif
     }
+
+    #if os(macOS)
+    /// macOS 菜单「系统画中画」：先退出置顶小窗，再交给渲染表面启停系统画中画。
+    public func requestSystemPictureInPicture() {
+        isMiniWindow = false
+        pictureInPictureToggleRequest &+= 1
+    }
+    #endif
 
     // MARK: - 拖动进度
 

@@ -379,9 +379,21 @@ final class PlayerSession {
         let video = stream.mediaSource.videoStream
         Log.player.info("视频流：\(video?.codec ?? "-", privacy: .public) tag=\(video?.codecTag ?? "-", privacy: .public) range=\(video?.videoRangeType ?? "-", privacy: .public) depth=\(video?.bitDepth ?? 0) container=\(stream.mediaSource.container ?? "-", privacy: .public)")
         let vrLayout = Self.vrLayout(stream: stream, item: item)
+        #if os(macOS)
+        // 系统画中画只显示码流自带的字幕轨：转封装 HLS 带上服务器的字幕组（平时不选中，字幕仍由应用绘制）。
+        let url = controller.engine.kind == .avFoundation ? stream.urlWithSubtitlesInManifest : stream.url
+        controller.manifestSubtitle = { [weak self] in
+            guard let self, self.localSubtitleName == nil, let stream = self.stream, let index = self.selectedSubtitleIndex,
+                  let ordinal = stream.manifestSubtitleOrdinal(streamIndex: index) else { return nil }
+            let name = stream.mediaSource.subtitleStreams.first { $0.index == index }?.displayTitle
+            return (ordinal, name)
+        }
+        #else
+        let url = stream.url
+        #endif
         controller.load(
             PlaybackSource(
-                url: stream.url,
+                url: url,
                 title: item.seriesName ?? item.name,
                 subtitle: item.episodeLabel.map { "\($0) · \(item.name)" },
                 startTime: startTime,

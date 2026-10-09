@@ -27,6 +27,9 @@ struct CatalogDetailView: View {
                     if app.subscriptions.isConnected {
                         SubscribeControl(title: shown, seasonCount: detail?.numberOfSeasons)
                     }
+                    if app.seerr.connection(for: app.servers.activeServer?.id) != nil {
+                        SeerrRequestControl(title: shown)
+                    }
                     availability
                     if let tagline = detail?.tagline {
                         Text(tagline).font(.headline)

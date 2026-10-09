@@ -58,6 +58,9 @@ struct ServerAdminView: View {
             if let address = info?.localAddress { LabeledContent("局域网地址", value: address) }
             if info?.hasPendingRestart == true { Label("有待重启的更新", systemImage: "arrow.clockwise.circle").foregroundStyle(.orange) }
             Button("扫描全部媒体库", systemImage: "arrow.triangle.2.circlepath") { confirmScan = true }
+            NavigationLink { ActivityLogView(serverID: serverID) } label: {
+                Label("活动日志", systemImage: "list.bullet.rectangle")
+            }
         }
 
         Section("活动会话") {
@@ -188,5 +191,103 @@ private struct TaskRow: View {
             if let end = result.endTime { parts.append(end.formatted(.relative(presentation: .named))) }
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// 服务器活动日志（与 Android 版服务器信息页一致）：时间倒序，滚动到底部继续加载。
+private struct ActivityLogView: View {
+    let serverID: String
+    @Environment(AppModel.self) private var app
+    @State private var entries: [ActivityLogEntry] = []
+    @State private var total: Int?
+    @State private var isLoading = false
+    @State private var error: String?
+
+    private static let pageSize = 50
+
+    var body: some View {
+        List {
+            ForEach(entries) { entry in
+                ActivityRow(entry: entry)
+                    .onAppear { if entry.id == entries.last?.id { Task { await loadMore() } } }
+            }
+            if isLoading {
+                ProgressView().frame(maxWidth: .infinity)
+            } else if let error {
+                Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
+            } else if entries.isEmpty {
+                Text("没有活动记录").foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("活动日志")
+        .refreshable { await reload() }
+        .task { await reload() }
+    }
+
+    private var hasMore: Bool { total.map { entries.count < $0 } ?? false }
+
+    private func reload() async {
+        entries = []
+        total = nil
+        await load(startIndex: 0)
+    }
+
+    private func loadMore() async {
+        guard hasMore, !isLoading else { return }
+        await load(startIndex: entries.count)
+    }
+
+    private func load(startIndex: Int) async {
+        guard let client = app.client(forServerID: serverID) else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let page = try await client.activityLog(startIndex: startIndex, limit: Self.pageSize)
+            let known = Set(entries.map(\.id))
+            entries += page.entries.filter { !known.contains($0.id) }
+            // 服务器未给总数时按本页是否满页判断还有没有更多。
+            total = page.total ?? (page.entries.count == Self.pageSize ? entries.count + 1 : entries.count)
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+}
+
+private struct ActivityRow: View {
+    let entry: ActivityLogEntry
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: symbol)
+                .foregroundStyle(color)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(entry.name).font(.subheadline)
+                if let detail = entry.shortOverview ?? entry.overview, !detail.isEmpty {
+                    Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                }
+                if let date = entry.date {
+                    Text(date, format: .dateTime.month().day().hour().minute()).font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var symbol: String {
+        switch entry.level {
+        case .error: "xmark.octagon.fill"
+        case .warning: "exclamationmark.triangle.fill"
+        case nil: "info.circle"
+        }
+    }
+
+    private var color: Color {
+        switch entry.level {
+        case .error: .red
+        case .warning: .orange
+        case nil: .secondary
+        }
     }
 }

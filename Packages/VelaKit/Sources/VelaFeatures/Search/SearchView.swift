@@ -4,7 +4,8 @@ import VelaData
 import VelaDesignSystem
 import VelaNetwork
 
-/// 聚合搜索：同时搜索所有非私密服务器，结果按来源分区；单个源失败只在该分区提示。
+/// 聚合搜索：同时搜索所有非私密服务器，结果按电影 / 剧集 / 单集分类（与 Android 版一致），
+/// 按标题与关键词的匹配程度排序（`SearchRanking`）；单个源失败单独提示。
 struct SearchView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.isCompactLayout) private var isCompact
@@ -15,6 +16,8 @@ struct SearchView: View {
     /// 目录源（TMDB / 豆瓣）的结果：不是库条目，进入目录详情后再按 provider id 匹配服务器资源。
     @State private var tmdbResults: Result<[CatalogTitle], any Error>?
     @State private var doubanResults: Result<[DoubanTitle], any Error>?
+    /// 类型筛选（至少保留一项）。
+    @State private var kinds: Set<SearchKind> = Set(SearchKind.allCases)
 
     var body: some View {
         NavigationStack {
@@ -23,7 +26,7 @@ struct SearchView: View {
                     SearchSuggestionsView()
                 } else if isSearching && sections.isEmpty {
                     ProgressView()
-                } else if sections.allSatisfy(\.isEmptySuccess), catalogEmpty {
+                } else if rankedItems.isEmpty, sections.allSatisfy(\.isSuccess), catalogEmpty {
                     ContentUnavailableView.search(text: query)
                 } else {
                     results
@@ -35,6 +38,12 @@ struct SearchView: View {
             .detailDestinations()
         }
         .searchable(text: $query, prompt: "电影、剧集、单集")
+        // 输入联想：已返回结果中最匹配的标题，点按补全为该标题再搜索。
+        .searchSuggestions {
+            ForEach(completions, id: \.self) { title in
+                Label(title, systemImage: "magnifyingglass").searchCompletion(title)
+            }
+        }
         // 输入停顿 350ms 后再搜索，避免每个字符都打到所有服务器。
         .task(id: query) {
             try? await Task.sleep(for: .milliseconds(350))
@@ -46,14 +55,15 @@ struct SearchView: View {
     private var results: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: VelaTheme.Spacing.xl) {
-                ForEach(sections) { section in
-                    switch section.result {
-                    case .success(let items) where !items.isEmpty:
-                        MediaShelf("\(section.sourceName)（\(items.count)）", items: items) { item in
+                kindFilter
+                ForEach(SearchKind.allCases.filter(kinds.contains), id: \.self) { kind in
+                    let items = rankedItems.filter { kind.matches($0) }
+                    if !items.isEmpty {
+                        MediaShelf("\(kind.title)（\(items.count)）", items: items) { item in
                             NavigationLink(value: item) {
                                 PosterCard(
                                     title: item.seriesName ?? item.name,
-                                    subtitle: item.episodeLabel ?? item.productionYear.map(String.init),
+                                    subtitle: subtitle(for: item),
                                     imageURL: app.imageURL(for: item, kind: .primary, maxWidth: 400),
                                     progress: item.playedFraction,
                                     width: layout.posterWidth
@@ -61,19 +71,62 @@ struct SearchView: View {
                             }
                             .buttonStyle(.plain)
                         }
-                    case .failure(let error):
+                    }
+                }
+                ForEach(sections) { section in
+                    if case .failure(let error) = section.result {
                         Label("\(section.sourceName)：\(error.message)", systemImage: "exclamationmark.triangle")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .velaPageMargin()
-                    default:
-                        EmptyView()
                     }
                 }
                 catalogSections
             }
             .padding(.vertical, VelaTheme.Spacing.l)
         }
+    }
+
+    /// 类型筛选胶囊（与 Android 版的类型切换一致）。
+    private var kindFilter: some View {
+        HStack(spacing: VelaTheme.Spacing.s) {
+            ForEach(SearchKind.allCases, id: \.self) { kind in
+                let selected = kinds.contains(kind)
+                Button(kind.title) {
+                    if selected {
+                        if kinds.count > 1 { kinds.remove(kind) }
+                    } else {
+                        kinds.insert(kind)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .tint(selected ? VelaTheme.accent : nil)
+                .fontWeight(selected ? .semibold : .regular)
+            }
+        }
+        .velaPageMargin()
+    }
+
+    /// 所有服务器的结果合并后按相关度排序；搜索多台服务器时按服务器顺序保持稳定。
+    private var rankedItems: [MediaItem] {
+        let all = sections.flatMap { (try? $0.result.get()) ?? [] }
+        return SearchRanking.rank(all, query: query) { [$0.name, $0.seriesName] }
+    }
+
+    private var completions: [String] {
+        var seen: [String] = []
+        for title in rankedItems.map({ $0.seriesName ?? $0.name }) where !seen.contains(title) && title != query {
+            seen.append(title)
+            if seen.count == 6 { break }
+        }
+        return seen
+    }
+
+    /// 年份或集号；搜索了多台服务器时附上来源服务器名。
+    private func subtitle(for item: MediaItem) -> String? {
+        let base = item.episodeLabel ?? item.productionYear.map(String.init)
+        guard sections.count > 1, let source = sections.first(where: { $0.sourceID == item.serverID })?.sourceName else { return base }
+        return [base, source].compactMap { $0 }.joined(separator: " · ")
     }
 
     @ViewBuilder
@@ -147,9 +200,31 @@ struct SearchView: View {
 }
 
 private extension FederatedSearchSection {
-    var isEmptySuccess: Bool {
-        if case .success(let items) = result { return items.isEmpty }
+    var isSuccess: Bool {
+        if case .success = result { return true }
         return false
+    }
+}
+
+/// 搜索结果分类（与 Android `SearchMediaType` 对应）。
+private enum SearchKind: CaseIterable, Hashable {
+    case movie, series, episode
+
+    var title: String {
+        switch self {
+        case .movie: "电影"
+        case .series: "剧集"
+        case .episode: "单集"
+        }
+    }
+
+    /// 视频 / 音乐视频等归入电影，合集 / 季归入剧集，其余不显示。
+    func matches(_ item: MediaItem) -> Bool {
+        switch self {
+        case .movie: [.movie, .video, .musicVideo, .boxSet].contains(item.kind)
+        case .series: [.series, .season].contains(item.kind)
+        case .episode: item.kind == .episode
+        }
     }
 }
 

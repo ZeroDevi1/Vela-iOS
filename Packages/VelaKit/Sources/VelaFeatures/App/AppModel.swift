@@ -23,10 +23,14 @@ public final class AppModel {
     public let catalog = CatalogService()
     /// MoviePilot 订阅与日历。
     public let subscriptions = SubscriptionService()
+    /// Seerr（Jellyseerr / Overseerr）请求，每台媒体服务器单独连接。
+    public let seerr = SeerrService()
     /// Trakt 同步。
     public let trakt = TraktService()
     /// 离线下载。
     public let downloads = DownloadManager()
+    /// 网络状态：无网络时首页回退到已下载内容。
+    public let network = NetworkStatus()
     /// 启动时探测一次；外接显示器变化导致的 HDR 能力变化在播放前重新探测。
     public private(set) var capabilities: PlaybackCapabilities
 

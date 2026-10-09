@@ -9,7 +9,7 @@ import VelaCore
 /// 空间音频与杜比全景声在 AirPods / 支持的扬声器上由系统处理。
 @MainActor
 @Observable
-public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, MultichannelSpatializationConfigurable {
+public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, MultichannelSpatializationConfigurable, ManifestSubtitleSelecting {
     public let kind: PlaybackEngineKind = .avFoundation
     public private(set) var status: PlaybackStatus = .idle
     public private(set) var currentTime: TimeInterval = 0
@@ -130,6 +130,30 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         return true
     }
 
+    /// 字幕由应用绘制：码流自带的字幕轨（服务器 HLS 字幕组、MP4 内的文本轨）不让系统按辅助功能偏好自动选中，否则画面上会出现两份字幕。
+    private func deselectAutomaticSubtitles(of item: AVPlayerItem) {
+        Task {
+            guard let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
+                  item.currentMediaSelection.selectedMediaOption(in: group) != nil else { return }
+            item.select(nil, in: group)
+        }
+    }
+
+    public func selectManifestSubtitle(ordinal: Int?, name: String?) async -> Bool {
+        guard let item = player.currentItem,
+              let group = try? await item.asset.loadMediaSelectionGroup(for: .legible) else { return ordinal == nil }
+        guard let ordinal else {
+            item.select(nil, in: group)
+            return true
+        }
+        let options = group.options
+        let byName = name.flatMap { name in options.filter { $0.displayName == name } }
+        let option = byName?.count == 1 ? byName?.first : (options.indices.contains(ordinal) ? options[ordinal] : nil)
+        guard let option else { return false }
+        item.select(option, in: group)
+        return true
+    }
+
     public func captureFrame() async -> CGImage? {
         guard let item = player.currentItem, item.status == .readyToPlay else { return nil }
         let player = player
@@ -208,6 +232,7 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
                 case .readyToPlay:
                     self.duration = seconds.isFinite ? seconds : 0
                     self.logTracks(of: item)
+                    self.deselectAutomaticSubtitles(of: item)
                 case .failed:
                     self.status = .failed(message ?? "无法播放")
                     Log.player.error("AVPlayerItem 失败：\(message ?? "unknown", privacy: .public)")

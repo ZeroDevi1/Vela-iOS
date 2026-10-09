@@ -368,6 +368,7 @@ struct SeasonDetailView: View {
     @Environment(\.playMedia) private var playMedia
     @State private var episodes: LoadState<[MediaItem]> = .idle
     @State private var rangeIndex = 0
+    @State private var showsSeasonDownload = false
 
     /// 每段集数，与 Android 一致（1-20、21-40 …）。
     private static let pageSize = 20
@@ -413,6 +414,15 @@ struct SeasonDetailView: View {
             }
         }
         .navigationTitle("\(route.series.name) · \(route.season.name)")
+        .toolbar {
+            Button("下载本季", systemImage: "arrow.down.circle") { showsSeasonDownload = true }
+        }
+        .sheet(isPresented: $showsSeasonDownload) {
+            SeasonDownloadSheet(
+                seriesID: route.series.id, seasonID: route.season.id,
+                title: "下载 \(route.season.name)", serverID: route.series.serverID
+            )
+        }
         .task { await load() }
     }
 

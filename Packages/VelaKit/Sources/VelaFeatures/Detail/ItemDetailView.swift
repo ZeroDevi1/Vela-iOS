@@ -13,6 +13,9 @@ struct ItemDetailView: View {
     @State private var layout: VelaLayout = .compact
     @Environment(\.openURL) private var openURL
     @State private var model: DetailModel
+    /// 当前账号是否为服务器管理员（决定是否显示「管理元数据」）。
+    @State private var isAdmin = false
+    @State private var showsMetadataManager = false
 
     init(item: MediaItem) {
         _model = State(initialValue: DetailModel(item: item))
@@ -54,6 +57,13 @@ struct ItemDetailView: View {
         // 宽屏的已看 / 收藏 / 更多放在头图右侧操作列，导航栏只留返回按钮（与 Forward 一致）。
         .toolbar { if !layout.isWide { toolbarActions } }
         .navigationTitle(item.name)
+        .sheet(isPresented: $showsMetadataManager) {
+            MetadataManagerView(item: item, mediaSource: model.selectedSource) {
+                guard let client else { return }
+                Task { await model.load(client: client) }
+            }
+        }
+        .task(id: item.serverID) { isAdmin = (try? await client?.isAdministrator()) ?? false }
         .environment(\.velaLayout, layout)
         .onGeometryChange(for: VelaLayout.self) { VelaLayout(size: $0.size) } action: { layout = $0 }
         .task {
@@ -125,7 +135,7 @@ struct ItemDetailView: View {
                     iconButton("从头播放", systemImage: "arrow.counterclockwise") { playFromBeginning(target) }
                 }
                 if item.kind == .movie || item.kind == .episode {
-                    DownloadButton(item: model.playbackItem)
+                    DownloadButton(item: model.playbackItem, source: model.selectedSource)
                 }
                 iconButton(item.isPlayed ? "标记为未看" : "标记为已看", systemImage: item.isPlayed ? "checkmark.circle.fill" : "checkmark.circle") {
                     guard let client else { return }
@@ -224,7 +234,7 @@ struct ItemDetailView: View {
                 }
             }
             if item.kind == .movie || item.kind == .episode {
-                DownloadButton(item: model.playbackItem)
+                DownloadButton(item: model.playbackItem, source: model.selectedSource)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -285,6 +295,9 @@ struct ItemDetailView: View {
         // 剧集页的目标是下一集：同样可以从头播放该集。
         if let target = playTarget, target.playedFraction != nil {
             Button("从头开始播放", systemImage: "arrow.counterclockwise") { playFromBeginning(target) }
+        }
+        if isAdmin {
+            Button("管理元数据", systemImage: "slider.horizontal.3") { showsMetadataManager = true }
         }
         // 单集的元数据随剧集刷新：在剧集入口操作可一次更新全部季与单集。
         if item.kind != .episode {

@@ -54,6 +54,13 @@ public final class DownloadManager {
         records.filter { $0.serverID == serverID && $0.itemID == itemID }
     }
 
+    /// 可用于下载的剩余空间（字节，`volumeAvailableCapacityForImportantUsage`：系统可为用户主动操作清理出的空间）；
+    /// 取不到时为 nil。
+    nonisolated public static func availableCapacity() -> Int64? {
+        let values = try? URL.homeDirectory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return values?.volumeAvailableCapacityForImportantUsage
+    }
+
     /// 已完成下载的本地地址；文件丢失时返回 nil。
     public func localURL(for record: DownloadRecord) -> URL? {
         guard record.state == .completed, let path = record.relativePath else { return nil }
@@ -63,12 +70,16 @@ public final class DownloadManager {
 
     // MARK: - 操作
 
-    public func enqueue(item: MediaItem, source: PlaybackResolver.DownloadSource, quality: DownloadQuality, posterURL: URL?) {
+    public func enqueue(
+        item: MediaItem, source: PlaybackResolver.DownloadSource, quality: DownloadQuality, posterURL: URL?,
+        audioStreamIndex: Int? = nil
+    ) {
         var record = DownloadRecord(
             serverID: item.serverID, itemID: item.id,
             title: item.seriesName ?? item.name,
             subtitle: item.episodeLabel.map { "\($0) · \(item.name)" },
-            posterURL: posterURL, quality: quality, isHLS: source.isHLS, playSessionID: source.playSessionID
+            posterURL: posterURL, quality: quality, isHLS: source.isHLS, playSessionID: source.playSessionID,
+            audioStreamIndex: source.isHLS ? audioStreamIndex : nil
         )
         if let existing = records.firstIndex(where: { $0.id == record.id }) {
             guard records[existing].state == .failed else { return }
@@ -89,6 +100,43 @@ public final class DownloadManager {
         }
         records.insert(record, at: 0)
         save()
+    }
+
+    /// 暂停：挂起后台任务（保留已下载部分），记录标为 `paused`。
+    public func pause(_ record: DownloadRecord) {
+        guard record.state == .downloading || record.state == .queued else { return }
+        setState(.paused, for: record.id)
+        Task { for task in await tasks(for: record.id) { task.suspend() } }
+    }
+
+    /// 继续：恢复被挂起的任务。任务已不存在（例如被系统清理）时标为失败，由用户重试。
+    public func resume(_ record: DownloadRecord) {
+        guard record.state == .paused else { return }
+        setState(.downloading, for: record.id)
+        Task {
+            let tasks = await tasks(for: record.id)
+            guard !tasks.isEmpty else {
+                markFailed(record.id, message: "下载任务已失效，请重试")
+                return
+            }
+            for task in tasks { task.resume() }
+        }
+    }
+
+    public var hasActiveDownloads: Bool {
+        records.contains { $0.state == .downloading || $0.state == .queued }
+    }
+
+    public var hasPausedDownloads: Bool {
+        records.contains { $0.state == .paused }
+    }
+
+    public func pauseAll() {
+        for record in records where record.state == .downloading || record.state == .queued { pause(record) }
+    }
+
+    public func resumeAll() {
+        for record in records where record.state == .paused { resume(record) }
     }
 
     public func delete(_ record: DownloadRecord) {
@@ -116,7 +164,8 @@ public final class DownloadManager {
     fileprivate func updateProgress(id: String, progress: Double) {
         guard let index = records.firstIndex(where: { $0.id == id }) else { return }
         records[index].progress = min(max(progress, 0), 1)
-        records[index].state = .downloading
+        // 挂起后仍可能收到已在队列中的进度回调，不能把暂停状态改回下载中。
+        if records[index].state != .paused { records[index].state = .downloading }
     }
 
     fileprivate func finishFile(id: String, fileExtension: String, temporary: URL) {
@@ -165,7 +214,8 @@ public final class DownloadManager {
         let hlsTasks = await hlsSession.allTasks
         let active = Set((fileTasks + hlsTasks).compactMap { $0.taskDescription?.split(separator: "|").first.map(String.init) })
         var changed = false
-        for index in records.indices where records[index].state == .downloading && !active.contains(records[index].id) {
+        for index in records.indices where (records[index].state == .downloading || records[index].state == .paused)
+            && !active.contains(records[index].id) {
             records[index].state = .failed
             records[index].errorMessage = "下载被中断，请重试"
             changed = true
@@ -174,12 +224,26 @@ public final class DownloadManager {
     }
 
     private func cancelTasks(for id: String) {
-        Task {
-            for task in await fileSession.allTasks + hlsSession.allTasks
-            where task.taskDescription?.split(separator: "|").first.map(String.init) == id {
-                task.cancel()
-            }
+        Task { for task in await tasks(for: id) { task.cancel() } }
+    }
+
+    private func tasks(for id: String) async -> [URLSessionTask] {
+        (await fileSession.allTasks + hlsSession.allTasks).filter {
+            $0.taskDescription?.split(separator: "|").first.map(String.init) == id
         }
+    }
+
+    private func setState(_ state: DownloadRecord.State, for id: String) {
+        guard let index = records.firstIndex(where: { $0.id == id }) else { return }
+        records[index].state = state
+        save()
+    }
+
+    private func markFailed(_ id: String, message: String) {
+        guard let index = records.firstIndex(where: { $0.id == id }) else { return }
+        records[index].state = .failed
+        records[index].errorMessage = message
+        save()
     }
 
     private func removeFile(of record: DownloadRecord) {

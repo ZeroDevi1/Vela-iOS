@@ -200,8 +200,14 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
         guard request != lastToggleRequest else { return }
         lastToggleRequest = request
         if let controller, !controller.isPictureInPictureActive {
-            guard controller.engine.supportsPictureInPicture else {
-                controller.showMessage("\(controller.engine.kind.title) 内核暂不支持画中画", symbol: "pip", duration: .seconds(3))
+            #if os(macOS)
+            // macOS 只有系统内核的原生图层画中画可用（KSPlayer 的样本缓冲区画中画不随小窗缩放）。
+            let supported = controller.engine.supportsLayerPictureInPicture
+            #else
+            let supported = controller.engine.supportsPictureInPicture
+            #endif
+            guard supported else {
+                controller.showMessage("\(controller.engine.kind.title) 内核暂不支持系统画中画", symbol: "pip", duration: .seconds(3))
                 return
             }
         }
@@ -230,6 +236,28 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
     func invalidatePlaybackState() {
         subtitleSource?.invalidatePlaybackState()
     }
+
+    func pictureInPictureControllerWillStartPictureInPicture(_ pip: AVPictureInPictureController) {
+        #if os(macOS)
+        selectManifestSubtitleForPictureInPicture()
+        #endif
+    }
+
+    #if os(macOS)
+    /// macOS 系统画中画只渲染播放器自己的字幕轨：开着字幕时选中码流字幕组中的对应轨，结束时取消（平时由应用绘制）。
+    private func selectManifestSubtitleForPictureInPicture() {
+        guard let controller, controller.hasActiveSubtitle else { return }
+        let track = controller.manifestSubtitle?()
+        Task { [weak controller] in
+            guard let controller, let engine = controller.engine as? any ManifestSubtitleSelecting else { return }
+            let selected = if let track { await engine.selectManifestSubtitle(ordinal: track.ordinal, name: track.name) } else { false }
+            Log.player.info("系统画中画字幕：\(track.map { "#\($0.ordinal) \($0.name ?? "-")" } ?? "无对应字幕轨", privacy: .public) selected=\(selected)")
+            if !selected {
+                controller.showMessage("该字幕无法在系统画中画中显示，可改用「画中画」小窗（⌥⌘P）", symbol: "captions.bubble", duration: .seconds(5))
+            }
+        }
+    }
+    #endif
 
     func pictureInPictureControllerDidStartPictureInPicture(_ pip: AVPictureInPictureController) {
         if pip === subtitleSource?.pictureInPicture {
@@ -270,6 +298,11 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
 
     func pictureInPictureControllerDidStopPictureInPicture(_ pip: AVPictureInPictureController) {
         stopSubtitleUpdates()
+        #if os(macOS)
+        if let engine = controller?.engine as? any ManifestSubtitleSelecting {
+            Task { _ = await engine.selectManifestSubtitle(ordinal: nil, name: nil) }
+        }
+        #endif
         if pip === subtitleSource?.pictureInPicture {
             subtitleSource?.didStop()
             view.player = player

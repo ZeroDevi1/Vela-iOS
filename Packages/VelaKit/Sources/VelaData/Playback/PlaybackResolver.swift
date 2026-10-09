@@ -23,6 +23,28 @@ public struct ResolvedStream: Sendable {
     /// 上报给服务器的 PlayMethod。
     public var reportPlayMethod: String { method == .directPlay ? "DirectPlay" : "Transcode" }
 
+    /// 服务器转封装的 HLS 主播放列表加上所有文本字幕轨（Jellyfin / Emby 的 `EnableSubtitlesInManifest`，
+    /// 字幕组为服务器生成的 WebVTT 分片，带 `X-TIMESTAMP-MAP`）。系统画中画只渲染播放器自己的字幕轨，
+    /// 带上字幕组后进入画中画时选中对应轨即可显示字幕。直放或非 HLS 地址原样返回。
+    public var urlWithSubtitlesInManifest: URL {
+        guard method == .transcode, url.path.lowercased().hasSuffix(".m3u8"),
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        var items = components.queryItems ?? []
+        guard !items.contains(where: { $0.name.caseInsensitiveCompare("EnableSubtitlesInManifest") == .orderedSame }) else { return url }
+        items.append(URLQueryItem(name: "EnableSubtitlesInManifest", value: "true"))
+        components.queryItems = items
+        return components.url ?? url
+    }
+
+    /// 字幕在 `urlWithSubtitlesInManifest` 的字幕组中的序号：服务器按媒体源中文本字幕流的顺序（含外挂文本字幕）写入；
+    /// 图形字幕、非 HLS 时为 nil。
+    public func manifestSubtitleOrdinal(streamIndex: Int) -> Int? {
+        // 烧录字幕时服务器不写字幕组。
+        guard method == .transcode, burnedSubtitleIndex == nil else { return nil }
+        let textSubtitles = mediaSource.subtitleStreams.filter(\.isTextSubtitle)
+        return textSubtitles.firstIndex { $0.index == streamIndex }
+    }
+
     /// 服务器在转码地址的 `TranscodeReasons` 参数中给出的原因（例如 `ContainerNotSupported`）；直放时为空。
     public var transcodeReasons: [String] {
         guard method == .transcode,
@@ -140,18 +162,20 @@ public struct PlaybackResolver: Sendable {
     }
 
     /// 选择下载流：原画下载原文件；限定码率时，原文件码率不超过上限且可直放则仍下载原文件，否则下载转码 HLS。
+    /// - Parameter audioStreamIndex: 转码下载要保留的音轨；nil 为服务器默认音轨。原文件包含全部音轨，不受影响。
     public func resolveDownload(
         item: MediaItem,
         client: MediaServerClient,
         quality: DownloadQuality,
-        capabilities: PlaybackCapabilities
+        capabilities: PlaybackCapabilities,
+        audioStreamIndex: Int? = nil
     ) async throws -> DownloadSource {
         var caps = capabilities
         // 下载内容要在系统内核离线播放：不声明杜比视界 / AV1，避免得到需要特殊解码的流。
         caps.supportsDolbyVision = false
         caps.supportsAV1 = false
         if let limit = quality.maxBitrate { caps.maxStreamingBitrate = limit }
-        let info = try await client.playbackInfo(itemID: item.id, capabilities: caps)
+        let info = try await client.playbackInfo(itemID: item.id, audioStreamIndex: audioStreamIndex, capabilities: caps)
         guard let source = info.mediaSources.first else { throw PlaybackResolveError.noMediaSource }
         let container = source.container?.split(separator: ",").first.map(String.init) ?? "mkv"
 
