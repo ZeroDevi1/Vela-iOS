@@ -20,23 +20,33 @@ struct MacSettingsView: View {
                     .formStyle(.grouped)
                     .serverEditDestination()
                 }
+                .settingsPage()
             }
-            Tab("媒体库", systemImage: "square.stack") { LibrarySettingsView() }
-            Tab("播放", systemImage: "play.rectangle") { PlayerSettingsView() }
-            Tab("界面", systemImage: "rectangle.inset.filled.and.cursorarrow") { InterfaceSettingsView() }
-            Tab("手势", systemImage: "hand.point.up.left") { MacGestureSettingsView() }
-            Tab("视频", systemImage: "video") { VideoSettingsView() }
-            Tab("音频", systemImage: "headphones") { AudioSettingsView() }
-            Tab("字幕", systemImage: "captions.bubble") { SubtitleSettingsView() }
+            Tab("媒体库", systemImage: "square.stack") { LibrarySettingsView().settingsPage() }
+            Tab("播放", systemImage: "play.rectangle") { PlayerSettingsView().settingsPage() }
+            Tab("界面", systemImage: "rectangle.inset.filled.and.cursorarrow") { InterfaceSettingsView().settingsPage() }
+            Tab("手势", systemImage: "hand.point.up.left") { MacGestureSettingsView().settingsPage() }
+            Tab("视频", systemImage: "video") { VideoSettingsView().settingsPage() }
+            Tab("音频", systemImage: "headphones") { AudioSettingsView().settingsPage() }
+            Tab("字幕", systemImage: "captions.bubble") { SubtitleSettingsView().settingsPage() }
             Tab("连接", systemImage: "link") {
                 NavigationStack {
                     Form { ConnectionSections() }
                         .formStyle(.grouped)
                 }
+                .settingsPage()
             }
         }
         // 固定宽度、足够的高度：各页长短不一，统一尺寸避免切换标签时窗口跳动，长页面在窗口内滚动。
         .frame(width: 680, height: 600)
+    }
+}
+
+private extension View {
+    /// 标签栏所在的工具栏是透明的，默认的柔和滚动边缘效果下，滚上去的内容会透过标签图标显示；
+    /// 改为硬边，内容滚到标签栏下方即被截断（与系统设置、SenPlayer 的设置窗口一致）。
+    func settingsPage() -> some View {
+        scrollEdgeEffectStyle(.hard, for: .top)
     }
 }
 #endif
