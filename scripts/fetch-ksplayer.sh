@@ -47,14 +47,28 @@ if grep -q 'github.com/kingslay/FFmpegKit.git' "$manifest"; then
   sed -i '' 's#\.package(url: "https://github.com/kingslay/FFmpegKit.git", from: "[^"]*")#.package(path: "../FFmpegKit")#' "$manifest"
 fi
 grep -q '.package(path: "../FFmpegKit")' "$manifest" || { echo "✗ 未能改写 $manifest 的 FFmpegKit 依赖" >&2; exit 1; }
-# Vela 对 KSPlayer 的修正（见各补丁文件头部说明），幂等：已应用的补丁跳过。
+# Vela 对 KSPlayer 的修正（见各补丁文件头部说明），按文件名顺序应用。幂等：已应用的补丁记录在
+# .git/vela-applied-patches（「校验和 文件名」）。不能只靠 `git apply --reverse --check` 判断：后面的补丁改到前面补丁的
+# 上下文时，前面的补丁在已打完的源码上反向检查会失败。补丁内容变了需重新拉取（删除 Packages/KSPlayer 后重跑）。
+applied=Packages/KSPlayer/.git/vela-applied-patches
+if [[ ! -f "$applied" ]] && ! git -C Packages/KSPlayer diff --quiet HEAD -- Sources; then
+  echo "✗ Packages/KSPlayer 的源码已修改但没有补丁记录（旧版脚本打的补丁），删除该目录后重新执行本脚本" >&2
+  exit 1
+fi
+touch "$applied"
 for patch in scripts/ksplayer-patches/*.patch; do
   [[ -f "$patch" ]] || continue
-  if git -C Packages/KSPlayer apply --reverse --check "../../$patch" 2>/dev/null; then
-    echo "✓ 已应用 $(basename "$patch")"
+  name=$(basename "$patch")
+  sum=$(shasum "$patch" | cut -d' ' -f1)
+  if grep -qx "$sum $name" "$applied"; then
+    echo "✓ 已应用 $name"
+  elif grep -q " $name\$" "$applied"; then
+    echo "✗ $name 已修改，删除 Packages/KSPlayer 后重新执行本脚本" >&2
+    exit 1
   else
     git -C Packages/KSPlayer apply "../../$patch"
-    echo "↑ 应用 $(basename "$patch")"
+    echo "$sum $name" >> "$applied"
+    echo "↑ 应用 $name"
   fi
 done
 # FFmpegKit 的 macOS 切片是浅层框架包（Info.plist 在根目录），macOS 应用嵌入时校验要求

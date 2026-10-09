@@ -95,6 +95,13 @@ public protocol VideoDecodeDiagnosing: PlaybackEngine {
     var videoDecodeIssue: String? { get }
 }
 
+/// 能报告送显画面 HDR10 静态元数据的内核（播放信息显示）。系统内核由 AVPlayer 内部处理，不报告。
+@MainActor
+public protocol HDRMetadataReporting: PlaybackEngine {
+    /// 当前画面的母版显示 / 内容亮度元数据；SDR、片源未声明或尚未出帧时为 nil。
+    var hdrStaticMetadata: HDRStaticMetadata? { get }
+}
+
 /// 可控制多声道音频是否交给系统空间化处理的内核（「原生音频」设置）。
 @MainActor
 public protocol MultichannelSpatializationConfigurable: PlaybackEngine {

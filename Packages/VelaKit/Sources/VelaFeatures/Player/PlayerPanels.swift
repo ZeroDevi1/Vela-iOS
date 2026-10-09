@@ -558,6 +558,7 @@ private struct PlaybackInfoPanel: View {
                             row("解码器", engine.kind == .avFoundation ? "VideoToolbox" : "FFmpeg + VideoToolbox")
                             row("分辨率", video.width.flatMap { w in video.height.map { "\(w)×\($0)" } })
                             row("动态范围", PlayerSession.dynamicRangeLabel(for: video) ?? video.videoRangeType)
+                            row("HDR 元数据", (engine as? any HDRMetadataReporting)?.hdrStaticMetadata?.summary)
                         }
                     }
                     if let audio = source.audioStreams.first(where: { $0.index == session.selectedAudioIndex }) {

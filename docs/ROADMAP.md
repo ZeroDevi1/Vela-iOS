@@ -160,6 +160,7 @@
 - 🟡 内核选择：设置「播放内核」自动 / 系统 / KSPlayer（旧设置 "mpv" 自动迁移为 KSPlayer）；「更多 → 使用 KSPlayer 内核 / 使用系统内核」从当前位置切换（与 Android 版「使用 ExoPlayer / MPV」对应）；外部地址在设置为 KSPlayer 时也使用它
 - 🟡 画中画：KSPlayer 下使用其 `AVSampleBufferDisplayLayer` 内容源的画中画控制器，事件与系统内核共用同一套收起 / 恢复逻辑
 - 已在模拟器验证：MP4 单文件直放出画面；Apple 多码率 HLS 示例在 KSPlayer 下起播慢且会停住（FFmpeg HLS 解封装同时拉取全部变体），实际使用的服务器直放单文件不受影响
+- 🟡 HDR 元数据（2026-10-09，KSPlayer 补丁 0005）：HDR10 母版显示 / 内容亮度元数据（容器与码流 SEI）随画面送显，系统按片源实际亮度范围做色调映射；HDR10+ 逐帧元数据挂到送显样本（PoC，效果待目测）；播放信息显示「HDR 元数据」。单测覆盖两种硬解方式，Mac 已起播验证
 - 待实机验证：8K HEVC 硬解、HDR / 杜比视界显示、画中画
 - 2026-10-08：曾接入的 mpv（FFmpegKit 的 libmpv）与 VLC（VLCKit 4.0.0a19）已移除，只保留系统内核与 KSPlayer。原因：VLC 切换内核断言崩溃、起播位置错位、macOS OpenGL 输出死锁、画中画暂停 / 无字幕；mpv 无画中画；两者维护成本高于收益。旧设置值 `libmpv` / `vlc` 读取时回到「自动」
 

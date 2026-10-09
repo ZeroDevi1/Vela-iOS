@@ -15,7 +15,7 @@ import VelaCore
 @MainActor
 @Observable
 public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitleProviding, EnginePictureInPictureProviding,
-    PictureInPictureSubtitleBurning, VideoGravityAdjustable, DecodedFrameProviding {
+    PictureInPictureSubtitleBurning, VideoGravityAdjustable, DecodedFrameProviding, HDRMetadataReporting {
     public let kind: PlaybackEngineKind = .ksPlayer
     public private(set) var status: PlaybackStatus = .idle
     public private(set) var currentTime: TimeInterval = 0
@@ -55,6 +55,8 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
     @ObservationIgnored private var wantsPlay = false
     @ObservationIgnored private var lastBytesRead: (bytes: Int64, at: CFTimeInterval)?
     @ObservationIgnored private var pollTick = 0
+    /// 本次播放是否已记录过 HDR 元数据（首帧送显后记录一次，排查色调映射用）。
+    @ObservationIgnored private var hasLoggedHDRMetadata = false
     @ObservationIgnored private var contentMode: UIViewContentMode = .scaleAspectFit
     /// 选中的内嵌文本字幕轨（KSPlayer 边播边从视频流解码，不需要服务器提取）；nil 为未开启。
     public private(set) var hasEmbeddedSubtitle = false
@@ -101,6 +103,7 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
         videoSize = .zero
         networkThroughput = nil
         lastBytesRead = nil
+        hasLoggedHDRMetadata = false
         wantsPlay = true
         embeddedSubtitle = nil
         activeSubtitleParts = []
@@ -316,6 +319,13 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
         player?.videoOutput?.pixelBuffer?.cvPixelBuffer
     }
 
+    /// 解码画面上的元数据；直通（没有解码画面）或尚未出帧时退回容器声明的值。
+    public var hdrStaticMetadata: HDRStaticMetadata? {
+        if let pixelBuffer = currentPixelBuffer() { return HDRStaticMetadata(pixelBuffer: pixelBuffer) }
+        return player?.tracks(mediaType: .video).first { $0.isEnabled }?.formatDescription
+            .flatMap(HDRStaticMetadata.init(formatDescription:))
+    }
+
     public func stop() {
         pollTimer?.invalidate()
         pollTimer = nil
@@ -384,6 +394,10 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
         // 部分片源打开时还不知道画面尺寸，首帧解码后才有。
         if videoSize == .zero, player.naturalSize != .zero { videoSize = player.naturalSize }
         pollTick += 1
+        if !hasLoggedHDRMetadata, pollTick % 4 == 0, let metadata = hdrStaticMetadata {
+            hasLoggedHDRMetadata = true
+            Log.player.info("KSPlayer HDR 元数据：\(metadata.summary, privacy: .public)")
+        }
         if pollTick % 4 == 0, let bytes = player.dynamicInfo?.bytesRead {
             let now = CACurrentMediaTime()
             if let last = lastBytesRead, now > last.at, bytes >= last.bytes {
