@@ -22,8 +22,6 @@ public struct PlayerScreen: View {
     /// 滚轮 / 触控板横扫快进快退的本地事件监听。
     @State private var scrollMonitor: Any?
     @State private var scrollSeek = ScrollSeekAccumulator()
-    /// 控制层隐藏时鼠标在画面底部：只浮出进度条（`MacProgressPeek`）。
-    @State private var progressPeek = false
     #endif
 
     public init(request: PlaybackRequest) {
@@ -89,13 +87,8 @@ public struct PlayerScreen: View {
             } else {
                 PlayerOSD(controller: session.controller)
 
-                #if os(macOS)
-                PlayerGestureLayer(controller: session.controller, progressPeek: $progressPeek)
-                    .ignoresSafeArea()
-                #else
                 PlayerGestureLayer(controller: session.controller)
                     .ignoresSafeArea()
-                #endif
             }
 
             switch session.phase {
@@ -177,10 +170,6 @@ public struct PlayerScreen: View {
         }
         .onAppear(perform: installEscapeMonitor)
         .onAppear(perform: installScrollMonitor)
-        .onChange(of: session.controller.controlsVisible) { _, visible in
-            if visible { progressPeek = false }
-        }
-        .animation(.easeOut(duration: 0.15), value: progressPeek)
         .onDisappear {
             if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
             escapeMonitor = nil
@@ -250,15 +239,8 @@ public struct PlayerScreen: View {
                 .frame(maxHeight: .infinity, alignment: .top)
                 .padding(.top, 72)
         }
-        #if os(macOS)
         // 面板在 macOS 上是锚在控制层按钮上的 popover（`playerPanelPopover`）。
-        if progressPeek, !session.controller.controlsVisible, session.phase == .ready {
-            MacProgressPeek(controller: session.controller, chapterStarts: session.chapters.map(\.chapter.start))
-                .frame(maxHeight: .infinity, alignment: .bottom)
-                .onHover { if !$0 { progressPeek = false } }
-                .transition(.opacity)
-        }
-        #else
+        #if os(iOS)
         if let panel {
             PlayerPanelHost(panel: panel, session: session) {
                 withAnimation(.snappy) { self.panel = nil }

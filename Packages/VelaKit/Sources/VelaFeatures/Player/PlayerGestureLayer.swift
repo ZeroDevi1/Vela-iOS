@@ -293,41 +293,24 @@ private final class SystemVolume {
 #else
 
 /// macOS：鼠标移动唤出控制层，单击播放 / 暂停，双击全屏。键盘操作在菜单栏「播放」（`PlayerCommands`）。
-/// 控制层隐藏时鼠标移到底部 `progressPeekHeight` 以内只浮出进度条（`progressPeek`），不唤出完整控制层。
 struct PlayerGestureLayer: View {
     let controller: PlayerController
-    @Binding var progressPeek: Bool
     /// VR 拖动的上一次平移量与捏合的上一次倍率，按增量更新视角。
     @State private var lastDrag: CGSize = .zero
     @State private var lastMagnification: CGFloat = 1
 
-    /// 底部浮出进度条的感应高度，与底部工具条的高度相当。
-    private static let progressPeekHeight: CGFloat = 90
-
     var body: some View {
-        GeometryReader { proxy in
-            Color.clear
-                .contentShape(.rect)
-                .onContinuousHover { phase in
-                    switch phase {
-                    case .active(let location):
-                        if !controller.controlsVisible, location.y > proxy.size.height - Self.progressPeekHeight {
-                            progressPeek = true
-                        } else {
-                            progressPeek = false
-                            controller.touchControls()
-                        }
-                    case .ended:
-                        break
-                    }
-                }
-                .gesture(
-                    TapGesture(count: 2).onEnded { NSApp.keyWindow?.toggleFullScreen(nil) }
-                        .exclusively(before: TapGesture().onEnded { controller.togglePlayPause() })
-                )
-                .simultaneousGesture(vrDrag, including: controller.vrEnabled ? .all : .none)
-                .simultaneousGesture(vrMagnify, including: controller.vrEnabled ? .all : .none)
-        }
+        Color.clear
+            .contentShape(.rect)
+            .onContinuousHover { phase in
+                if case .active = phase { controller.touchControls() }
+            }
+            .gesture(
+                TapGesture(count: 2).onEnded { NSApp.keyWindow?.toggleFullScreen(nil) }
+                    .exclusively(before: TapGesture().onEnded { controller.togglePlayPause() })
+            )
+            .simultaneousGesture(vrDrag, including: controller.vrEnabled ? .all : .none)
+            .simultaneousGesture(vrMagnify, including: controller.vrEnabled ? .all : .none)
     }
 
     /// VR 转平面：鼠标拖动转视角。

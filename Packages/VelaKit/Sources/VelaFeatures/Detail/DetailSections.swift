@@ -477,14 +477,6 @@ struct SeasonDetailView: View {
             Text(route.season.name).font(.title2.weight(.bold))
             Text("\(all.count) 集").foregroundStyle(.secondary)
             if let target = all.first(where: { !$0.isPlayed }) ?? all.first {
-                #if os(macOS)
-                // Mac 控件尺寸规范（第 3.5 节第 5 条）：系统强调按钮，不铺满整行。
-                Button { playMedia(.item(target)) } label: {
-                    Label(target.episodeLabel.map { "播放 \($0)" } ?? "播放", systemImage: "play.fill")
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                #else
                 Button { playMedia(.item(target)) } label: {
                     Label(target.episodeLabel.map { "播放 \($0)" } ?? "播放", systemImage: "play.fill")
                         .font(.headline)
@@ -495,7 +487,6 @@ struct SeasonDetailView: View {
                 .tint(.white)
                 .foregroundStyle(.black)
                 .controlSize(.large)
-                #endif
             }
         }
     }

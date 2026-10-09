@@ -693,30 +693,6 @@ private extension View {
     }
 }
 
-#if os(macOS)
-/// macOS：控制层隐藏时鼠标移到画面底部，只浮出进度条与时间（第 3.5 节），可直接拖动定位；
-/// 移到画面其他位置才显示完整控制层。由 `PlayerGestureLayer` 判断鼠标位置。
-struct MacProgressPeek: View {
-    let controller: PlayerController
-    let chapterStarts: [TimeInterval]
-
-    var body: some View {
-        HStack(spacing: 10) {
-            PlaybackTimeLabel(controller: controller)
-            PlayerScrubber(controller: controller, chapterStarts: chapterStarts)
-        }
-        .frame(height: 28)
-        .padding(.horizontal, 20)
-        .padding(.top, 24)
-        .padding(.bottom, 14)
-        .background {
-            LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .top, endPoint: .bottom)
-        }
-        .foregroundStyle(.white)
-    }
-}
-#endif
-
 /// 半透明圆底按钮：按下时轻微缩小；禁用时降低不透明度。
 private struct OverlayCircleButtonStyle: ButtonStyle {
     let size: CGFloat
