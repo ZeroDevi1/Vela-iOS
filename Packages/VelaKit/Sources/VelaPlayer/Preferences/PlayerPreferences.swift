@@ -85,6 +85,8 @@ public final class PlayerPreferences {
     public var savedZoomScale: Double { didSet { save(savedZoomScale, "player.gesture.savedZoomScale") } }
     public var twoFingerPan: Bool { didSet { save(twoFingerPan, "player.gesture.twoFingerPan") } }
     public var twoFingerTapReset: Bool { didSet { save(twoFingerTapReset, "player.gesture.twoFingerTapReset") } }
+    /// VR 转平面时跟随设备朝向（陀螺仪）转动视角，可与拖动叠加；设备没有陀螺仪时无效。
+    public var vrGyroscope: Bool { didSet { save(vrGyroscope, "player.gesture.vrGyroscope") } }
     public var enableSwipeSeek: Bool { didSet { save(enableSwipeSeek, "player.gesture.swipeSeek") } }
     public var enableBrightnessSwipe: Bool { didSet { save(enableBrightnessSwipe, "player.gesture.brightness") } }
     public var enableVolumeSwipe: Bool { didSet { save(enableVolumeSwipe, "player.gesture.volume") } }
@@ -189,6 +191,7 @@ public final class PlayerPreferences {
         savedZoomScale = value("player.gesture.savedZoomScale", 1)
         twoFingerPan = value("player.gesture.twoFingerPan", true)
         twoFingerTapReset = value("player.gesture.twoFingerTapReset", true)
+        vrGyroscope = value("player.gesture.vrGyroscope", false)
         enableSwipeSeek = value("player.gesture.swipeSeek", true)
         enableBrightnessSwipe = value("player.gesture.brightness", true)
         enableVolumeSwipe = value("player.gesture.volume", true)

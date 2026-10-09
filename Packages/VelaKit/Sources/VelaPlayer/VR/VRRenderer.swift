@@ -463,6 +463,8 @@ public struct VRVideoView: PlayerPlatformViewRepresentable {
 
     public final class Coordinator {
         var renderer: VRRenderer?
+        /// 「重力感应」开启时跟随设备朝向转视角；随本视图存在（关闭 VR、收起播放页时停止）。
+        var motion: VRMotionTracker?
     }
 
     public func makeCoordinator() -> Coordinator { Coordinator() }
@@ -474,6 +476,7 @@ public struct VRVideoView: PlayerPlatformViewRepresentable {
             return PlayerPlatformView()
         }
         context.coordinator.renderer = renderer
+        context.coordinator.motion = VRMotionTracker()
         let controller = controller
         renderer.onIssue = { [weak controller] issue in controller?.vrIssue = issue }
         switch controller.engine.surface {
@@ -487,6 +490,7 @@ public struct VRVideoView: PlayerPlatformViewRepresentable {
     private func update(_ view: PlayerPlatformView, context: Context) {
         context.coordinator.renderer?.layout = layout
         context.coordinator.renderer?.state = controller.vrState
+        updateMotion(context.coordinator.motion)
         guard let view = view as? MTKView else { return }
         let playing = controller.engine.status == .playing
         // 播放中按屏幕刷新连续绘制；暂停 / 缓冲时改为按需绘制：只在视角变化或定位后重绘，
@@ -504,6 +508,22 @@ public struct VRVideoView: PlayerPlatformViewRepresentable {
         }
     }
 
+    /// 按偏好启停陀螺仪；设备转动量叠加到当前视角（排布按回调时的实际值取，手动改选排布后仍正确限位）。
+    @MainActor
+    private func updateMotion(_ motion: VRMotionTracker?) {
+        guard let motion else { return }
+        guard controller.preferences.vrGyroscope else {
+            motion.stop()
+            return
+        }
+        guard !motion.isRunning else { return }
+        let controller = controller
+        motion.start { [weak controller] yaw, pitch in
+            guard let controller, let layout = controller.effectiveVRLayout else { return }
+            controller.vrState.rotate(yaw: yaw, pitch: pitch, layout: layout)
+        }
+    }
+
     @MainActor
     private static func redraw(_ view: MTKView) {
         #if os(iOS)
@@ -517,13 +537,19 @@ public struct VRVideoView: PlayerPlatformViewRepresentable {
     public func makeUIView(context: Context) -> UIView { makeView(context: context) }
     public func updateUIView(_ view: UIView, context: Context) { update(view, context: context) }
     public static func dismantleUIView(_ view: UIView, coordinator: Coordinator) {
-        MainActor.assumeIsolated { coordinator.renderer?.detach() }
+        MainActor.assumeIsolated {
+            coordinator.renderer?.detach()
+            coordinator.motion?.stop()
+        }
     }
     #else
     public func makeNSView(context: Context) -> NSView { makeView(context: context) }
     public func updateNSView(_ view: NSView, context: Context) { update(view, context: context) }
     public static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
-        MainActor.assumeIsolated { coordinator.renderer?.detach() }
+        MainActor.assumeIsolated {
+            coordinator.renderer?.detach()
+            coordinator.motion?.stop()
+        }
     }
     #endif
 }

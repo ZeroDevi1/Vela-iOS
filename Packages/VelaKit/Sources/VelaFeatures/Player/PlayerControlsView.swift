@@ -278,6 +278,11 @@ struct PlayerControlsView: View {
                 Toggle(isOn: Binding(get: { controller.vrEnabled }, set: { _ in controller.toggleVR() })) {
                     Text("开启")
                 }
+                if VRMotionTracker.isAvailable {
+                    Toggle(isOn: Binding(get: { controller.preferences.vrGyroscope }, set: { controller.preferences.vrGyroscope = $0 })) {
+                        Text("重力感应")
+                    }
+                }
             }
             Section(controller.source?.vrLayout.map { "自动识别：\($0.displayName)" } ?? "未自动识别，手动选择排布") {
                 ForEach(VRLayoutParser.manualOptions, id: \.self) { layout in

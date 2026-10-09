@@ -22,8 +22,13 @@ public struct VRViewState: Hashable, Sendable {
         let longSide = max(viewSize.width, viewSize.height, 1)
         let degreesPerPoint = outputFOV / longSide
         // 手指向右拖，画面跟手向右移，相当于视线向左转。
-        yaw = clamp(yaw - translation.width * degreesPerPoint, layout.yawLimit)
-        pitch = clamp(pitch + translation.height * degreesPerPoint, 90)
+        rotate(yaw: -translation.width * degreesPerPoint, pitch: translation.height * degreesPerPoint, layout: layout)
+    }
+
+    /// 按角度增量转动视角（度，正值向右 / 向上），受排布的水平上限与 ±90° 俯仰限制。陀螺仪按设备转动量调用。
+    public mutating func rotate(yaw deltaYaw: Double, pitch deltaPitch: Double, layout: VRLayout) {
+        yaw = clamp(yaw + deltaYaw, layout.yawLimit)
+        pitch = clamp(pitch + deltaPitch, 90)
     }
 
     /// 捏合：scale > 1 放大（视场角变小）。

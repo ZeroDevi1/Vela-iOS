@@ -1,6 +1,7 @@
 import CoreGraphics
 import CoreVideo
 import Metal
+import simd
 import Testing
 @testable import VelaPlayer
 
@@ -175,12 +176,47 @@ struct VRProjectionTests {
         #expect(panorama.yaw < 0)
     }
 
+    @Test func rotateClampsPitchAndYaw() {
+        var state = VRViewState()
+        state.rotate(yaw: 120, pitch: 200, layout: sbs180)
+        #expect(state.yaw == 90)
+        #expect(state.pitch == 90)
+    }
+
     @Test func zoomClamps() {
         var state = VRViewState()
         state.zoom(by: 100)
         #expect(state.outputFOV == VRViewport.minOutputFOV)
         state.zoom(by: 0.001)
         #expect(state.outputFOV == VRViewport.maxOutputFOV)
+    }
+}
+
+struct VRMotionTrackerTests {
+    // 参考系 Z 轴竖直向上；设备 -Z（屏幕背面）为视线。
+    @Test func flatDeviceLooksDown() {
+        let result = VRMotionTracker.orientation(of: simd_quatd(angle: 0, axis: SIMD3(0, 0, 1)))
+        #expect(abs(result.pitch + 90) < 1e-9)
+        #expect(result.heading == nil)
+    }
+
+    @Test func turningRightIncreasesHeadingAndTiltingUpIncreasesPitch() throws {
+        // 竖起设备（绕设备 X 轴 +90°）：视线水平。
+        let upright = simd_quatd(angle: .pi / 2, axis: SIMD3(1, 0, 0))
+        let base = VRMotionTracker.orientation(of: upright)
+        #expect(abs(base.pitch) < 1e-9)
+        // 绕竖直轴顺时针（俯视）转 30°，即向右转。
+        let right = VRMotionTracker.orientation(of: simd_quatd(angle: -.pi / 6, axis: SIMD3(0, 0, 1)) * upright)
+        let delta = VRMotionTracker.wrap(try #require(right.heading) - #require(base.heading))
+        #expect(abs(delta - 30) < 1e-9)
+        // 再竖起 20°：视线抬高。
+        let tilted = VRMotionTracker.orientation(of: simd_quatd(angle: .pi / 2 + .pi / 9, axis: SIMD3(1, 0, 0)))
+        #expect(abs(tilted.pitch - 20) < 1e-9)
+    }
+
+    @Test func wrapAcrossBoundary() {
+        #expect(VRMotionTracker.wrap(350) == -10)
+        #expect(VRMotionTracker.wrap(-350) == 10)
     }
 }
 
