@@ -4,49 +4,117 @@ import SwiftUI
 /// macOS 设置窗口：顶部图标标签、每个标签一页（Mac 设置窗口的标准形式，参考 SenPlayer macOS）。
 /// 各页复用 iOS 的设置子页面与分组；含二级页面的标签（通用、连接）自带导航栈。
 /// 发现 / 订阅日历在 Mac 侧边栏中，这里不重复入口；触屏手势换为键盘与鼠标设置（`MacGestureSettingsView`）。
+///
+/// 标签栏自绘而不用系统 `TabView`：系统做法把标签放进透明工具栏，页面内容从窗口顶端排起、
+/// 首个分组压在标签下方（macOS 27 实测），自绘标签栏与页面上下排列，页面总是从分隔线下开始。
 struct MacSettingsView: View {
+    @AppStorage("settings.mac.tab") private var selection: SettingsTab = .general
+
     var body: some View {
-        TabView {
-            Tab("通用", systemImage: "gearshape") {
-                NavigationStack {
-                    Form {
-                        ServersSection()
-                        Section("本机能力") { CapabilityRows() }
-                        StorageSection()
-                        PrivacySection()
-                        DebugPlaybackSection()
-                        AboutSection()
-                    }
-                    .formStyle(.grouped)
-                    .serverEditDestination()
+        VStack(spacing: 0) {
+            SettingsTabBar(selection: $selection)
+            Divider()
+            page(selection)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .navigationTitle(selection.title)
+        // 固定尺寸：各页长短不一，统一尺寸避免切换标签时窗口跳动，长页面在窗口内滚动。
+        .frame(width: 680, height: 620)
+    }
+
+    @ViewBuilder
+    private func page(_ tab: SettingsTab) -> some View {
+        switch tab {
+        case .general:
+            NavigationStack {
+                Form {
+                    ServersSection()
+                    Section("本机能力") { CapabilityRows() }
+                    StorageSection()
+                    PrivacySection()
+                    DebugPlaybackSection()
+                    AboutSection()
                 }
-                .settingsPage()
+                .formStyle(.grouped)
+                .serverEditDestination()
             }
-            Tab("媒体库", systemImage: "square.stack") { LibrarySettingsView().settingsPage() }
-            Tab("播放", systemImage: "play.rectangle") { PlayerSettingsView().settingsPage() }
-            Tab("界面", systemImage: "rectangle.inset.filled.and.cursorarrow") { InterfaceSettingsView().settingsPage() }
-            Tab("手势", systemImage: "hand.point.up.left") { MacGestureSettingsView().settingsPage() }
-            Tab("视频", systemImage: "video") { VideoSettingsView().settingsPage() }
-            Tab("音频", systemImage: "headphones") { AudioSettingsView().settingsPage() }
-            Tab("字幕", systemImage: "captions.bubble") { SubtitleSettingsView().settingsPage() }
-            Tab("连接", systemImage: "link") {
-                NavigationStack {
-                    Form { ConnectionSections() }
-                        .formStyle(.grouped)
-                }
-                .settingsPage()
+        case .library: LibrarySettingsView()
+        case .playback: PlayerSettingsView()
+        case .interface: InterfaceSettingsView()
+        case .gestures: MacGestureSettingsView()
+        case .video: VideoSettingsView()
+        case .audio: AudioSettingsView()
+        case .subtitles: SubtitleSettingsView()
+        case .connections:
+            NavigationStack {
+                Form { ConnectionSections() }
+                    .formStyle(.grouped)
             }
         }
-        // 固定宽度、足够的高度：各页长短不一，统一尺寸避免切换标签时窗口跳动，长页面在窗口内滚动。
-        .frame(width: 680, height: 600)
     }
 }
 
-private extension View {
-    /// 标签栏所在的工具栏是透明的，默认的柔和滚动边缘效果下，滚上去的内容会透过标签图标显示；
-    /// 改为硬边，内容滚到标签栏下方即被截断（与系统设置、SenPlayer 的设置窗口一致）。
-    func settingsPage() -> some View {
-        scrollEdgeEffectStyle(.hard, for: .top)
+enum SettingsTab: String, CaseIterable {
+    case general, library, playback, interface, gestures, video, audio, subtitles, connections
+
+    var title: String {
+        switch self {
+        case .general: "通用"
+        case .library: "媒体库"
+        case .playback: "播放"
+        case .interface: "界面"
+        case .gestures: "手势"
+        case .video: "视频"
+        case .audio: "音频"
+        case .subtitles: "字幕"
+        case .connections: "连接"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .general: "gearshape"
+        case .library: "square.stack"
+        case .playback: "play.rectangle"
+        case .interface: "rectangle.inset.filled.and.cursorarrow"
+        case .gestures: "hand.point.up.left"
+        case .video: "video"
+        case .audio: "headphones"
+        case .subtitles: "captions.bubble"
+        case .connections: "link"
+        }
+    }
+}
+
+/// 图标 + 文字的标签按钮行，选中项为强调色并带圆角底色（与系统偏好设置窗口的工具栏标签相同的样子）。
+private struct SettingsTabBar: View {
+    @Binding var selection: SettingsTab
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(SettingsTab.allCases, id: \.self) { tab in
+                let selected = tab == selection
+                Button { selection = tab } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: tab.symbol)
+                            .font(.system(size: 20))
+                            .symbolVariant(selected ? .fill : .none)
+                            .frame(height: 24)
+                        Text(tab.title).font(.caption)
+                    }
+                    .frame(width: 64, height: 50)
+                    .foregroundStyle(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                    .background(
+                        RoundedRectangle(cornerRadius: 8).fill(selected ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear))
+                    )
+                    .contentShape(.rect(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+        }
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
     }
 }
 #endif
