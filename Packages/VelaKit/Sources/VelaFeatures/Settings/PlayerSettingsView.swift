@@ -379,10 +379,12 @@ struct InterfaceSettingsView: View {
     var body: some View {
         @Bindable var prefs = app.playerPreferences
         Form {
+            #if os(iOS)
             Section {
                 NavigationLink("OSD 信息显示") { OSDSettingsView() }
                 NavigationLink("自定义播放器按钮") { PlayerButtonsSettingsView() }
             }
+            #endif
 
             #if os(iOS)
             Section {
@@ -420,18 +422,42 @@ struct InterfaceSettingsView: View {
             Section("提示信息") {
                 Toggle("即将跳过片头/片尾", isOn: $prefs.hintBeforeSkip)
             }
+
+            #if os(macOS)
+            // Mac 设置窗口放得下：OSD 与自定义按钮直接展开，不再进入子页面。
+            OSDSections()
+            PlayerButtonsSection()
+            #endif
         }
         .formStyle(.grouped)
         .navigationTitle("界面偏好")
     }
 }
 
+#if os(iOS)
 private struct OSDSettingsView: View {
+    var body: some View {
+        Form { OSDSections() }
+            .formStyle(.grouped)
+            .navigationTitle("OSD 信息显示")
+    }
+}
+
+private struct PlayerButtonsSettingsView: View {
+    var body: some View {
+        Form { PlayerButtonsSection() }
+            .formStyle(.grouped)
+            .navigationTitle("自定义播放器按钮")
+    }
+}
+#endif
+
+private struct OSDSections: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
         @Bindable var prefs = app.playerPreferences
-        Form {
+        Group {
             Section("OSD") {
                 Toggle("系统时间", isOn: $prefs.osd.clock)
                 Toggle("实时帧率", isOn: $prefs.osd.frameRate)
@@ -456,33 +482,80 @@ private struct OSDSettingsView: View {
                 Text("设置 OSD 过多可能遮挡画面；CPU 占用为本应用所有线程之和。")
             }
         }
-        .formStyle(.grouped)
-        .navigationTitle("OSD 信息显示")
     }
 }
 
-private struct PlayerButtonsSettingsView: View {
+private struct PlayerButtonsSection: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        @Bindable var prefs = app.playerPreferences
+        Section {
+            Toggle("快退快进按钮", isOn: $prefs.buttons.seek)
+            Toggle("切换媒体按钮", isOn: $prefs.buttons.switchMedia)
+            Toggle("播放暂停按钮", isOn: $prefs.buttons.playPause)
+            Toggle("画面缩放按钮", isOn: $prefs.buttons.zoom)
+            #if os(iOS)
+            Toggle("旋屏按钮", isOn: $prefs.buttons.rotate)
+            #endif
+            Toggle("画中画按钮", isOn: $prefs.buttons.pictureInPicture)
+            Toggle("章节选择按钮", isOn: $prefs.buttons.chapters)
+            Toggle("速度调节按钮", isOn: $prefs.buttons.speed)
+            Toggle("投屏按钮", isOn: $prefs.buttons.cast)
+            Toggle("截图按钮", isOn: $prefs.buttons.screenshot)
+        } header: {
+            // iOS 是单独的子页面（标题即此名），只在 Mac 展开到「界面」页时显示分组标题。
+            #if os(macOS)
+            Text("自定义播放器按钮")
+            #endif
+        }
+    }
+}
+
+#if os(macOS)
+// MARK: - 手势（macOS：键盘与鼠标）
+
+/// Mac 没有触屏手势，对应设置为键盘长按倍速、数字键倍速与鼠标点击动作（参考 SenPlayer macOS）。
+struct MacGestureSettingsView: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
         @Bindable var prefs = app.playerPreferences
         Form {
             Section {
-                Toggle("快退快进按钮", isOn: $prefs.buttons.seek)
-                Toggle("切换媒体按钮", isOn: $prefs.buttons.switchMedia)
-                Toggle("播放暂停按钮", isOn: $prefs.buttons.playPause)
-                Toggle("画面缩放按钮", isOn: $prefs.buttons.zoom)
-                #if os(iOS)
-                Toggle("旋屏按钮", isOn: $prefs.buttons.rotate)
-                #endif
-                Toggle("画中画按钮", isOn: $prefs.buttons.pictureInPicture)
-                Toggle("章节选择按钮", isOn: $prefs.buttons.chapters)
-                Toggle("速度调节按钮", isOn: $prefs.buttons.speed)
-                Toggle("投屏按钮", isOn: $prefs.buttons.cast)
-                Toggle("截图按钮", isOn: $prefs.buttons.screenshot)
+                Picker("长按左方向键倍速", selection: $prefs.keyHoldLeftSpeed) {
+                    ForEach(PlayerPreferences.keyHoldSpeedOptions, id: \.self) { Text(String(format: "%.2f X", $0)).tag($0) }
+                }
+                Picker("长按右方向键倍速", selection: $prefs.keyHoldRightSpeed) {
+                    ForEach(PlayerPreferences.keyHoldSpeedOptions, id: \.self) { Text(String(format: "%.2f X", $0)).tag($0) }
+                }
+                Toggle("数字键切换倍速", isOn: $prefs.digitKeysSetSpeed)
+            } header: {
+                Text("键盘")
+            } footer: {
+                Text("短按方向键快退 / 快进，按住时临时倍速播放，松开恢复。数字键：0 为 0.5×，1–4 为对应倍速。")
+            }
+
+            Section("鼠标") {
+                MouseActionPicker(title: "左键单击", selection: $prefs.leftClickAction)
+                MouseActionPicker(title: "左键双击", selection: $prefs.leftDoubleClickAction)
+                MouseActionPicker(title: "右键单击", selection: $prefs.rightClickAction)
+                MouseActionPicker(title: "右键双击", selection: $prefs.rightDoubleClickAction)
             }
         }
         .formStyle(.grouped)
-        .navigationTitle("自定义播放器按钮")
+        .navigationTitle("手势")
     }
 }
+
+private struct MouseActionPicker: View {
+    let title: String
+    @Binding var selection: MouseClickAction
+
+    var body: some View {
+        Picker(title, selection: $selection) {
+            ForEach(MouseClickAction.allCases, id: \.self) { Text($0.title).tag($0) }
+        }
+    }
+}
+#endif

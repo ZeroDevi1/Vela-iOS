@@ -3,141 +3,209 @@ import VelaCore
 import VelaDesignSystem
 import VelaPlayer
 
-/// 设置。iPhone / iPad 在标签页中显示；macOS 在系统「设置」窗口（⌘,）中显示。
+/// 设置。iPhone / iPad 在标签页中显示（分组列表 + 子页面）；macOS 在系统「设置」窗口（⌘,）中显示为
+/// 顶部图标标签的多页窗口（`MacSettingsView`，Mac 设置窗口的标准形式），各分组视图两端共用。
 public struct SettingsView: View {
-    @Environment(AppModel.self) private var app
-    @Environment(\.playMedia) private var playMedia
-    @State private var isAdding = false
-    @State private var imageCacheSize: Int64?
-    @State private var imageCacheLimit = ImagePipeline.diskLimit
-
     public init() {}
 
     public var body: some View {
+        #if os(macOS)
+        MacSettingsView()
+        #else
+        IOSSettingsView()
+        #endif
+    }
+}
+
+#if os(iOS)
+private struct IOSSettingsView: View {
+    var body: some View {
         HistoryNavigationStack {
             Form {
-                Section("服务器") {
-                    ForEach(app.servers.servers) { server in
-                        NavigationLink(value: server.id) {
-                            ServerRow(server: server, isActive: server.id == app.servers.activeServer?.id)
-                        }
-                    }
-                    Button("添加服务器", systemImage: "plus") { isAdding = true }
-                }
+                ServersSection()
 
-                #if os(iOS)
                 // 底部标签栏只放与 Android 版一致的 5 项（`MainTabView.shell`），发现 / 订阅从这里进入。
                 Section("探索") {
                     NavigationLink { DiscoverPage() } label: { Label("发现", systemImage: "safari") }
                     NavigationLink { SubscriptionsPage() } label: { Label("订阅日历", systemImage: "calendar") }
                 }
-                #endif
 
                 Section("播放") {
                     PlaybackSettingsLinks()
                     NavigationLink("媒体库配置") { LibrarySettingsView() }
-                    LabeledContent("播放内核", value: app.playerPreferences.engineMode.title)
-                    LabeledContent("杜比视界", value: app.capabilities.supportsDolbyVision ? "支持" : "不支持")
-                    LabeledContent("HDR10", value: app.capabilities.supportsHDR10 ? "支持" : "不支持")
-                    LabeledContent("AV1 硬件解码", value: app.capabilities.supportsAV1 ? "支持" : "不支持")
+                    CapabilityRows()
                 }
-
-                Section("发现") {
-                    NavigationLink {
-                        TMDBCredentialForm()
-                    } label: {
-                        LabeledContent("TMDB", value: app.catalog.isConfigured ? (app.catalog.usesBundledCredential ? "内置" : "已配置") : "未配置")
-                    }
-                }
-
-                Section("订阅") {
-                    NavigationLink {
-                        MoviePilotConnectionForm()
-                    } label: {
-                        LabeledContent("MoviePilot", value: app.subscriptions.isConnected ? "已连接" : "未连接")
-                    }
-                    NavigationLink {
-                        SeerrConnectionForm()
-                    } label: {
-                        LabeledContent("Seerr", value: app.seerr.connection(for: app.servers.activeServer?.id) != nil ? "已连接" : "未连接")
-                    }
-                }
-
-                Section("同步") {
-                    NavigationLink {
-                        TraktSettingsView()
-                    } label: {
-                        LabeledContent("Trakt", value: app.trakt.isConnected ? "已连接" : "未连接")
-                    }
-                }
-
-                Section("存储") {
-                    NavigationLink {
-                        DownloadsView()
-                    } label: {
-                        LabeledContent("下载", value: "\(app.downloads.records.filter { $0.state == .completed }.count) 项")
-                    }
-                    LabeledContent("图片缓存") {
-                        Text(imageCacheSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "计算中…")
-                    }
-                    Picker("图片缓存上限", selection: $imageCacheLimit) {
-                        ForEach(ImagePipeline.diskLimitOptions, id: \.self) { limit in
-                            Text(ByteCountFormatter.string(fromByteCount: limit, countStyle: .file)).tag(limit)
-                        }
-                    }
-                    .onChange(of: imageCacheLimit) { _, limit in
-                        ImagePipeline.diskLimit = limit
-                        Task {
-                            await ImagePipeline.shared.trimDiskCache()
-                            imageCacheSize = await ImagePipeline.shared.diskUsage()
-                        }
-                    }
-                    Button("清除图片缓存", systemImage: "trash") {
-                        Task {
-                            await ImagePipeline.shared.removeAll()
-                            imageCacheSize = await ImagePipeline.shared.diskUsage()
-                        }
-                    }
-                    .disabled(imageCacheSize == 0)
-                }
-
-                Section("隐私") {
-                    Button("立即锁定私密服务器", systemImage: "lock") { app.privacy.lockAll() }
-                        .disabled(app.privacy.unlockedServerIDs.isEmpty)
-                }
-
-                #if DEBUG
-                Section("开发") {
-                    Button("测试播放（Apple HDR 示例流）", systemImage: "play.rectangle") {
-                        playMedia(PlaybackRequest(
-                            target: .url(URL(string: "https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_adv_example_hevc/master.m3u8")!),
-                            title: "Apple HLS 示例"
-                        ))
-                    }
-                    // 单文件直放：与服务器直放原文件的路径一致，用于验证 KSPlayer 内核（播放设置中切换内核）。
-                    Button("测试播放（MP4 单文件）", systemImage: "play.rectangle") {
-                        playMedia(PlaybackRequest(
-                            target: .url(URL(string: "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_10MB.mp4")!),
-                            title: "Big Buck Bunny"
-                        ))
-                    }
-                }
-                #endif
-
-                Section {
-                    LabeledContent("版本", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "-")
-                    Link("项目主页", destination: URL(string: "https://github.com/ZeroDevi1/Vela")!)
-                } footer: {
-                    Text("Vela 基于 JellyCine 继续开发，遵循 GPLv3。")
-                }
+                ConnectionSections()
+                StorageSection()
+                PrivacySection()
+                DebugPlaybackSection()
+                AboutSection()
             }
             .formStyle(.grouped)
             .navigationTitle("设置")
-            .navigationDestination(for: String.self) { serverID in
-                ServerEditView(serverID: serverID)
+            .serverEditDestination()
+        }
+    }
+}
+#endif
+
+// MARK: - 分组（两端共用）
+
+/// 服务器列表与添加入口；点按进入编辑（需所在页面注册 `serverEditDestination()`）。
+struct ServersSection: View {
+    @Environment(AppModel.self) private var app
+    @State private var isAdding = false
+
+    var body: some View {
+        Section("服务器") {
+            ForEach(app.servers.servers) { server in
+                NavigationLink(value: server.id) {
+                    ServerRow(server: server, isActive: server.id == app.servers.activeServer?.id)
+                }
             }
-            .sheet(isPresented: $isAdding) { AddServerView() }
-            .task { imageCacheSize = await ImagePipeline.shared.diskUsage() }
+            Button("添加服务器", systemImage: "plus") { isAdding = true }
+        }
+        .sheet(isPresented: $isAdding) { AddServerView() }
+    }
+}
+
+extension View {
+    func serverEditDestination() -> some View {
+        navigationDestination(for: String.self) { ServerEditView(serverID: $0) }
+    }
+}
+
+/// 播放内核与本机解码能力（只读行）：iOS 放在「播放」分组内，Mac 放在「通用」标签的「本机能力」分组。
+struct CapabilityRows: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        LabeledContent("播放内核", value: app.playerPreferences.engineMode.title)
+        LabeledContent("杜比视界", value: app.capabilities.supportsDolbyVision ? "支持" : "不支持")
+        LabeledContent("HDR10", value: app.capabilities.supportsHDR10 ? "支持" : "不支持")
+        LabeledContent("AV1 硬件解码", value: app.capabilities.supportsAV1 ? "支持" : "不支持")
+    }
+}
+
+/// 外部服务：TMDB（发现）、MoviePilot / Seerr（订阅）、Trakt（同步）。
+struct ConnectionSections: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        Section("发现") {
+            NavigationLink {
+                TMDBCredentialForm()
+            } label: {
+                LabeledContent("TMDB", value: app.catalog.isConfigured ? (app.catalog.usesBundledCredential ? "内置" : "已配置") : "未配置")
+            }
+        }
+
+        Section("订阅") {
+            NavigationLink {
+                MoviePilotConnectionForm()
+            } label: {
+                LabeledContent("MoviePilot", value: app.subscriptions.isConnected ? "已连接" : "未连接")
+            }
+            NavigationLink {
+                SeerrConnectionForm()
+            } label: {
+                LabeledContent("Seerr", value: app.seerr.connection(for: app.servers.activeServer?.id) != nil ? "已连接" : "未连接")
+            }
+        }
+
+        Section("同步") {
+            NavigationLink {
+                TraktSettingsView()
+            } label: {
+                LabeledContent("Trakt", value: app.trakt.isConnected ? "已连接" : "未连接")
+            }
+        }
+    }
+}
+
+/// 下载与图片缓存。
+struct StorageSection: View {
+    @Environment(AppModel.self) private var app
+    @State private var imageCacheSize: Int64?
+    @State private var imageCacheLimit = ImagePipeline.diskLimit
+
+    var body: some View {
+        Section("存储") {
+            NavigationLink {
+                DownloadsView()
+            } label: {
+                LabeledContent("下载", value: "\(app.downloads.records.filter { $0.state == .completed }.count) 项")
+            }
+            LabeledContent("图片缓存") {
+                Text(imageCacheSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "计算中…")
+            }
+            Picker("图片缓存上限", selection: $imageCacheLimit) {
+                ForEach(ImagePipeline.diskLimitOptions, id: \.self) { limit in
+                    Text(ByteCountFormatter.string(fromByteCount: limit, countStyle: .file)).tag(limit)
+                }
+            }
+            .onChange(of: imageCacheLimit) { _, limit in
+                ImagePipeline.diskLimit = limit
+                Task {
+                    await ImagePipeline.shared.trimDiskCache()
+                    imageCacheSize = await ImagePipeline.shared.diskUsage()
+                }
+            }
+            Button("清除图片缓存", systemImage: "trash") {
+                Task {
+                    await ImagePipeline.shared.removeAll()
+                    imageCacheSize = await ImagePipeline.shared.diskUsage()
+                }
+            }
+            .disabled(imageCacheSize == 0)
+        }
+        .task { imageCacheSize = await ImagePipeline.shared.diskUsage() }
+    }
+}
+
+struct PrivacySection: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        Section("隐私") {
+            Button("立即锁定私密服务器", systemImage: "lock") { app.privacy.lockAll() }
+                .disabled(app.privacy.unlockedServerIDs.isEmpty)
+        }
+    }
+}
+
+/// 仅 Debug 构建：公开测试片源，用于验证内核。
+struct DebugPlaybackSection: View {
+    @Environment(\.playMedia) private var playMedia
+
+    var body: some View {
+        #if DEBUG
+        Section("开发") {
+            Button("测试播放（Apple HDR 示例流）", systemImage: "play.rectangle") {
+                playMedia(PlaybackRequest(
+                    target: .url(URL(string: "https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_adv_example_hevc/master.m3u8")!),
+                    title: "Apple HLS 示例"
+                ))
+            }
+            // 单文件直放：与服务器直放原文件的路径一致，用于验证 KSPlayer 内核（播放设置中切换内核）。
+            Button("测试播放（MP4 单文件）", systemImage: "play.rectangle") {
+                playMedia(PlaybackRequest(
+                    target: .url(URL(string: "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_10MB.mp4")!),
+                    title: "Big Buck Bunny"
+                ))
+            }
+        }
+        #endif
+    }
+}
+
+struct AboutSection: View {
+    var body: some View {
+        Section {
+            LabeledContent("版本", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "-")
+            Link("项目主页", destination: URL(string: "https://github.com/ZeroDevi1/Vela")!)
+        } footer: {
+            Text("Vela 基于 JellyCine 继续开发，遵循 GPLv3。")
         }
     }
 }
@@ -167,7 +235,7 @@ private struct ServerRow: View {
 }
 
 /// 单个服务器的编辑：备注、私密、STRM 直连、线路与删除。
-private struct ServerEditView: View {
+struct ServerEditView: View {
     let serverID: String
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss

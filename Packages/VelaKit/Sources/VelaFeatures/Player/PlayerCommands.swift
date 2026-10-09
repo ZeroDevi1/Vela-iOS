@@ -14,6 +14,7 @@ extension FocusedValues {
 /// 菜单项只要播放器窗口在前就能触发，也让用户能在菜单里查到快捷键。
 /// 空格与方向键不带修饰键：播放器窗口内没有文本输入框，不会吞掉输入；没有播放器窗口在前时整组菜单项不出现，
 /// 避免停用的菜单项拦截浏览窗口里（如搜索框）的按键。
+/// ← / → 实际由 `PlayerScreen` 的按键监听处理（区分短按快退快进与长按临时倍速），这里的快捷键用于在菜单中展示与点选。
 public struct PlayerCommands: Commands {
     @FocusedValue(\.playerSession) private var session
 

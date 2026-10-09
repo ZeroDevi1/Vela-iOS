@@ -22,6 +22,10 @@ public struct PlayerScreen: View {
     /// 滚轮 / 触控板横扫快进快退的本地事件监听。
     @State private var scrollMonitor: Any?
     @State private var scrollSeek = ScrollSeekAccumulator()
+    /// 键盘（方向键长按倍速、数字键倍速）与右键点击的本地事件监听。
+    @State private var inputMonitor: Any?
+    @State private var arrowHold = ArrowKeyHold()
+    @State private var rightClicks = ClickDisambiguator()
     #endif
 
     public init(request: PlaybackRequest) {
@@ -170,11 +174,16 @@ public struct PlayerScreen: View {
         }
         .onAppear(perform: installEscapeMonitor)
         .onAppear(perform: installScrollMonitor)
+        .onAppear(perform: installInputMonitor)
         .onDisappear {
             if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
             escapeMonitor = nil
             if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
             scrollMonitor = nil
+            if let inputMonitor { NSEvent.removeMonitor(inputMonitor) }
+            inputMonitor = nil
+            arrowHold.cancel()
+            rightClicks.cancel()
             miniWindow.teardown()
         }
         #endif
@@ -308,6 +317,82 @@ public struct PlayerScreen: View {
         }
     }
 
+    /// 「设置 → 手势」的键盘与右键操作：
+    /// - ← / →：短按快退 / 快进；按住超过 `ArrowKeyHold.holdDelay` 改为临时倍速（左右各自设置），松开恢复。
+    ///   方向键在这里消费掉，菜单栏「播放」里的同名快捷键只用于展示。
+    /// - 数字键（开启「数字键切换倍速」时）：直接设定倍速。
+    /// - 右键单击 / 双击：执行设置的动作；单击在双击间隔后才执行，以便识别双击（双击动作为「无」时立即执行）。
+    /// 只处理发往本播放器窗口、没有打开面板、非小窗时的事件。
+    private func installInputMonitor() {
+        guard inputMonitor == nil else { return }
+        inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .rightMouseDown]) { event in
+            handleInput(event)
+        }
+    }
+
+    /// - Returns: 已处理时返回 nil（不再分发），否则原样返回事件。
+    private func handleInput(_ event: NSEvent) -> NSEvent? {
+        let controller = session.controller
+        guard event.window === window, panel == nil, !controller.isMiniWindow, session.phase == .ready else { return event }
+        if event.type == .rightMouseDown {
+            handleRightClick(count: event.clickCount)
+            return nil
+        }
+        guard event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty else { return event }
+        if event.keyCode == ArrowKeyHold.leftArrow || event.keyCode == ArrowKeyHold.rightArrow {
+            return handleArrow(event) ? nil : event
+        }
+        return handleDigit(event) ? nil : event
+    }
+
+    private func handleRightClick(count: Int) {
+        let controller = session.controller
+        let preferences = controller.preferences
+        let window = window
+        let doubleAction: MouseClickAction = preferences.rightDoubleClickAction
+        let single: @MainActor () -> Void = {
+            PlayerGestureLayer.perform(preferences.rightClickAction, controller: controller, window: window)
+        }
+        var double: (@MainActor () -> Void)?
+        if doubleAction != .none {
+            double = { PlayerGestureLayer.perform(doubleAction, controller: controller, window: window) }
+        }
+        rightClicks.click(count: count, single: single, double: double)
+    }
+
+    /// - Returns: 是否处理了该方向键事件。
+    private func handleArrow(_ event: NSEvent) -> Bool {
+        let controller = session.controller
+        let preferences = controller.preferences
+        let leading = event.keyCode == ArrowKeyHold.leftArrow
+        if event.type == .keyDown {
+            let rate: Float = leading ? preferences.keyHoldLeftSpeed : preferences.keyHoldRightSpeed
+            arrowHold.keyDown(event.keyCode, isRepeat: event.isARepeat) { controller.beginHoldSpeed(rate: rate) }
+            return true
+        }
+        switch arrowHold.keyUp(event.keyCode) {
+        case .tap:
+            if leading { controller.skipBackward() } else { controller.skipForward() }
+            return true
+        case .hold:
+            controller.endHoldSpeed()
+            return true
+        case .ignored:
+            return false
+        }
+    }
+
+    /// 「数字键切换倍速」开启时，数字键直接设定倍速。
+    private func handleDigit(_ event: NSEvent) -> Bool {
+        let controller = session.controller
+        guard event.type == .keyDown, controller.preferences.digitKeysSetSpeed,
+              let character = event.charactersIgnoringModifiers?.first,
+              let rate = PlayerPreferences.digitKeySpeeds[character] else { return false }
+        controller.engine.setRate(rate)
+        controller.flash("\(rate.formatted())×", symbol: "speedometer")
+        return true
+    }
+
     /// 滚轮 / 触控板横扫快进快退（第 3.5 节）：只处理发往本播放器窗口、没有打开面板、非小窗时的滚动；
     /// 惯性滚动阶段忽略，避免松手后继续跳。每跨过一个步长执行一次快进 / 快退（步长取「快进 / 快退时间」设置）。
     private func installScrollMonitor() {
@@ -352,6 +437,75 @@ struct ScrollSeekAccumulator {
         let delta = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX) ? event.scrollingDeltaY : -event.scrollingDeltaX
         guard delta != 0 else { return nil }
         return delta > 0 ? 1 : -1
+    }
+}
+
+/// 区分方向键的短按与长按。按下后 `holdDelay` 内松开为短按（快退 / 快进）；超过则触发长按回调（临时倍速），
+/// 松开时由调用方恢复原速。按住期间的系统重复按键事件忽略。
+@MainActor
+final class ArrowKeyHold {
+    static let leftArrow: UInt16 = 123
+    static let rightArrow: UInt16 = 124
+    private static let holdDelay: Duration = .milliseconds(350)
+
+    enum Release { case tap, hold, ignored }
+
+    private var key: UInt16?
+    private var isHolding = false
+    private var timer: Task<Void, Never>?
+
+    func keyDown(_ code: UInt16, isRepeat: Bool, onHold: @escaping @MainActor () -> Void) {
+        guard !isRepeat, key == nil else { return }
+        key = code
+        timer = Task { [weak self] in
+            try? await Task.sleep(for: Self.holdDelay)
+            guard let self, !Task.isCancelled, self.key == code else { return }
+            self.isHolding = true
+            onHold()
+        }
+    }
+
+    func keyUp(_ code: UInt16) -> Release {
+        guard key == code else { return .ignored }
+        let result: Release = isHolding ? .hold : .tap
+        cancel()
+        return result
+    }
+
+    func cancel() {
+        timer?.cancel()
+        timer = nil
+        key = nil
+        isHolding = false
+    }
+}
+
+/// 区分鼠标单击与双击：有双击动作时，单击等系统双击间隔过后才执行；间隔内的第二次点击执行双击动作。
+@MainActor
+final class ClickDisambiguator {
+    private var pending: Task<Void, Never>?
+
+    func click(count: Int, single: @escaping @MainActor () -> Void, double: (@MainActor () -> Void)?) {
+        guard let double else {
+            if count == 1 { single() }
+            return
+        }
+        if count >= 2 {
+            cancel()
+            double()
+            return
+        }
+        cancel()
+        pending = Task {
+            try? await Task.sleep(for: .seconds(NSEvent.doubleClickInterval))
+            guard !Task.isCancelled else { return }
+            single()
+        }
+    }
+
+    func cancel() {
+        pending?.cancel()
+        pending = nil
     }
 }
 

@@ -292,7 +292,8 @@ private final class SystemVolume {
 
 #else
 
-/// macOS：鼠标移动唤出控制层，单击播放 / 暂停，双击全屏。键盘操作在菜单栏「播放」（`PlayerCommands`）。
+/// macOS：鼠标移动唤出控制层；左键单击 / 双击执行「设置 → 手势」中的动作（默认播放 / 暂停、全屏），
+/// 右键由 `PlayerScreen` 的事件监听处理。键盘操作在菜单栏「播放」（`PlayerCommands`）。
 struct PlayerGestureLayer: View {
     let controller: PlayerController
     /// VR 拖动的上一次平移量与捏合的上一次倍率，按增量更新视角。
@@ -306,11 +307,22 @@ struct PlayerGestureLayer: View {
                 if case .active = phase { controller.touchControls() }
             }
             .gesture(
-                TapGesture(count: 2).onEnded { NSApp.keyWindow?.toggleFullScreen(nil) }
-                    .exclusively(before: TapGesture().onEnded { controller.togglePlayPause() })
+                TapGesture(count: 2).onEnded { Self.perform(controller.preferences.leftDoubleClickAction, controller: controller, window: NSApp.keyWindow) }
+                    .exclusively(before: TapGesture().onEnded {
+                        Self.perform(controller.preferences.leftClickAction, controller: controller, window: NSApp.keyWindow)
+                    })
             )
             .simultaneousGesture(vrDrag, including: controller.vrEnabled ? .all : .none)
             .simultaneousGesture(vrMagnify, including: controller.vrEnabled ? .all : .none)
+    }
+
+    static func perform(_ action: MouseClickAction, controller: PlayerController, window: NSWindow?) {
+        switch action {
+        case .playPause: controller.togglePlayPause()
+        case .fullScreen: window?.toggleFullScreen(nil)
+        case .toggleControls: controller.toggleControls()
+        case .none: break
+        }
     }
 
     /// VR 转平面：鼠标拖动转视角。

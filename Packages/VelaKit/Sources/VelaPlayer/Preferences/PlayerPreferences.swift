@@ -15,6 +15,10 @@ public final class PlayerPreferences {
     public static let seekIntervals: [Int] = [5, 10, 15, 30, 60]
     /// 可选的长按 / 双击倍速。
     public static let speedOptions: [Float] = [1.25, 1.5, 2, 2.5, 3]
+    /// macOS 长按方向键的可选倍速（左键常用于慢放，含小于 1 的值）。
+    public static let keyHoldSpeedOptions: [Float] = [0.25, 0.5, 0.75, 1.25, 1.5, 2, 2.5, 3]
+    /// macOS「数字键切换倍速」：0 为 0.5×，1–4 为对应倍速。
+    public static let digitKeySpeeds: [Character: Float] = ["0": 0.5, "1": 1, "2": 2, "3": 3, "4": 4]
     /// 可选的前向缓冲时长（秒）；0 为自动。
     public static let forwardBufferOptions: [Int] = [0, 15, 30, 60, 120]
     /// 软件解码线程数；0 为自动（按 CPU 核心数）。
@@ -98,6 +102,16 @@ public final class PlayerPreferences {
     public var hapticLongPress: Bool { didSet { save(hapticLongPress, "player.haptic.longPress") } }
     public var hapticSwipeSeek: Bool { didSet { save(hapticSwipeSeek, "player.haptic.swipeSeek") } }
     public var hapticScrubBar: Bool { didSet { save(hapticScrubBar, "player.haptic.scrubBar") } }
+    /// macOS 键盘：长按 ← / → 时的临时倍速（松开恢复）；短按仍为快退 / 快进。
+    public var keyHoldLeftSpeed: Float { didSet { save(keyHoldLeftSpeed, "player.mac.keyHoldLeftSpeed") } }
+    public var keyHoldRightSpeed: Float { didSet { save(keyHoldRightSpeed, "player.mac.keyHoldRightSpeed") } }
+    /// macOS 键盘：数字键直接设定倍速（`digitKeySpeeds`）。
+    public var digitKeysSetSpeed: Bool { didSet { save(digitKeysSetSpeed, "player.mac.digitKeysSetSpeed") } }
+    /// macOS 鼠标：在画面上单击 / 双击左右键的动作。
+    public var leftClickAction: MouseClickAction { didSet { save(leftClickAction.rawValue, "player.mac.leftClick") } }
+    public var leftDoubleClickAction: MouseClickAction { didSet { save(leftDoubleClickAction.rawValue, "player.mac.leftDoubleClick") } }
+    public var rightClickAction: MouseClickAction { didSet { save(rightClickAction.rawValue, "player.mac.rightClick") } }
+    public var rightDoubleClickAction: MouseClickAction { didSet { save(rightDoubleClickAction.rawValue, "player.mac.rightDoubleClick") } }
 
     // MARK: - 界面偏好
 
@@ -189,6 +203,14 @@ public final class PlayerPreferences {
         hapticLongPress = value("player.haptic.longPress", true)
         hapticSwipeSeek = value("player.haptic.swipeSeek", true)
         hapticScrubBar = value("player.haptic.scrubBar", true)
+        keyHoldLeftSpeed = value("player.mac.keyHoldLeftSpeed", 0.5)
+        keyHoldRightSpeed = value("player.mac.keyHoldRightSpeed", 2)
+        digitKeysSetSpeed = value("player.mac.digitKeysSetSpeed", false)
+        // 默认值与改动前的行为一致：左键单击播放 / 暂停、双击全屏；右键原本没有动作。
+        leftClickAction = raw("player.mac.leftClick", .playPause)
+        leftDoubleClickAction = raw("player.mac.leftDoubleClick", .fullScreen)
+        rightClickAction = raw("player.mac.rightClick", .toggleControls)
+        rightDoubleClickAction = raw("player.mac.rightDoubleClick", .fullScreen)
 
         osd = codable("player.osd", OSDOptions())
         buttons = codable("player.buttons", PlayerButtons())
@@ -253,6 +275,20 @@ public enum PlayerTapAction: String, CaseIterable, Sendable {
         case .playPause: "播放/暂停"
         case .seek: "快退快进"
         case .speed: "倍速播放"
+        case .none: "无"
+        }
+    }
+}
+
+/// macOS 播放器画面上的鼠标点击动作。
+public enum MouseClickAction: String, CaseIterable, Sendable {
+    case playPause, fullScreen, toggleControls, none
+
+    public var title: String {
+        switch self {
+        case .playPause: "播放/暂停"
+        case .fullScreen: "全屏"
+        case .toggleControls: "显示/隐藏控制栏"
         case .none: "无"
         }
     }

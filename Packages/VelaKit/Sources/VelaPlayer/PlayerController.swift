@@ -488,7 +488,11 @@ public final class PlayerController {
 
     /// - Parameter leading: 长按位置在左半屏时用左侧倍速设置，否则用右侧。
     public func beginHoldSpeed(leading: Bool) {
-        let speed = leading ? preferences.leadingSpeed : preferences.trailingSpeed
+        beginHoldSpeed(rate: leading ? preferences.leadingSpeed : preferences.trailingSpeed)
+    }
+
+    /// 以指定倍速临时播放（macOS 长按方向键），`endHoldSpeed()` 恢复原速。
+    public func beginHoldSpeed(rate speed: Float) {
         rateBeforeHold = engine.rate
         engine.setRate(speed)
         hud = .speed(speed)
