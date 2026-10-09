@@ -5,8 +5,8 @@ import SwiftUI
 /// 各页复用 iOS 的设置子页面与分组；含二级页面的标签（通用、连接）自带导航栈。
 /// 发现 / 订阅日历在 Mac 侧边栏中，这里不重复入口；触屏手势换为键盘与鼠标设置（`MacGestureSettingsView`）。
 ///
-/// 标签栏自绘而不用系统 `TabView`：系统做法把标签放进透明工具栏，页面内容从窗口顶端排起、
-/// 首个分组压在标签下方（macOS 27 实测），自绘标签栏与页面上下排列，页面总是从分隔线下开始。
+/// 标签栏自绘（图标 + 文字，选中项强调色），与页面上下排列。窗口尺寸由 Settings 场景的
+/// `.windowResizability(.contentSize)` 固定为本视图尺寸，避免窗口比内容矮时顶部被裁掉。
 struct MacSettingsView: View {
     @AppStorage("settings.mac.tab") private var selection: SettingsTab = .general
 

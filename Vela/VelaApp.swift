@@ -48,8 +48,10 @@ struct VelaApp: App {
             SettingsView()
                 .velaPlaybackEnvironment()
                 .environment(app)
-                .frame(minWidth: 480, minHeight: 420)
         }
+        // 窗口尺寸跟随内容（`MacSettingsView` 固定 680×620）：否则会沿用旧版设置页留下的较小窗口尺寸，
+        // 内容比窗口高时居中显示，顶部的标签栏与首个分组被裁掉。
+        .windowResizability(.contentSize)
         #endif
     }
 }
