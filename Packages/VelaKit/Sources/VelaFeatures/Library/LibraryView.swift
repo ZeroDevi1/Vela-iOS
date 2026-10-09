@@ -10,7 +10,7 @@ struct MyMediaView: View {
     @State private var views: LoadState<[MediaItem]> = .idle
 
     var body: some View {
-        NavigationStack {
+        HistoryNavigationStack {
             Group {
                 switch views {
                 case .loaded(let items) where items.isEmpty:

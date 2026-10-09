@@ -221,6 +221,7 @@ struct EpisodeShelf: View {
                                 .overlay(alignment: .topTrailing) { PlayedMark(played: episode.isPlayed) }
                             }
                             .buttonStyle(.plain)
+                            .itemContextMenu(episode)
                             .id(episode.id)
                         }
                     }
@@ -374,6 +375,59 @@ struct SeasonDetailView: View {
     private static let pageSize = 20
 
     var body: some View {
+        content
+            .navigationTitle("\(route.series.name) · \(route.season.name)")
+            .toolbar {
+                Button("下载本季", systemImage: "arrow.down.circle") { showsSeasonDownload = true }
+            }
+            .sheet(isPresented: $showsSeasonDownload) {
+                SeasonDownloadSheet(
+                    seriesID: route.series.id, seasonID: route.season.id,
+                    title: "下载 \(route.season.name)", serverID: route.series.serverID
+                )
+            }
+            .task { await load() }
+    }
+
+    #if os(macOS)
+    /// Mac 用网格一次列出全部单集（第 3.5 节：需要总览的选集不用横滑 / 分段），悬停显示播放与更多按钮。
+    @ViewBuilder
+    private var content: some View {
+        switch episodes {
+        case .loaded(let all):
+            ScrollView {
+                VStack(alignment: .leading, spacing: VelaTheme.Spacing.l) {
+                    header(all)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: Self.macCardWidth), spacing: VelaTheme.Spacing.l)], spacing: VelaTheme.Spacing.l) {
+                        ForEach(all) { episode in
+                            NavigationLink(value: episode) {
+                                LandscapeCard(
+                                    title: "\(episode.indexNumber.map { "\($0). " } ?? "")\(episode.name)",
+                                    subtitle: MediaFormat.runtime(episode.runTimeTicks),
+                                    imageURL: app.imageURL(for: episode, kind: .primary, maxWidth: 480),
+                                    progress: episode.playedFraction,
+                                    width: Self.macCardWidth
+                                )
+                                .overlay(alignment: .topLeading) { PlayedMark(played: episode.isPlayed) }
+                            }
+                            .buttonStyle(.plain)
+                            .itemContextMenu(episode)
+                        }
+                    }
+                }
+                .padding(.vertical, VelaTheme.Spacing.l)
+                .velaPageMargin()
+            }
+        case .failed(let message):
+            LoadFailureView(message: message) { Task { await load() } }
+        default:
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private static let macCardWidth: CGFloat = 240
+    #else
+    private var content: some View {
         List {
             switch episodes {
             case .loaded(let all):
@@ -402,6 +456,7 @@ struct SeasonDetailView: View {
                 Section {
                     ForEach(all[pageRange(rangeIndex, total: all.count)]) { episode in
                         NavigationLink(value: episode) { EpisodeRow(episode: episode) }
+                            .itemContextMenu(episode)
                             .swipeActions(edge: .leading) {
                                 Button("播放", systemImage: "play.fill") { playMedia(.item(episode)) }.tint(VelaTheme.accentDeep)
                             }
@@ -413,18 +468,8 @@ struct SeasonDetailView: View {
                 ProgressView().frame(maxWidth: .infinity)
             }
         }
-        .navigationTitle("\(route.series.name) · \(route.season.name)")
-        .toolbar {
-            Button("下载本季", systemImage: "arrow.down.circle") { showsSeasonDownload = true }
-        }
-        .sheet(isPresented: $showsSeasonDownload) {
-            SeasonDownloadSheet(
-                seriesID: route.series.id, seasonID: route.season.id,
-                title: "下载 \(route.season.name)", serverID: route.series.serverID
-            )
-        }
-        .task { await load() }
     }
+    #endif
 
     /// 季名、集数与播放按钮（播放第一个未看完的单集，全部看完时从第一集开始）。
     private func header(_ all: [MediaItem]) -> some View {
@@ -432,6 +477,14 @@ struct SeasonDetailView: View {
             Text(route.season.name).font(.title2.weight(.bold))
             Text("\(all.count) 集").foregroundStyle(.secondary)
             if let target = all.first(where: { !$0.isPlayed }) ?? all.first {
+                #if os(macOS)
+                // Mac 控件尺寸规范（第 3.5 节第 5 条）：系统强调按钮，不铺满整行。
+                Button { playMedia(.item(target)) } label: {
+                    Label(target.episodeLabel.map { "播放 \($0)" } ?? "播放", systemImage: "play.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                #else
                 Button { playMedia(.item(target)) } label: {
                     Label(target.episodeLabel.map { "播放 \($0)" } ?? "播放", systemImage: "play.fill")
                         .font(.headline)
@@ -442,6 +495,7 @@ struct SeasonDetailView: View {
                 .tint(.white)
                 .foregroundStyle(.black)
                 .controlSize(.large)
+                #endif
             }
         }
     }
@@ -868,5 +922,6 @@ extension View {
             .navigationDestination(for: MediaItem.self) { ItemDetailView(item: $0) }
             .navigationDestination(for: SeasonRoute.self) { SeasonDetailView(route: $0) }
             .navigationDestination(for: PersonRoute.self) { PersonDetailView(route: $0) }
+            .navigationDestination(for: DetailTagRoute.self) { DetailTagItemsView(route: $0) }
     }
 }

@@ -27,6 +27,10 @@ struct MainTabView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.playMedia) private var playMedia
     @SceneStorage("selectedTab") private var selection: AppTab = .home
+    /// 每个标签各自的导航记录（切换标签不影响其他标签的返回 / 前进）。
+    @State private var histories: [AppTab: NavigationHistory] = Dictionary(
+        uniqueKeysWithValues: [AppTab.home, .media, .favorites, .settings, .discover, .subscriptions, .search].map { ($0, NavigationHistory()) }
+    )
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var sizeClass
     #else
@@ -40,6 +44,7 @@ struct MainTabView: View {
     var body: some View {
         shell
             .focusedSceneValue(\.selectedTab, $selection)
+            .focusedSceneValue(\.navigationHistory, histories[selection])
             // 恢复到当前平台不存在的标签（macOS 的设置、iOS 的发现 / 订阅）时回到首页。
             .onAppear {
                 if !isAvailable(selection) { selection = .home }
@@ -139,9 +144,9 @@ struct MainTabView: View {
     @ViewBuilder
     private func page(_ tab: AppTab) -> some View {
         #if os(iOS)
-        pageContent(tab).environment(\.horizontalSizeClass, sizeClass)
+        pageContent(tab).environment(\.horizontalSizeClass, sizeClass).environment(histories[tab])
         #else
-        pageContent(tab)
+        pageContent(tab).environment(histories[tab])
         #endif
     }
 

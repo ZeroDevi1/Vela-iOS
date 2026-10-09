@@ -14,7 +14,7 @@ struct FavoritesView: View {
     private static let limit = 200
 
     var body: some View {
-        NavigationStack {
+        HistoryNavigationStack {
             Group {
                 switch favorites {
                 case .loaded(let items) where items.isEmpty:
@@ -56,6 +56,7 @@ struct FavoritesView: View {
                     )
                 }
                 .buttonStyle(.plain)
+                .itemContextMenu(item)
             } accessory: {
                 NavigationLink(value: HomeListRoute.favorites) { ShelfViewAllArrow() }.buttonStyle(.plain)
             }
@@ -76,6 +77,7 @@ struct FavoritesView: View {
                     )
                 }
                 .buttonStyle(.plain)
+                .itemContextMenu(item)
             } accessory: {
                 NavigationLink(value: HomeListRoute.favorites) { ShelfViewAllArrow() }.buttonStyle(.plain)
             }

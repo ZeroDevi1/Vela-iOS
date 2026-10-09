@@ -113,6 +113,8 @@ struct BaseItemDTO: Decodable, Sendable {
     var taglines: [String]?
     var people: [PersonDTO]?
     var studios: [NameIDDTO]?
+    /// 带 id 的类型（Fields 含 Genres 时返回），详情页类型胶囊据此跳转类型条目列表。
+    var genreItems: [NameIDDTO]?
     var mediaSources: [MediaSourceInfo]?
     var status: String?
     var endDate: Date?
@@ -209,6 +211,7 @@ struct BaseItemDTO: Decodable, Sendable {
         case taglines = "Taglines"
         case people = "People"
         case studios = "Studios"
+        case genreItems = "GenreItems"
         case mediaSources = "MediaSources"
         case status = "Status"
         case endDate = "EndDate"

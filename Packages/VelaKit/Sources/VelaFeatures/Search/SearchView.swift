@@ -20,7 +20,7 @@ struct SearchView: View {
     @State private var kinds: Set<SearchKind> = Set(SearchKind.allCases)
 
     var body: some View {
-        NavigationStack {
+        HistoryNavigationStack {
             Group {
                 if query.trimmingCharacters(in: .whitespaces).isEmpty {
                     SearchSuggestionsView()
@@ -70,6 +70,7 @@ struct SearchView: View {
                                 )
                             }
                             .buttonStyle(.plain)
+                            .itemContextMenu(item)
                         }
                     }
                 }

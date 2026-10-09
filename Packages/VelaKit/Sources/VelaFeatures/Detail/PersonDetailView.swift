@@ -133,6 +133,7 @@ struct PersonDetailView: View {
                                 )
                             }
                             .buttonStyle(.plain)
+                            .itemContextMenu(item)
                         }
                     }
                     .padding(.horizontal, VelaTheme.Spacing.l)

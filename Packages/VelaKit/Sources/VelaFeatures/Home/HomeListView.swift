@@ -39,6 +39,7 @@ struct HomeListView: View {
                 ForEach(items) { item in
                     NavigationLink(value: item) { card(item) }
                         .buttonStyle(.plain)
+                        .itemContextMenu(item)
                         .onAppear {
                             if item.id == items.last?.id { Task { await loadMore() } }
                         }

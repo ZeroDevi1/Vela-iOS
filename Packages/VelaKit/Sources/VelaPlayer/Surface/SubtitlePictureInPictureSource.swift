@@ -60,7 +60,7 @@ final class SubtitlePictureInPictureSource: NSObject {
 
     func didStop() {
         pump.stop()
-        displayLayer.sampleBufferRenderer.flush(removingDisplayedImage: true) {}
+        pump.clearDisplayedImage()
     }
 
     func invalidate() {
@@ -87,7 +87,7 @@ extension SubtitlePictureInPictureSource: AVPictureInPictureSampleBufferPlayback
         }
     }
 
-    /// 时间范围以宿主时钟表示（图层没有 controlTimebase）：起点 = 现在 - 当前位置，小窗据此显示进度。
+    /// 时间范围以宿主时钟表示（图层的时间基准由 `FramePump` 的同步器驱动，与宿主时钟一致）：起点 = 现在 - 当前位置，小窗据此显示进度。
     nonisolated func pictureInPictureControllerTimeRangeForPlayback(_ pictureInPictureController: AVPictureInPictureController) -> CMTimeRange {
         MainActor.assumeIsolated {
             guard let engine = controller?.engine, engine.duration > 0 else {
@@ -115,10 +115,15 @@ extension SubtitlePictureInPictureSource: AVPictureInPictureSampleBufferPlayback
 }
 
 /// 在后台队列按固定频率取帧、叠字幕并送入显示图层。画中画时应用处于后台，主线程的显示刷新回调不可靠，因此用计时器驱动。
+///
+/// iOS / macOS 27 起渲染器自身的入队接口弃用，改为挂到 `AVSampleBufferRenderSynchronizer` 上经 `Receiver` 入队。
+/// 同步器只用作时间基准：速率 1、时间与宿主时钟对齐，样本时间戳取宿主时钟当前值并标记立即显示，
+/// 因此显示时机与迁移前（图层无时间基准、帧到即显示）相同，画中画的时间范围仍按宿主时钟计算。
 private final class FramePump: @unchecked Sendable {
     private let queue = DispatchQueue(label: "vela.pip.subtitle-frames", qos: .userInteractive)
-    /// 显示图层的渲染器。在主线程取得后由出帧队列使用（入队接口本身是线程安全的）。
-    private let renderer: AVSampleBufferVideoRenderer
+    private let synchronizer = AVSampleBufferRenderSynchronizer()
+    /// 显示图层渲染器的入队端。在主线程取得后由出帧队列使用。
+    private let receiver: AVSampleBufferVideoRenderer.Receiver
     private let burner: SubtitleBurner
     private let lock = NSLock()
     private var output: AVPlayerItemVideoOutput?
@@ -127,8 +132,16 @@ private final class FramePump: @unchecked Sendable {
 
     @MainActor
     init(layer: AVSampleBufferDisplayLayer, burner: SubtitleBurner) {
-        renderer = layer.sampleBufferRenderer
+        receiver = synchronizer.sampleBufferReceiver(adding: layer.sampleBufferRenderer)
+        synchronizer.setRate(1, time: CMClockGetTime(CMClockGetHostTimeClock()))
         self.burner = burner
+    }
+
+    /// 清除小窗最后一帧（画中画结束后调用）。在出帧队列上执行，避免与正在进行的入队交错。
+    func clearDisplayedImage() {
+        queue.async { [self] in
+            Task { await self.receiver.flush(removingDisplayedImage: true) }
+        }
     }
 
     func attach(to newItem: AVPlayerItem?) {
@@ -181,13 +194,21 @@ private final class FramePump: @unchecked Sendable {
         var rendered: CVPixelBuffer?
         frame.withUnsafeBuffer { rendered = burner.render($0) }
         guard let rendered, let sample = Self.makeSampleBuffer(rendered) else { return false }
-        if renderer.status == .failed { renderer.flush() }
-        guard renderer.isReadyForMoreMediaData else { return false }
-        renderer.enqueue(sample)
-        return true
+        switch receiver.enqueueImmediately(CMReadySampleBuffer(unsafeBuffer: sample)) {
+        case .enqueued, .enqueuedWithDecodeFailures:
+            return true
+        case .cancelledDueToFlush:
+            return false
+        case .cancelledDueToFlushRequiredToResume, .cancelledDueToError:
+            // 渲染器进入失败 / 需要 flush 的状态（如应用切后台时解码会话失效）：flush 后下一次取帧重新入队。
+            receiver.flush()
+            return false
+        @unknown default:
+            return false
+        }
     }
 
-    /// 立即显示的样本（不依赖图层的时间基准）。
+    /// 立即显示的样本：时间戳取宿主时钟当前值（与同步器时间一致），并标记立即显示。
     private static func makeSampleBuffer(_ buffer: CVPixelBuffer) -> CMSampleBuffer? {
         var format: CMVideoFormatDescription?
         guard CMVideoFormatDescriptionCreateForImageBuffer(allocator: nil, imageBuffer: buffer, formatDescriptionOut: &format) == noErr,

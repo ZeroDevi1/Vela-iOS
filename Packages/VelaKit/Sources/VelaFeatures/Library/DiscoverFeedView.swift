@@ -161,6 +161,7 @@ struct FeedShelves: View {
                                 )
                             }
                             .buttonStyle(.plain)
+                            .itemContextMenu(item)
                         }
                     }
                 }

@@ -54,8 +54,9 @@ struct ItemDetailView: View {
         // 宽屏详情页铺满整屏（与 Forward 一致），iPad 顶部的浮动标签栏会压在头图上，进入时隐藏。
         .toolbar(layout.isWide ? .hidden : .automatic, for: .tabBar)
         #endif
-        // 宽屏的已看 / 收藏 / 更多放在头图右侧操作列，导航栏只留返回按钮（与 Forward 一致）。
-        .toolbar { if !layout.isWide { toolbarActions } }
+        // iOS 宽屏的已看 / 收藏 / 更多放在头图右侧操作列，导航栏只留返回按钮（与 Forward 一致）；
+        // macOS 始终放在窗口工具栏（第 3.5 节：操作移入工具栏，不用触屏尺寸的圆形按钮）。
+        .toolbar { if showsToolbarActions { toolbarActions } }
         .navigationTitle(item.name)
         .sheet(isPresented: $showsMetadataManager) {
             MetadataManagerView(item: item, mediaSource: model.selectedSource) {
@@ -111,12 +112,55 @@ struct ItemDetailView: View {
                 WideSourceSection(model: model).id("source")
             }
             statusLine.velaPageMargin()
+            DetailTagChips(item: item, details: model.details).velaPageMargin()
 
             sections
         }
         .padding(.bottom, VelaTheme.Spacing.xxl)
     }
 
+    private var showsToolbarActions: Bool {
+        #if os(macOS)
+        true
+        #else
+        !layout.isWide
+        #endif
+    }
+
+    #if os(macOS)
+    /// macOS 头图右侧：系统强调按钮播放（续播时附带位置）、从头播放与下载、评分；已看 / 收藏 / 更多在窗口工具栏。
+    private var wideActionColumn: some View {
+        VStack(alignment: .leading, spacing: VelaTheme.Spacing.l) {
+            if let target = playTarget {
+                VStack(alignment: .leading, spacing: 6) {
+                    Button { play(target) } label: {
+                        Label(resumeFraction(target) != nil ? "继续播放" : "播放", systemImage: "play.fill")
+                            .padding(.horizontal, 8)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.extraLarge)
+                    if let subtitle = playSubtitle(for: target) {
+                        Text(subtitle).font(.callout).foregroundStyle(.secondary)
+                    }
+                    if let fraction = resumeFraction(target) {
+                        ProgressView(value: fraction).tint(VelaTheme.accent).frame(maxWidth: 220)
+                    }
+                }
+            }
+            HStack(spacing: VelaTheme.Spacing.s) {
+                if let target = playTarget, resumeFraction(target) != nil {
+                    Button("从头播放", systemImage: "arrow.counterclockwise") { playFromBeginning(target) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                }
+                if item.kind == .movie || item.kind == .episode {
+                    DownloadButton(item: model.playbackItem, source: model.selectedSource)
+                }
+            }
+            WideRatingRow(item: item)
+        }
+    }
+    #else
     /// 头图右侧：播放按钮、图标操作（下载、已看、收藏、更多）、评分。
     private var wideActionColumn: some View {
         VStack(alignment: .leading, spacing: VelaTheme.Spacing.l) {
@@ -159,6 +203,7 @@ struct ItemDetailView: View {
         }
     }
 
+
     private func iconButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
@@ -171,6 +216,7 @@ struct ItemDetailView: View {
         .buttonBorderShape(.circle)
         .accessibilityLabel(title)
     }
+    #endif
 
     /// 「第 1 季 · 42 集  15:56」：剧集页附带下一集的季 / 集号，续播时附带位置。
     private func playSubtitle(for target: MediaItem) -> String? {
@@ -598,7 +644,7 @@ private struct DetailHero: View {
             }
 
             metadata
-            tags
+            DetailTagChips(item: item, details: details)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -614,26 +660,6 @@ private struct DetailHero: View {
             return item.name
         default:
             return nil
-        }
-    }
-
-    /// 类型与制片公司标签（单集不显示，与 Android 一致）。
-    @ViewBuilder
-    private var tags: some View {
-        let values = item.kind == .episode ? [] : Array(item.genres.prefix(4)) + Array((details?.studios ?? []).prefix(3))
-        if !values.isEmpty {
-            ScrollView(.horizontal) {
-                HStack(spacing: 8) {
-                    ForEach(values, id: \.self) { value in
-                        Text(value)
-                            .font(.subheadline)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(VelaTheme.accentDeep.opacity(0.35), in: .rect(cornerRadius: 8))
-                    }
-                }
-            }
-            .scrollIndicators(.hidden)
         }
     }
 

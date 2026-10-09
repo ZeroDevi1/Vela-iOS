@@ -19,6 +19,11 @@ public struct PlayerScreen: View {
     @State private var miniWindow = MiniPlayerWindow()
     /// Esc 的本地按键监听（见 `PlayerCommands.exitFullScreenOrClose`）。
     @State private var escapeMonitor: Any?
+    /// 滚轮 / 触控板横扫快进快退的本地事件监听。
+    @State private var scrollMonitor: Any?
+    @State private var scrollSeek = ScrollSeekAccumulator()
+    /// 控制层隐藏时鼠标在画面底部：只浮出进度条（`MacProgressPeek`）。
+    @State private var progressPeek = false
     #endif
 
     public init(request: PlaybackRequest) {
@@ -84,8 +89,13 @@ public struct PlayerScreen: View {
             } else {
                 PlayerOSD(controller: session.controller)
 
+                #if os(macOS)
+                PlayerGestureLayer(controller: session.controller, progressPeek: $progressPeek)
+                    .ignoresSafeArea()
+                #else
                 PlayerGestureLayer(controller: session.controller)
                     .ignoresSafeArea()
+                #endif
             }
 
             switch session.phase {
@@ -166,9 +176,16 @@ public struct PlayerScreen: View {
             if !visible, !isMiniWindow { NSCursor.setHiddenUntilMouseMoves(true) }
         }
         .onAppear(perform: installEscapeMonitor)
+        .onAppear(perform: installScrollMonitor)
+        .onChange(of: session.controller.controlsVisible) { _, visible in
+            if visible { progressPeek = false }
+        }
+        .animation(.easeOut(duration: 0.15), value: progressPeek)
         .onDisappear {
             if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
             escapeMonitor = nil
+            if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
+            scrollMonitor = nil
             miniWindow.teardown()
         }
         #endif
@@ -233,12 +250,22 @@ public struct PlayerScreen: View {
                 .frame(maxHeight: .infinity, alignment: .top)
                 .padding(.top, 72)
         }
+        #if os(macOS)
+        // 面板在 macOS 上是锚在控制层按钮上的 popover（`playerPanelPopover`）。
+        if progressPeek, !session.controller.controlsVisible, session.phase == .ready {
+            MacProgressPeek(controller: session.controller, chapterStarts: session.chapters.map(\.chapter.start))
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .onHover { if !$0 { progressPeek = false } }
+                .transition(.opacity)
+        }
+        #else
         if let panel {
             PlayerPanelHost(panel: panel, session: session) {
                 withAnimation(.snappy) { self.panel = nil }
                 session.controller.touchControls()
             }
         }
+        #endif
     }
 
     #if os(iOS)
@@ -298,6 +325,19 @@ public struct PlayerScreen: View {
             return nil
         }
     }
+
+    /// 滚轮 / 触控板横扫快进快退（第 3.5 节）：只处理发往本播放器窗口、没有打开面板、非小窗时的滚动；
+    /// 惯性滚动阶段忽略，避免松手后继续跳。每跨过一个步长执行一次快进 / 快退（步长取「快进 / 快退时间」设置）。
+    private func installScrollMonitor() {
+        guard scrollMonitor == nil else { return }
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            guard event.window === window, panel == nil, !session.controller.isMiniWindow,
+                  session.phase == .ready, event.momentumPhase.isEmpty else { return event }
+            guard let direction = scrollSeek.consume(event) else { return event }
+            if direction > 0 { session.controller.skipForward() } else { session.controller.skipBackward() }
+            return nil
+        }
+    }
     #endif
 
     private func close() {
@@ -307,6 +347,32 @@ public struct PlayerScreen: View {
 }
 
 #if os(macOS)
+/// 把滚动事件换算为快进 / 快退次数。
+/// - 触控板（精确滚动）：只认横向为主的滑动，手指向右为快进（按 `isDirectionInvertedFromDevice` 还原手指方向，
+///   与「自然滚动」设置无关），累计 60pt 触发一次；纵向滑动不处理，避免误触。
+/// - 鼠标滚轮（非精确）：每格一次，向上为快进；按住 Shift 时系统把滚轮转为横向，同样处理。
+struct ScrollSeekAccumulator {
+    private var accumulated: CGFloat = 0
+    private static let trackpadStep: CGFloat = 60
+
+    /// - Returns: 1 快进、-1 快退；未达步长或不是快进快退手势时返回 nil（事件交还给系统）。
+    mutating func consume(_ event: NSEvent) -> Int? {
+        if event.hasPreciseScrollingDeltas {
+            if event.phase.contains(.began) { accumulated = 0 }
+            let dx = event.scrollingDeltaX, dy = event.scrollingDeltaY
+            guard abs(dx) > abs(dy) else { return nil }
+            accumulated += event.isDirectionInvertedFromDevice ? dx : -dx
+            guard abs(accumulated) >= Self.trackpadStep else { return nil }
+            let direction = accumulated > 0 ? 1 : -1
+            accumulated = 0
+            return direction
+        }
+        let delta = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX) ? event.scrollingDeltaY : -event.scrollingDeltaX
+        guard delta != 0 else { return nil }
+        return delta > 0 ? 1 : -1
+    }
+}
+
 /// 取得 SwiftUI 视图所在的 `NSWindow`（加入窗口后回调一次）。
 private struct PlayerWindowReader: NSViewRepresentable {
     let onWindow: (NSWindow?) -> Void

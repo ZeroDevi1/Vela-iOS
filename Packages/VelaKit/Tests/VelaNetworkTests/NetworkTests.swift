@@ -148,7 +148,21 @@ struct DetailsDecodingTests {
         let json = #"{"Id":"1","Name":"柯南","Type":"Series","Studios":[{"Name":"TMS","Id":12}],"People":[{"Id":"p","Name":"高山南","Role":"Conan","Type":"Actor"}]}"#
         let details = try JSONDecoder.server.decode(BaseItemDTO.self, from: Data(json.utf8)).toDetails(serverID: "s")
         #expect(details.studios == ["TMS"])
+        #expect(details.studioItems == [.init(id: "12", name: "TMS")])
         #expect(details.people.first?.role == "Conan")
+    }
+
+    /// 详情页类型胶囊靠 GenreItems 的 id 跳转：Jellyfin 为字符串、Emby 为数字；缺少时为空，胶囊只显示名称。
+    @Test func decodesGenreItemIDs() throws {
+        let jellyfin = #"{"Id":"1","Name":"A","Type":"Movie","Genres":["动作"],"GenreItems":[{"Name":"动作","Id":"g1"}]}"#
+        let emby = #"{"Id":"2","Name":"B","Type":"Series","Genres":["喜剧"],"GenreItems":[{"Name":"喜剧","Id":345}]}"#
+        let missing = #"{"Id":"3","Name":"C","Type":"Movie","Genres":["剧情"]}"#
+        func details(_ json: String) throws -> ItemDetails {
+            try JSONDecoder.server.decode(BaseItemDTO.self, from: Data(json.utf8)).toDetails(serverID: "s")
+        }
+        #expect(try details(jellyfin).genreItems == [.init(id: "g1", name: "动作")])
+        #expect(try details(emby).genreItems == [.init(id: "345", name: "喜剧")])
+        #expect(try details(missing).genreItems.isEmpty)
     }
 }
 

@@ -13,9 +13,17 @@ public struct ItemDetails: Sendable {
         public var primaryImageTag: String?
     }
 
+    /// 带服务器 id 的名称（类型 / 制片公司）。id 为 nil 时只能显示、不能跳转。
+    public struct NamedID: Hashable, Sendable {
+        public var id: String?
+        public var name: String
+    }
+
     public var item: MediaItem
     public var people: [Person]
     public var studios: [String]
+    public var studioItems: [NamedID]
+    public var genreItems: [NamedID]
     public var taglines: [String]
     public var mediaSources: [MediaSourceInfo]
     /// 服务器上的文件路径（管理员可见；普通用户可能为空）。
@@ -46,6 +54,8 @@ extension BaseItemDTO {
                 .init(id: $0.id, name: $0.name, role: $0.role, type: $0.type, primaryImageTag: $0.primaryImageTag)
             },
             studios: (studios ?? []).map(\.name),
+            studioItems: (studios ?? []).map { .init(id: $0.id, name: $0.name) },
+            genreItems: (genreItems ?? []).map { .init(id: $0.id, name: $0.name) },
             taglines: taglines ?? [],
             mediaSources: mediaSources ?? [],
             path: path,

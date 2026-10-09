@@ -63,7 +63,10 @@ struct LibraryItemsView: View {
                     style: imageStyle,
                     counts: $counts
                 ) {
+                    // macOS 的工具条控件在窗口工具栏（第 3.5 节），条目数在窗口副标题。
+                    #if os(iOS)
                     chromeBar
+                    #endif
                 }
             case .recommended:
                 LibraryRecommendationsView(library: library)
@@ -74,9 +77,25 @@ struct LibraryItemsView: View {
             }
         }
         .navigationTitle(library.name)
+        .navigationSubtitle(counts.total > 0 ? "\(counts.loaded) / \(counts.total) 项" : "")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
-        .navigationSubtitle(counts.total > 0 ? "\(counts.loaded) / \(counts.total) 项" : "")
+        #else
+        .toolbar {
+            if tab == .all {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button("随机播放", systemImage: "shuffle") { Task { await shuffle() } }
+                        .disabled(counts.total == 0)
+                        .help("随机播放")
+                    Button(imageStyle == .poster ? "横版样式" : "海报样式", systemImage: imageStyle == .poster ? "square.grid.2x2" : "rectangle.grid.1x2") {
+                        imageStyle = imageStyle == .poster ? .landscape : .poster
+                    }
+                    .help(imageStyle == .poster ? "横版样式" : "海报样式")
+                    filterMenu
+                    sortMenu
+                }
+            }
+        }
         #endif
         .navigationDestination(for: FacetRoute.self) { FacetItemsView(route: $0) }
         .navigationDestination(for: FolderRoute.self) { route in
@@ -557,6 +576,7 @@ private struct FolderContentsView: View {
                                 )
                             }
                             .buttonStyle(.plain)
+                            .itemContextMenu(item)
                         }
                     }
                 }

@@ -5,7 +5,8 @@ import VelaDesignSystem
 import VelaNetwork
 import VelaPlayer
 
-/// 播放器面板（横屏 / iPad / Mac 贴右下角，iPhone 竖屏贴底）。打开时隐藏控制层，点击面板外关闭。
+/// 播放器面板（横屏 / iPad 贴右下角，iPhone 竖屏贴底，打开时隐藏控制层，点击面板外关闭；
+/// macOS 从触发按钮弹出 popover，控制层保持显示，见 `PlayerPanelPopover`）。
 enum PlayerPanel: String, Identifiable {
     case info, audio, subtitle, episodes, chapters
     /// 点按底部标题块打开：海报、简介、本季剧集与演职人员（Android 的节目信息面板）。
@@ -109,8 +110,18 @@ struct PlayerPanelHost: View {
         }
     }
 
-    @ViewBuilder
     private var content: some View {
+        PlayerPanelContent(panel: panel, session: session, onClose: onClose)
+    }
+}
+
+/// 各面板的内容，侧边面板与 macOS popover 共用。
+private struct PlayerPanelContent: View {
+    let panel: PlayerPanel
+    let session: PlayerSession
+    let onClose: () -> Void
+
+    var body: some View {
         switch panel {
         case .info: PlaybackInfoPanel(session: session)
         case .audio: AudioPanel(session: session)
@@ -124,6 +135,41 @@ struct PlayerPanelHost: View {
         }
     }
 }
+
+#if os(macOS)
+/// macOS：面板以 popover 从触发按钮弹出（第 3.5 节「面板改为 popover」），不遮挡画面、不隐藏控制层；
+/// 点按外部或 Esc 由系统关闭。打开期间固定显示控制层，否则控制层自动隐藏会移除锚点按钮、连带关闭 popover。
+struct PlayerPanelPopover: View {
+    let panel: PlayerPanel
+    let session: PlayerSession
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: VelaTheme.Spacing.m) {
+            if let title = panel.title { Text(title).font(.headline) }
+            PlayerPanelContent(panel: panel, session: session, onClose: onClose)
+        }
+        .padding(VelaTheme.Spacing.l)
+        .frame(width: 360)
+        .frame(maxHeight: Self.maxHeight(panel), alignment: .top)
+        .fixedSize(horizontal: false, vertical: Self.fitsContent(panel))
+        .onAppear { session.controller.pinControls(true) }
+        .onDisappear { session.controller.pinControls(false) }
+    }
+
+    /// 与侧边面板相同的分类：短列表按内容高度，长列表用固定上限。
+    private static func fitsContent(_ panel: PlayerPanel) -> Bool {
+        switch panel {
+        case .audio, .subtitle, .subtitleStyle, .subtitleDelay, .quality: true
+        case .info, .episodes, .chapters, .episodeInfo: false
+        }
+    }
+
+    private static func maxHeight(_ panel: PlayerPanel) -> CGFloat {
+        fitsContent(panel) ? 480 : 560
+    }
+}
+#endif
 
 // MARK: - 轨道行
 

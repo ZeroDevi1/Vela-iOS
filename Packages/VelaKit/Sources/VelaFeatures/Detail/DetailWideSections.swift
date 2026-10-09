@@ -280,9 +280,7 @@ struct SeasonEpisodesSection: View {
                         )
                     }
                     .buttonStyle(.plain)
-                    .contextMenu {
-                        Button("播放", systemImage: "play.fill") { playMedia(.item(episode)) }
-                    }
+                    .itemContextMenu(episode)
                     .containerRelativeFrame(.horizontal, count: layout.visibleEpisodeCards, spacing: Self.cardSpacing)
                     .id(episode.id)
                 }

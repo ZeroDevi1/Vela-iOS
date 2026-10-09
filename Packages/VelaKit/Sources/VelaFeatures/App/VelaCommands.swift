@@ -1,15 +1,23 @@
 import SwiftUI
 
 /// macOS 菜单栏「前往」：⌘1… 切换主导航标签，⌘F 进入搜索。作用于当前活动窗口（见 `FocusedValues.selectedTab`）；
-/// 没有活动的浏览窗口（例如只开着播放器窗口）时菜单项置灰。
+/// 没有活动的浏览窗口（例如只开着播放器窗口）时菜单项置灰。「返回 / 前进」（⌘[ / ⌘]）作用于当前标签的导航记录。
 public struct VelaCommands: Commands {
     @FocusedBinding(\.selectedTab) private var selectedTab
     @FocusedValue(\.toggleSidebar) private var toggleSidebar
+    @FocusedValue(\.navigationHistory) private var history
 
     public init() {}
 
     public var body: some Commands {
         CommandMenu("前往") {
+            Button("返回") { history?.back() }
+                .keyboardShortcut("[", modifiers: .command)
+                .disabled(history?.canGoBack != true)
+            Button("前进") { history?.forward() }
+                .keyboardShortcut("]", modifiers: .command)
+                .disabled(history?.canGoForward != true)
+            Divider()
             item("首页", .home, key: "1")
             item("我的媒体", .media, key: "2")
             item("收藏", .favorites, key: "3")

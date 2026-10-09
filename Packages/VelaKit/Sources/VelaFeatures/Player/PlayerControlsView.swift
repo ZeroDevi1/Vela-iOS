@@ -32,7 +32,12 @@ struct PlayerControlsView: View {
     private static let speedRange: ClosedRange<Float> = 0.25...4
 
     var body: some View {
+        // iOS 面板打开时隐藏控制层；macOS 面板是锚在按钮上的 popover，控制层保持显示。
+        #if os(macOS)
+        let visible = controller.controlsVisible
+        #else
         let visible = controller.controlsVisible && panel == nil
+        #endif
         // 隐藏时移出视图树而不是只设透明度：否则进度与时间仍按 4 Hz 刷新，整层也随之重新合成。
         ZStack {
             if visible {
@@ -152,6 +157,7 @@ struct PlayerControlsView: View {
                 }
             }
             circleButton("info.circle", label: "媒体信息", size: size) { open(.info) }
+                .playerPanelPopover([.info], panel: $panel, session: session, arrowEdge: .bottom)
             if buttons.zoom {
                 circleButton(controller.videoGravity.symbol, label: "画面比例：\(controller.videoGravity.title)", size: size) {
                     controller.cycleVideoGravity()
@@ -168,8 +174,10 @@ struct PlayerControlsView: View {
             #endif
             if buttons.chapters, session.chapters.count > 1 {
                 circleButton("book", label: "章节", size: size) { open(.chapters) }
+                    .playerPanelPopover([.chapters], panel: $panel, session: session, arrowEdge: .bottom)
             }
             moreMenu(size: size)
+                .playerPanelPopover([.subtitleStyle, .subtitleDelay], panel: $panel, session: session, arrowEdge: .bottom)
         }
         .padding(.horizontal, landscape ? 12 : 12)
         .padding(.top, landscape ? 8 : 4)
@@ -583,6 +591,7 @@ struct PlayerControlsView: View {
         }
         .buttonStyle(.plain)
         .accessibilityHint("查看单集信息")
+        .playerPanelPopover([.episodeInfo], panel: $panel, session: session, arrowEdge: .top)
     }
 
     /// 串流画质 / 剧集 / 音轨 / 字幕（与 Android 版顺序一致）。
@@ -592,19 +601,23 @@ struct PlayerControlsView: View {
             if session.item != nil {
                 circleButton(session.maxBitrateOverride == nil ? "sparkles.tv" : "sparkles.tv.fill", label: "串流画质", size: Self.barButtonSize) { open(.quality) }
                     .disabled(session.isSwitchingStream)
+                    .playerPanelPopover([.quality], panel: $panel, session: session, arrowEdge: .top)
             }
             if !session.seasonEpisodes.isEmpty {
                 circleButton("list.bullet", label: "剧集列表", size: Self.barButtonSize) { open(.episodes) }
+                    .playerPanelPopover([.episodes], panel: $panel, session: session, arrowEdge: .top)
             }
             if !session.audioOptions.isEmpty {
                 let isMuted = controller.engine.isMuted
                 circleButton(isMuted ? "speaker.slash" : "waveform", label: isMuted ? "音轨（已静音）" : "音轨", size: Self.barButtonSize) { open(.audio) }
                     .disabled(session.isSwitchingStream)
+                    .playerPanelPopover([.audio], panel: $panel, session: session, arrowEdge: .top)
             }
             circleButton(session.selectedSubtitleIndex == nil ? "captions.bubble" : "captions.bubble.fill", label: "字幕", size: Self.barButtonSize) {
                 open(.subtitle)
             }
             .disabled(session.isSwitchingStream)
+            .playerPanelPopover([.subtitle], panel: $panel, session: session, arrowEdge: .top)
         }
     }
 
@@ -654,6 +667,55 @@ struct PlayerControlsView: View {
         withAnimation(.snappy) { panel = target }
     }
 }
+
+private extension View {
+    /// macOS：`targets` 中的面板打开时从这个控件弹出 popover；iOS 不变（面板由 `PlayerScreen` 的 `PlayerPanelHost` 显示）。
+    /// 一个面板只锚在一个控件上（例如「媒体信息」只锚在顶栏的信息按钮，「更多」菜单里的同名项也从那里弹出）。
+    @ViewBuilder
+    func playerPanelPopover(_ targets: Set<PlayerPanel>, panel: Binding<PlayerPanel?>, session: PlayerSession, arrowEdge: Edge) -> some View {
+        #if os(macOS)
+        popover(
+            isPresented: Binding(
+                get: { panel.wrappedValue.map(targets.contains) ?? false },
+                set: { presented in
+                    if !presented, let current = panel.wrappedValue, targets.contains(current) { panel.wrappedValue = nil }
+                }
+            ),
+            arrowEdge: arrowEdge
+        ) {
+            if let current = panel.wrappedValue, targets.contains(current) {
+                PlayerPanelPopover(panel: current, session: session) { panel.wrappedValue = nil }
+            }
+        }
+        #else
+        self
+        #endif
+    }
+}
+
+#if os(macOS)
+/// macOS：控制层隐藏时鼠标移到画面底部，只浮出进度条与时间（第 3.5 节），可直接拖动定位；
+/// 移到画面其他位置才显示完整控制层。由 `PlayerGestureLayer` 判断鼠标位置。
+struct MacProgressPeek: View {
+    let controller: PlayerController
+    let chapterStarts: [TimeInterval]
+
+    var body: some View {
+        HStack(spacing: 10) {
+            PlaybackTimeLabel(controller: controller)
+            PlayerScrubber(controller: controller, chapterStarts: chapterStarts)
+        }
+        .frame(height: 28)
+        .padding(.horizontal, 20)
+        .padding(.top, 24)
+        .padding(.bottom, 14)
+        .background {
+            LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .top, endPoint: .bottom)
+        }
+        .foregroundStyle(.white)
+    }
+}
+#endif
 
 /// 半透明圆底按钮：按下时轻微缩小；禁用时降低不透明度。
 private struct OverlayCircleButtonStyle: ButtonStyle {

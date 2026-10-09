@@ -16,7 +16,8 @@ struct HomeView: View {
     @Environment(\.playMedia) private var playMedia
     @State private var model = HomeModel()
     @SceneStorage("home.category") private var category: HomeModel.Category = .home
-    @State private var path = NavigationPath()
+    /// `MainTabView` 按标签注入；调试启动参数据此推入详情页。
+    @Environment(NavigationHistory.self) private var history: NavigationHistory?
 
     var body: some View {
         if app.network.isOnline {
@@ -28,7 +29,7 @@ struct HomeView: View {
     }
 
     private var onlineBody: some View {
-        NavigationStack(path: $path) {
+        HistoryNavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: VelaTheme.Spacing.xl) {
                     #if os(iOS)
@@ -76,12 +77,12 @@ struct HomeView: View {
     /// 仅 Debug 构建：启动环境变量 `VELA_DEBUG_OPEN_ITEM=<名称>` 时，在当前服务器搜索该名称并直接推入第一个结果的详情页。
     /// 真机无法注入点击，用于命令行启动后截图验收详情页版式（`devicectl device process launch --environment-variables`）。
     private func openDebugLaunchItem() async {
-        guard path.isEmpty,
+        guard let history, history.path.isEmpty,
               let term = ProcessInfo.processInfo.environment["VELA_DEBUG_OPEN_ITEM"], !term.isEmpty,
               let client = app.activeClient else { return }
         let query = ItemQuery(searchTerm: term, includeItemTypes: ["Movie", "Series", "Episode"], recursive: true, limit: 1)
         if let item = try? await client.items(query).items.first {
-            path.append(item)
+            history.push(item)
         }
     }
     #endif

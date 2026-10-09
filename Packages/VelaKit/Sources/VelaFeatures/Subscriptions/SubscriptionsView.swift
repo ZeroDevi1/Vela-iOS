@@ -7,7 +7,7 @@ import VelaNetwork
 /// 「订阅」标签页；内容见 `SubscriptionsPage`。
 struct SubscriptionsView: View {
     var body: some View {
-        NavigationStack { SubscriptionsPage() }
+        HistoryNavigationStack { SubscriptionsPage() }
     }
 }
 

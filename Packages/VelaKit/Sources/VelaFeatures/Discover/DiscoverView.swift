@@ -7,7 +7,7 @@ import VelaNetwork
 /// 「发现」标签页；内容见 `DiscoverPage`。
 struct DiscoverView: View {
     var body: some View {
-        NavigationStack { DiscoverPage() }
+        HistoryNavigationStack { DiscoverPage() }
     }
 }
 

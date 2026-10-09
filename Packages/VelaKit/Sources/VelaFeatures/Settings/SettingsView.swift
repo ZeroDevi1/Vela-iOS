@@ -14,7 +14,7 @@ public struct SettingsView: View {
     public init() {}
 
     public var body: some View {
-        NavigationStack {
+        HistoryNavigationStack {
             Form {
                 Section("服务器") {
                     ForEach(app.servers.servers) { server in
