@@ -1,0 +1,110 @@
+Vela：容器 pts 为解码顺序（ctts 写成常数）的 B 帧片源，VideoToolbox 直接硬解时改走 FFmpeg 硬件加速。
+
+VideoToolbox 异步硬解按解码顺序出帧，KSPlayer 送显队列按 pts 排序；容器 pts 是解码顺序时，B 帧会以解码顺序上屏，
+画面前后跳动、看起来掉帧（AVPlayer 同样受影响，系统内核无法修正）。本补丁在 VideoToolboxDecode 观察首个完整 GOP：
+编码声明了帧重排（codecpar.video_delay > 0）而整个 GOP 的 pts 单调递增，即判定容器 pts 不可信，在下一个关键帧处
+返回失败，复用 KSPlayer 已有的回退切到 FFmpegDecode。FFmpegDecode 在 hardwareDecode 下仍用 VideoToolbox 硬件加速，
+由 libavcodec 按码流重排，并经 best_effort_timestamp 改用 dts 定时。
+误判（声明重排但实际无 B 帧）只会失去异步硬解，仍是硬解。
+
+--- a/Sources/KSPlayer/MEPlayer/VideoToolboxDecode.swift
++++ b/Sources/KSPlayer/MEPlayer/VideoToolboxDecode.swift
+@@ -26,6 +26,8 @@
+     /// Vela: container metadata updated by the latest SEI; nil until the stream carries one (the container's alone
+     /// already reaches the output through the format description).
+     private var edrMetaData: EDRMetaData?
++    /// Vela: detects containers whose pts follow decode order on a reordered stream (see `DecodeOrderPTSProbe`).
++    private var decodeOrderProbe = DecodeOrderPTSProbe()
+ 
+     init(options: KSOptions, session: DecompressionSession) {
+         self.options = options
+@@ -43,6 +45,16 @@
+         guard let corePacket = packet.corePacket?.pointee, let data = corePacket.data else {
+             return
+         }
++        // Vela: VideoToolbox emits frames in decode order and the display queue sorts them by pts, so decode-order
++        // pts would show B-frames out of order. Fail at a keyframe so the track falls back to `FFmpegDecode`, which
++        // keeps VideoToolbox hardware decoding but reorders frames by the bitstream and times them by dts.
++        if decodeOrderProbe.observe(pts: corePacket.pts, isKeyFrame: packet.isKeyFrame,
++                                    reorderDelay: session.assetTrack.codecpar.video_delay)
++        {
++            KSLog("[VideoToolbox] container pts follow decode order on a reordered stream, switch to FFmpeg hwaccel")
++            completionHandler(.failure(NSError(errorCode: .codecVideoReceiveFrame, avErrorCode: 0)))
++            return
++        }
+         var hdr10PlusData: Data?
+         if let hdrSEIScanner {
+             let sei = hdrSEIScanner.scan(data, size: Int(corePacket.size))
+@@ -119,6 +131,7 @@
+     func doFlushCodec() {
+         lastPosition = 0
+         startTime = 0
++        decodeOrderProbe.reset()
+     }
+ 
+     func shutdown() {
+@@ -128,7 +141,64 @@
+     func decode() {
+         lastPosition = 0
+         startTime = 0
++    }
++}
++
++/// Vela: some muxers write ctts as a constant offset, so pts equal dts plus a constant (decode order) although the
++/// stream has B-frames. Within a GOP of a correctly muxed reordered stream pts go backwards at the first B-frame;
++/// if a whole GOP (at least `minPackets`) stays monotonic while the codec declares reordering, the container pts
++/// cannot be trusted for display order.
++///
++/// A stream that declares reordering but encodes no B-frames is also flagged; the fallback stays hardware decoded,
++/// so the misjudgement only costs the asynchronous VideoToolbox path.
++struct DecodeOrderPTSProbe {
++    static let minPackets = 8
++    /// nil until decided; true once the track should leave the VideoToolbox path.
++    private(set) var verdict: Bool?
++    /// A GOP is being observed (started at a keyframe after the last reset).
++    private var observing = false
++    private var lastPTS = Int64.min
++    private var packets = 0
++
++    /// Restarts observation after a flush or seek, unless already decided.
++    mutating func reset() {
++        guard verdict == nil else { return }
++        observing = false
++        lastPTS = .min
++        packets = 0
+     }
++
++    /// Feeds one packet in decode order.
++    /// - Parameters:
++    ///   - pts: Container pts; `Int64.min` (AV_NOPTS_VALUE) when missing.
++    ///   - reorderDelay: `codecpar.video_delay`, the declared number of reordered frames.
++    /// - Returns: true exactly once, on the keyframe that closes a monotonic GOP; decode that keyframe with
++    ///   another decoder.
++    mutating func observe(pts: Int64, isKeyFrame: Bool, reorderDelay: Int32) -> Bool {
++        guard verdict == nil else { return false }
++        guard reorderDelay > 0, pts != Int64.min else {
++            verdict = false
++            return false
++        }
++        if isKeyFrame {
++            if observing, packets >= Self.minPackets {
++                verdict = true
++                return true
++            }
++            observing = true
++            lastPTS = pts
++            packets = 1
++            return false
++        }
++        guard observing else { return false }
++        if pts < lastPTS {
++            verdict = false
++            return false
++        }
++        lastPTS = pts
++        packets += 1
++        return false
++    }
+ }
+ 
+ class DecompressionSession {
