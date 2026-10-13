@@ -9,6 +9,8 @@ import VelaPlayer
 /// macOS 从触发按钮弹出 popover，控制层保持显示，见 `PlayerPanelPopover`）。
 enum PlayerPanel: String, Identifiable {
     case info, audio, subtitle, episodes, chapters
+    /// 多段文件（CD1 / CD2 …）的各段，点选后原地切换。
+    case parts
     /// 点按底部标题块打开：海报、简介、本季剧集与演职人员（Android 的节目信息面板）。
     case episodeInfo
     case subtitleStyle, subtitleDelay
@@ -23,6 +25,7 @@ enum PlayerPanel: String, Identifiable {
         case .audio: "音轨"
         case .subtitle: "字幕"
         case .episodes: "剧集"
+        case .parts: "分段"
         case .chapters: "章节"
         case .episodeInfo: nil
         case .subtitleStyle: "字幕缩放与位置"
@@ -90,14 +93,14 @@ struct PlayerPanelHost: View {
         .padding(VelaTheme.Spacing.l)
     }
 
-    /// 音轨 / 字幕通常只有几行：高度随内容，超过上限再滚动；剧集 / 章节 / 播放信息是长列表，直接用上限高度。
+    /// 音轨 / 字幕 / 分段通常只有几行：高度随内容，超过上限再滚动；剧集 / 章节 / 播放信息是长列表，直接用上限高度。
     /// 竖屏底部面板上限为屏高 60%，侧边面板上限为整屏高度。
     @ViewBuilder
     private func sized(_ card: some View, in size: CGSize) -> some View {
         let width = isBottomSheet ? min(600, size.width - 24) : min(400, size.width - 24)
         let maxHeight = isBottomSheet ? size.height * 0.6 : size.height - 24
         switch panel {
-        case .audio, .subtitle, .subtitleStyle, .subtitleDelay, .quality:
+        case .audio, .subtitle, .subtitleStyle, .subtitleDelay, .quality, .parts:
             // 先限制最大高度，再按理想高度（内容高度）收缩。
             card
                 .frame(width: width)
@@ -127,6 +130,7 @@ private struct PlayerPanelContent: View {
         case .audio: AudioPanel(session: session)
         case .subtitle: SubtitlePanel(session: session)
         case .episodes: EpisodesPanel(session: session, onPicked: onClose)
+        case .parts: PartsPanel(session: session, onPicked: onClose)
         case .chapters: ChaptersPanel(session: session, onPicked: onClose)
         case .episodeInfo: EpisodeInfoPanel(session: session, onPicked: onClose)
         case .subtitleStyle: SubtitleStyleControls()
@@ -160,7 +164,7 @@ struct PlayerPanelPopover: View {
     /// 与侧边面板相同的分类：短列表按内容高度，长列表用固定上限。
     private static func fitsContent(_ panel: PlayerPanel) -> Bool {
         switch panel {
-        case .audio, .subtitle, .subtitleStyle, .subtitleDelay, .quality: true
+        case .audio, .subtitle, .subtitleStyle, .subtitleDelay, .quality, .parts: true
         case .info, .episodes, .chapters, .episodeInfo: false
         }
     }
@@ -517,6 +521,62 @@ private struct EpisodesPanel: View {
                 if let id = session.item?.id { proxy.scrollTo(id, anchor: .center) }
             }
         }
+    }
+}
+
+/// 多段文件的分段列表：当前段描边并标「正在播放」，点选其他段原地切换（与 Android 版播放列表一致）。
+private struct PartsPanel: View {
+    let session: PlayerSession
+    let onPicked: () -> Void
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: VelaTheme.Spacing.s) {
+                ForEach(Array(session.parts.enumerated()), id: \.element.id) { index, part in
+                    let isCurrent = part.id == session.item?.id
+                    Button {
+                        session.playEpisode(part)
+                        onPicked()
+                    } label: {
+                        HStack(spacing: VelaTheme.Spacing.m) {
+                            // 附加段多半没有自己的图片，退回第一段（主条目）的。
+                            RemoteArtwork(
+                                url: session.episodeImageURL(part) ?? session.parts.first.flatMap(session.episodeImageURL),
+                                placeholderSymbol: "play.rectangle"
+                            )
+                            .frame(width: 128, height: 72)
+                            .overlay(alignment: .bottom) {
+                                if let fraction = part.playedFraction, !isCurrent {
+                                    ProgressView(value: fraction).tint(VelaTheme.accent).padding(4)
+                                }
+                            }
+                            .clipShape(.rect(cornerRadius: 10))
+                            .overlay {
+                                if isCurrent {
+                                    RoundedRectangle(cornerRadius: 10).stroke(.white, lineWidth: 2)
+                                }
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("第 \(index + 1) 段")
+                                    .font(.subheadline.weight(isCurrent ? .bold : .regular))
+                                HStack(spacing: 6) {
+                                    if isCurrent { Text("正在播放") }
+                                    if let runtime = MediaFormat.runtime(part.runTimeTicks) { Text(runtime) }
+                                    if part.isPlayed { Image(systemName: "checkmark.circle.fill") }
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.white.opacity(0.7))
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isCurrent)
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
     }
 }
 

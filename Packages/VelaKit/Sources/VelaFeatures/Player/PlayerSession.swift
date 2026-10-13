@@ -70,6 +70,8 @@ final class PlayerSession {
     @ObservationIgnored private var endedReported = false
     /// 多段文件的全部段 id（按顺序）；在段之间切换时保留，换到其他条目时清空。
     private(set) var partIDs: [String] = []
+    /// `partIDs` 对应的条目（分段面板用），顺序与 `partIDs` 相同；尚未取到或有段取不到时为空。
+    private(set) var parts: [MediaItem] = []
     /// `partIDs` 第一段要播放的版本（见 `PlaybackRequest.Options.partsSourceID`）；与 `partIDs` 同时保留 / 清空。
     @ObservationIgnored private var partsSourceID: String?
     /// 上次发给 Trakt 的暂停状态；nil 表示本条目尚未 scrobble start。
@@ -307,23 +309,37 @@ final class PlayerSession {
             partIDs = []
             partsSourceID = nil
         }
+        if parts.map(\.id) != partIDs { parts = [] }
         Task { [weak self] in
             guard let self else { return }
             if self.partIDs.isEmpty, (item.partCount ?? 0) > 1,
                let additional = try? await client.additionalParts(itemID: item.id) {
                 self.partIDs = [item.id] + additional.map(\.id)
+                self.parts = [item] + additional
             }
             guard let index = self.partIDs.firstIndex(of: item.id), self.item?.id == item.id else { return }
             let ids = self.partIDs
-            async let previous = index > 0 ? try? await client.item(id: ids[index - 1]) : nil
-            async let next = ids.indices.contains(index + 1) ? try? await client.item(id: ids[index + 1]) : nil
-            let (previousItem, nextItem) = await (previous, next)
-            guard self.item?.id == item.id else { return }
-            self.previousEpisode = previousItem
-            self.nextEpisode = nextItem
+            // 详情页只传来各段 id：逐段取条目（段数很少），在段之间切换时沿用已取到的。
+            var loaded = Dictionary(self.parts.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            if loaded.isEmpty {
+                loaded = await withTaskGroup(of: MediaItem?.self) { group in
+                    for id in ids {
+                        group.addTask { id == item.id ? item : try? await client.item(id: id) }
+                    }
+                    var result: [String: MediaItem] = [:]
+                    for await part in group {
+                        if let part { result[part.id] = part }
+                    }
+                    return result
+                }
+            }
+            guard self.item?.id == item.id, self.partIDs == ids else { return }
+            // 有段取不到时不显示分段面板（列表不完整），相邻段仍按取到的结果提供。
+            if loaded.count == ids.count { self.parts = ids.compactMap { loaded[$0] } }
+            self.previousEpisode = index > 0 ? loaded[ids[index - 1]] : nil
+            self.nextEpisode = ids.indices.contains(index + 1) ? loaded[ids[index + 1]] : nil
         }
     }
-
     /// 横屏控制层左上角的剧集 / 电影 Logo；没有 Logo 图时为 nil。
     var logoURL: URL? {
         guard let item, let client else { return nil }

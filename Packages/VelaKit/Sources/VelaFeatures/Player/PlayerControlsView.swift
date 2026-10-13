@@ -599,7 +599,7 @@ struct PlayerControlsView: View {
         .playerPanelPopover([.episodeInfo], panel: $panel, session: session, arrowEdge: .top)
     }
 
-    /// 串流画质 / 剧集 / 音轨 / 字幕（与 Android 版顺序一致）。
+    /// 串流画质 / 剧集或分段 / 音轨 / 字幕（与 Android 版顺序一致）。
     private var bottomActions: some View {
         HStack(spacing: 12) {
             // 串流画质只对服务器条目有意义（由服务器按码率上限转码）。
@@ -611,6 +611,10 @@ struct PlayerControlsView: View {
             if !session.seasonEpisodes.isEmpty {
                 circleButton("list.bullet", label: "剧集列表", size: Self.barButtonSize) { open(.episodes) }
                     .playerPanelPopover([.episodes], panel: $panel, session: session, arrowEdge: .top)
+            }
+            if session.partPosition != nil, !session.parts.isEmpty {
+                circleButton("list.bullet", label: "分段列表", size: Self.barButtonSize) { open(.parts) }
+                    .playerPanelPopover([.parts], panel: $panel, session: session, arrowEdge: .top)
             }
             if !session.audioOptions.isEmpty {
                 let isMuted = controller.engine.isMuted
