@@ -22,6 +22,8 @@ final class DetailModel {
     private(set) var specialFeatures: [MediaItem] = []
     /// 多段文件的全部段（第一段为本条目）；单文件为空。
     private(set) var parts: [MediaItem] = []
+    /// `parts` 所属的版本（媒体源 id）；与 `selectedSourceID` 不一致时说明分段还没按新版本加载。
+    private(set) var partsSourceID: String?
     private(set) var actionError: String?
     /// 操作已提交的提示（如刷新元数据）；与 `actionError` 互斥。
     private(set) var actionNotice: String?
@@ -104,9 +106,6 @@ final class DetailModel {
             default:
                 break
             }
-            if item.kind.isPlayable, (item.partCount ?? 0) > 1 {
-                group.addTask { .parts((try? await client.additionalParts(itemID: item.id)).map { [item] + $0 } ?? []) }
-            }
             if item.kind == .movie || item.kind == .series {
                 if (details?.localTrailerCount ?? 0) > 0 {
                     group.addTask { .trailers((try? await client.localTrailers(itemID: item.id)) ?? []) }
@@ -134,7 +133,7 @@ final class DetailModel {
     }
 
     private enum Section: Sendable {
-        case seasons([MediaItem]), nextUp(MediaItem?), siblings([MediaItem]), parts([MediaItem])
+        case seasons([MediaItem]), nextUp(MediaItem?), siblings([MediaItem])
         case trailers([MediaItem]), features([MediaItem]), similar([MediaItem])
         case directorWorks(DirectorWorks)
     }
@@ -144,7 +143,6 @@ final class DetailModel {
         case .seasons(let value): seasons = value
         case .nextUp(let value): nextUp = value
         case .siblings(let value): siblingEpisodes = value
-        case .parts(let value): parts = value
         case .trailers(let value): trailers = value
         case .features(let value): specialFeatures = value
         case .similar(let value): similar = value
@@ -184,6 +182,26 @@ final class DetailModel {
         return results.sorted { $0.0 < $1.0 }.compactMap(\.1)
     }
 
+    /// 加载选中版本的分段（`parts`，主条目在前；不是分段影片时为空）。版本选定或切换后调用。
+    /// 多版本条目的分段挂在具体版本上（如平面版 + 分 CD 的 VR 版），按条目 id 查询只能得到主版本的分段。
+    /// 返回前版本已被再次切换则丢弃结果。
+    func loadParts(client: MediaServerClient) async {
+        guard let option = selectedOption, option.item.kind.isPlayable else { return }
+        let owner = option.item
+        let sourceID = option.source.id
+        if partsSourceID != sourceID {
+            parts = []
+            partsSourceID = sourceID
+        }
+        // Jellyfin 的版本媒体源 id 就是该版本的条目 id（32 位十六进制）；Emby 的（mediasource_N）不是条目 id，按条目本身查询。
+        let isVersionItem = sourceID != owner.id && sourceID.count == 32 && sourceID.allSatisfy(\.isHexDigit)
+        // 主版本的段数在条目的 PartCount 上，没有分段时省一次请求；其它版本的段数只能查询得到。
+        guard isVersionItem || (owner.partCount ?? 0) > 1 else { return }
+        let additional = (try? await client.additionalParts(itemID: isVersionItem ? sourceID : owner.id)) ?? []
+        guard partsSourceID == sourceID else { return }
+        parts = additional.isEmpty ? [] : [owner] + additional
+    }
+
     /// 选择变化时重置为该版本的服务器默认音轨 / 字幕。
     func resetSelections() {
         guard let source = selectedSource else { return }
@@ -201,7 +219,8 @@ final class DetailModel {
             mediaSourceID: selectedSourceID,
             audioStreamIndex: selectedAudioIndex,
             subtitleStreamIndex: selectedSubtitleIndex,
-            partIDs: parts.isEmpty ? nil : parts.map(\.id)
+            partIDs: parts.isEmpty ? nil : parts.map(\.id),
+            partsSourceID: parts.isEmpty ? nil : partsSourceID
         )
     }
 

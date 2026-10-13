@@ -70,6 +70,8 @@ final class PlayerSession {
     @ObservationIgnored private var endedReported = false
     /// 多段文件的全部段 id（按顺序）；在段之间切换时保留，换到其他条目时清空。
     private(set) var partIDs: [String] = []
+    /// `partIDs` 第一段要播放的版本（见 `PlaybackRequest.Options.partsSourceID`）；与 `partIDs` 同时保留 / 清空。
+    @ObservationIgnored private var partsSourceID: String?
     /// 上次发给 Trakt 的暂停状态；nil 表示本条目尚未 scrobble start。
     @ObservationIgnored private var traktPaused: Bool?
     /// 用户手动切换内核（失败后「用 KSPlayer 重试」或「更多 → 切换内核」）时强制使用的内核；nil 表示按设置自动选择。
@@ -211,6 +213,9 @@ final class PlayerSession {
         app.refreshCapabilities()
 
         let startTime = explicitStart ?? options.startPosition ?? (options.startFromBeginning ? 0 : resumePosition(for: item))
+        if let given = options.partIDs, given.contains(item.id) { partsSourceID = options.partsSourceID }
+        // 从其它段回到第一段时沿用详情页选中的版本，否则会按「视频首选版本」换到平面版等其它版本。
+        let mediaSourceID = options.mediaSourceID ?? (partIDs.first == item.id ? partsSourceID : nil)
         isNextPreloaded = false
         // 内核（与 Android 版一致）：设置为 KSPlayer 或手动切换时按 KSPlayer 能力请求，服务器直接给原文件；
         // 「服务器转码为 4K」需要服务器缩放后的码流，始终交给系统内核。
@@ -222,7 +227,7 @@ final class PlayerSession {
             try await app.playbackResolver.resolve(
                 item: item, server: server, client: client,
                 capabilities: capabilities(for: item),
-                mediaSourceID: options.mediaSourceID,
+                mediaSourceID: mediaSourceID,
                 versionPreference: app.libraryPreferences.preferredVersion,
                 startTime: startTime,
                 audioStreamIndex: options.audioStreamIndex,
@@ -300,6 +305,7 @@ final class PlayerSession {
             partIDs = given
         } else if !partIDs.contains(item.id) {
             partIDs = []
+            partsSourceID = nil
         }
         Task { [weak self] in
             guard let self else { return }

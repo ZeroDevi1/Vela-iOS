@@ -70,6 +70,11 @@ struct ItemDetailView: View {
             guard let client else { return }
             await model.load(client: client)
         }
+        // 分段属于具体版本：详情加载完选定默认版本、以及用户切换版本后各取一次。
+        .task(id: model.selectedSourceID) {
+            guard let client else { return }
+            await model.loadParts(client: client)
+        }
     }
 
     /// iPhone / 窄分屏：头图下竖排播放源、播放按钮、简介。
@@ -367,7 +372,7 @@ struct ItemDetailView: View {
         }
 
         if model.parts.count > 1 {
-            PartsShelf(parts: model.parts)
+            PartsShelf(parts: model.parts, sourceID: model.partsSourceID)
         }
 
         if prefs.showEpisodeIndicator, item.kind == .episode, model.siblingEpisodes.count > 1 {

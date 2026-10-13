@@ -135,16 +135,21 @@ public struct PlaybackRequest: Hashable, Codable, Identifiable, Sendable {
         public var startFromBeginning: Bool
         /// 多段文件（CD1 / CD2 …）全部段的条目 id（按顺序）；从任意一段起播时，播放器据此衔接上一段 / 下一段。
         public var partIDs: [String]?
+        /// `partIDs` 第一段（主条目）要播放的版本（媒体源 id）。多版本条目的分段只属于其中一个版本，
+        /// 播放中从其它段回到第一段时继续用它；nil 表示按「视频首选版本」选择。
+        public var partsSourceID: String?
         /// 指定起播位置（秒），例如从详情页章节卡进入；优先于续播位置与 `startFromBeginning`。
         public var startPosition: TimeInterval?
 
         public init(mediaSourceID: String? = nil, audioStreamIndex: Int? = nil, subtitleStreamIndex: Int? = nil,
-                    startFromBeginning: Bool = false, partIDs: [String]? = nil, startPosition: TimeInterval? = nil) {
+                    startFromBeginning: Bool = false, partIDs: [String]? = nil, partsSourceID: String? = nil,
+                    startPosition: TimeInterval? = nil) {
             self.mediaSourceID = mediaSourceID
             self.audioStreamIndex = audioStreamIndex
             self.subtitleStreamIndex = subtitleStreamIndex
             self.startFromBeginning = startFromBeginning
             self.partIDs = partIDs
+            self.partsSourceID = partsSourceID
             self.startPosition = startPosition
         }
     }

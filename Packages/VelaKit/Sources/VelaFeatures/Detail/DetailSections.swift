@@ -549,6 +549,8 @@ private struct EpisodeRow: View {
 /// 多段文件（CD1 / CD2 …）：点任意一段播放，播放器会按顺序衔接后续各段。
 struct PartsShelf: View {
     let parts: [MediaItem]
+    /// 第一段（主条目）要播放的版本；其余段是独立条目，用各自的默认源。
+    let sourceID: String?
     @Environment(AppModel.self) private var app
     @Environment(\.playMedia) private var playMedia
     @Environment(\.isCompactLayout) private var isCompact
@@ -557,7 +559,11 @@ struct PartsShelf: View {
         let indexed = Array(parts.enumerated()).map { IndexedPart(index: $0.offset, item: $0.element) }
         MediaShelf("分段（\(parts.count)）", items: indexed) { part in
             Button {
-                playMedia(.item(part.item, options: .init(partIDs: parts.map(\.id))))
+                playMedia(.item(part.item, options: .init(
+                    mediaSourceID: part.index == 0 ? sourceID : nil,
+                    partIDs: parts.map(\.id),
+                    partsSourceID: sourceID
+                )))
             } label: {
                 LandscapeCard(
                     title: "第 \(part.index + 1) 段",
