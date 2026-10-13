@@ -2,7 +2,7 @@ import Foundation
 
 /// 从文件名 / 路径 / 标签严格识别 VR 排布（移植自 Vela Android `VrLayoutParser`，规则保持一致）。
 ///
-/// - 必须出现投影标记；标题里单独的 "180"（如《180 天》）不算。
+/// - 必须出现投影标记（独立的 "VR" 字样或 DMM 系 VR 番号按 180° 处理）；标题里单独的 "180"（如《180 天》）不算。
 /// - `video3DFormat` 只在已识别投影后补充立体排布。
 /// - 已知视频尺寸时以宽高比为最终依据：VR 帧只可能是 1:2 / 1:1 / 2:1 / 4:1，
 ///   名字带 VR 但比例为 16:9 的文件（已转平面）会被排除；缺少立体标记时按比例推断。
@@ -18,8 +18,11 @@ public enum VRLayoutParser {
     private static let fisheye220 = regex(#"(?:^|[_\-. ])(?:mkx220|fisheye220|f220)(?:$|[_\-. ])"#)
     private static let fisheye200 = regex(#"(?:^|[_\-. ])(?:mkx200|fisheye200|f200|rf70)(?:$|[_\-. ])"#)
     private static let fisheye190 = regex(#"(?:^|[_\-. ])(?:fisheye190|f190|fisheye|rf52)(?:$|[_\-. ])"#)
-    /// DMM 系 VR 番号发布为 180° 等距柱状 SBS；按鱼眼展开会让画面越往边缘越拉伸。
-    private static let javStudio = regex(#"(?:^|[_\-. \[【])(?:crvr|kavr|sivr|ipvr|savr|hnvr|pxvr|kmvr|mdvr)[-_]?\d"#)
+    /// DMM 系 VR 番号：前缀含 vr（crvr / sivr / 3dsvr / urvrsp / vrkm ...）后跟编号。
+    /// 前面允许数字，兼容 `1sivr00123`、`h_1155crvr00123` 这类内容 ID 写法。
+    private static let javStudio = regex(#"(?:^|[^a-z])[a-z]{0,5}vr[a-z]{0,3}[-_]?\d{2,}"#)
+    /// 独立的 VR 字样：`_VR_`、`【VR】`、`[8KVR]`；前后不能紧贴字母数字，避免误中普通单词。
+    private static let vrWord = regex(#"(?:^|[^a-z0-9])(?:\d{1,2}k)?vr(?:$|[^a-z0-9])"#)
     private static let halfEquirect = regex(#"(?:^|[_\-. ])(?:vr180|180x180|hequirect)(?:$|[_\-. ])|[_\-.]180[_\-. ]"#)
     private static let equirect = regex(#"(?:^|[_\-. ])(?:vr360|360x180|360x360|equirect)(?:$|[_\-. ])|[_\-.]360[_\-. ]"#)
     private static let stereoSBS = regex(#"(?:^|[_\-. ])(?:sbs|3dh|lr)(?:$|[_\-. ])"#)
@@ -93,9 +96,13 @@ public enum VRLayoutParser {
         if matches(fisheye220, text) { return (.fisheye, 220) }
         if matches(fisheye200, text) { return (.fisheye, 200) }
         if matches(fisheye190, text) { return (.fisheye, 190) }
-        if matches(javStudio, text) { return (.halfEquirect, 180) }
         if matches(halfEquirect, text) { return (.halfEquirect, 180) }
         if matches(equirect, text) { return (.equirect, 360) }
+        // 排在明确的 180 / 360 标记之后：`vr360` 也符合番号的写法。
+        // DMM 系 VR 番号发布为 180° 等距柱状 SBS；按鱼眼展开会让画面越往边缘越拉伸。
+        if matches(javStudio, text) { return (.halfEquirect, 180) }
+        // 只写了「VR」时按最常见的 180° 处理；尺寸不符的平面片由宽高比校验排除。
+        if matches(vrWord, text) { return (.halfEquirect, 180) }
         return nil
     }
 

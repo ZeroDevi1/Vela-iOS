@@ -36,6 +36,29 @@ struct VRLayoutParserTests {
         #expect(layout?.stereo == .topBottom)
     }
 
+    @Test func dmmContentIDWithNumericPrefix() {
+        for path in ["/vr/1sivr00123-cd1.mp4", "h_1155crvr00123.mp4", "3DSVR-0456-A.mp4", "URVRSP-123.mp4", "VRKM-1234-cd2.mp4"] {
+            #expect(VRLayoutParser.parse(mediaSourcePath: path)?.projection == .halfEquirect, "\(path)")
+        }
+    }
+
+    @Test func standaloneVRWord() {
+        #expect(VRLayoutParser.parse(itemName: "某作品 【VR】 前編")?.projection == .halfEquirect)
+        #expect(VRLayoutParser.parse(mediaSourcePath: "Title_8KVR_part1.mp4")?.projection == .halfEquirect)
+        #expect(VRLayoutParser.parse(mediaSourcePath: "Title VR.mp4")?.projection == .halfEquirect)
+        #expect(VRLayoutParser.parse(itemName: "SIVR-357 【VR】可愛い", videoWidth: 3840, videoHeight: 2160) == nil)
+    }
+
+    @Test func explicit360WinsOverVRCode() {
+        #expect(VRLayoutParser.parse(mediaSourcePath: "Travel_vr360.mp4")?.projection == .equirect)
+    }
+
+    @Test func ignoresWordsMerelyContainingVR() {
+        #expect(VRLayoutParser.parse(mediaSourcePath: "/movies/Overdrive (2017).mkv") == nil)
+        #expect(VRLayoutParser.parse(mediaSourcePath: "/movies/DVR Recording.ts", videoWidth: 1920, videoHeight: 1080) == nil)
+        #expect(VRLayoutParser.parse(itemName: "Silver Linings") == nil)
+    }
+
     @Test func video3DFormatFillsStereo() {
         let layout = VRLayoutParser.parse(tags: ["vr180"], video3DFormat: "FullTopAndBottom")
         #expect(layout?.stereo == .topBottom)
