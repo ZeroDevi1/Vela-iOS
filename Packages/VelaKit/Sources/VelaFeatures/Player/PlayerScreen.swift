@@ -172,6 +172,10 @@ public struct PlayerScreen: View {
         .onChange(of: session.controller.controlsVisible) { _, visible in
             if !visible, !isMiniWindow { NSCursor.setHiddenUntilMouseMoves(true) }
         }
+        // 指针移出窗口后很快隐藏控制层。挂在整个播放器视图上而不是手势层：指针停在控制层按钮上不算离开。
+        .onContinuousHover { phase in
+            if case .ended = phase, !isMiniWindow { session.controller.hideControlsAfterPointerExit() }
+        }
         .onAppear(perform: installEscapeMonitor)
         .onAppear(perform: installScrollMonitor)
         .onAppear(perform: installInputMonitor)

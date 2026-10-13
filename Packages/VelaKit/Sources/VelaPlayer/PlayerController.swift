@@ -288,6 +288,24 @@ public final class PlayerController {
         scheduleAutoHide()
     }
 
+    /// 指针移出播放窗口后到隐藏控制层的延时：足够让划出窗口又马上回来的指针取消隐藏。
+    private static let pointerExitHideDelay: Duration = .seconds(1)
+
+    /// 指针移出播放窗口（macOS）时调用：不等自动隐藏计时，`pointerExitHideDelay` 后隐藏控制层，暂停时也隐藏。
+    /// 期间指针回到窗口会经 `touchControls()` 取消；弹出菜单打开或正在拖动进度时保持显示。
+    /// 设置为不自动隐藏（`autoHideSeconds == 0`）时不做任何事。
+    public func hideControlsAfterPointerExit() {
+        guard preferences.autoHideSeconds > 0, controlsVisible else { return }
+        hideTask?.cancel()
+        hideTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.pointerExitHideDelay)
+            guard !Task.isCancelled, let self else { return }
+            if self.scrubTime == nil && self.pinCount == 0 {
+                self.controlsVisible = false
+            }
+        }
+    }
+
     private func scheduleAutoHide() {
         hideTask?.cancel()
         let seconds = preferences.autoHideSeconds
