@@ -148,37 +148,8 @@ struct LibraryItemsView: View {
     }
 
     private var sortMenu: some View {
-        let options = LibrarySort.fields(for: library.collectionType)
-        let current = options.first { $0.field == sort.field }?.title ?? "排序"
-        return Menu {
-            ForEach(options, id: \.field) { option in
-                Button {
-                    // 再次选择当前字段切换升 / 降序。
-                    if sort.field == option.field {
-                        sort.descending.toggle()
-                    } else {
-                        sort = LibrarySort(field: option.field, descending: option.field != .name)
-                    }
-                    // 只在用户手动改排序时记住，临时传入的 initialSort 不覆盖已保存的偏好。
-                    sort.save(libraryID: library.id)
-                } label: {
-                    if sort.field == option.field {
-                        Label(option.title, systemImage: sort.descending ? "arrow.down" : "arrow.up")
-                    } else {
-                        Text(option.title)
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "line.3.horizontal")
-                Text(sort.field == .random ? current : "\(current) \(sort.descending ? "↓" : "↑")")
-                    .font(.subheadline.weight(.medium))
-            }
-            .padding(.horizontal, 4)
-            .frame(height: 36)
-        }
-        .accessibilityLabel("排序：\(current)")
+        // 只在用户手动改排序时记住，临时传入的 initialSort 不覆盖已保存的偏好。
+        LibrarySortMenu(options: LibrarySort.fields(for: library.collectionType), sort: $sort) { $0.save(libraryID: library.id) }
     }
 
     /// 从本库随机挑一个可播放条目从头播放（剧集库挑单集）。
@@ -296,6 +267,45 @@ struct LibrarySort: Hashable {
     }
 }
 
+/// 排序菜单，标签为「≡ 发行日期 ↓」；再次选择当前字段切换升 / 降序。
+struct LibrarySortMenu: View {
+    let options: [LibrarySort.Option]
+    @Binding var sort: LibrarySort
+    /// 用户改动排序后调用（媒体库据此按库记住排序）。
+    var onChange: (LibrarySort) -> Void = { _ in }
+
+    var body: some View {
+        let current = options.first { $0.field == sort.field }?.title ?? "排序"
+        Menu {
+            ForEach(options, id: \.field) { option in
+                Button {
+                    if sort.field == option.field {
+                        sort.descending.toggle()
+                    } else {
+                        sort = LibrarySort(field: option.field, descending: option.field != .name)
+                    }
+                    onChange(sort)
+                } label: {
+                    if sort.field == option.field {
+                        Label(option.title, systemImage: sort.descending ? "arrow.down" : "arrow.up")
+                    } else {
+                        Text(option.title)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "line.3.horizontal")
+                Text(sort.field == .random ? current : "\(current) \(sort.descending ? "↓" : "↑")")
+                    .font(.subheadline.weight(.medium))
+            }
+            .padding(.horizontal, 4)
+            .frame(height: 36)
+        }
+        .accessibilityLabel("排序：\(current)")
+    }
+}
+
 // MARK: - 条目网格
 
 /// 分页网格已加载 / 总条目数，供标题副标题「60 / 64 项」与工具条使用。
@@ -390,9 +400,10 @@ struct PagedItemGrid<Header: View>: View {
                 badges: PosterBadges(item)
             )
         case .landscape:
+            // 单集的标题多是「第 N 集」，改为剧名 + 「S01 E05 - 集名」（非单集时副标题仍是年份）。
             LandscapeCard(
-                title: item.name,
-                subtitle: item.productionYear.map(String.init),
+                title: item.kind == .episode ? item.seriesName ?? item.name : item.name,
+                subtitle: HomeView.episodeSubtitle(item),
                 imageURL: app.imageURL(for: item, kind: .thumb, maxWidth: 640)
                     ?? app.imageURL(for: item, kind: .backdrop, maxWidth: 640)
                     ?? app.imageURL(for: item, kind: .primary, maxWidth: 640),

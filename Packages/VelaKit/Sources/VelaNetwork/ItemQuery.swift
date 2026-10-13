@@ -37,6 +37,8 @@ public struct ItemQuery: Sendable, Hashable {
     /// 只返回这些风格 / 工作室下的条目。
     public var genreIDs: [String] = []
     public var studioIDs: [String] = []
+    /// `Years`：只返回这些出品年份的条目；空数组不筛选。
+    public var years: [Int] = []
     /// `CollapseBoxSetItems`：把属于合集的电影折叠为合集条目（Emby / Jellyfin 均支持）。
     public var collapseBoxSets = false
 
@@ -89,6 +91,7 @@ public struct ItemQuery: Sendable, Hashable {
         if !genreIDs.isEmpty { items.append(.init(name: "GenreIds", value: genreIDs.joined(separator: ","))) }
         if !studioIDs.isEmpty { items.append(.init(name: "StudioIds", value: studioIDs.joined(separator: ","))) }
         if !anyProviderIDs.isEmpty { items.append(.init(name: "AnyProviderIdEquals", value: anyProviderIDs.joined(separator: ","))) }
+        if !years.isEmpty { items.append(.init(name: "Years", value: years.map(String.init).joined(separator: ","))) }
         if !personIDs.isEmpty { items.append(.init(name: "PersonIds", value: personIDs.joined(separator: ","))) }
         if let isPlayed { items.append(.init(name: "IsPlayed", value: isPlayed ? "true" : "false")) }
         if !imageTypes.isEmpty { items.append(.init(name: "ImageTypes", value: imageTypes.joined(separator: ","))) }

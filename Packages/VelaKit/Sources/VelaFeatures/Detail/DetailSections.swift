@@ -919,6 +919,7 @@ extension View {
             .navigationDestination(for: MediaItem.self) { ItemDetailView(item: $0) }
             .navigationDestination(for: SeasonRoute.self) { SeasonDetailView(route: $0) }
             .navigationDestination(for: PersonRoute.self) { PersonDetailView(route: $0) }
+            .navigationDestination(for: PersonWorksRoute.self) { PersonWorksView(route: $0) }
             .navigationDestination(for: DetailTagRoute.self) { DetailTagItemsView(route: $0) }
     }
 }
