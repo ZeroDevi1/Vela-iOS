@@ -326,7 +326,7 @@ private struct SearchSuggestionsView: View {
             let currentPage = page ?? Self.initialPage(count: items.count)
             let currentItem = items.isEmpty ? nil : items[index(of: currentPage, count: items.count)]
             ZStack {
-                Color.black.ignoresSafeArea()
+                Color.homeBackground.ignoresSafeArea()
                 if let currentItem {
                     background(currentItem)
                 }
@@ -342,12 +342,13 @@ private struct SearchSuggestionsView: View {
                     }
                 } else {
                     VStack(spacing: VelaTheme.Spacing.l) {
+                        // 选中态胶囊：与页面背景反色（深色模式白底黑字，浅色模式黑底白字）。
                         Text("推荐")
                             .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.black)
+                            .foregroundStyle(Color.homeBackground)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 8)
-                            .background(.white, in: .capsule)
+                            .background(.primary, in: .capsule)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .velaPageMargin()
                         Spacer(minLength: 0)
@@ -362,18 +363,25 @@ private struct SearchSuggestionsView: View {
                 }
             }
         }
-        .environment(\.colorScheme, .dark)
     }
 
+    /// 当前海报铺满背景，再叠向页面背景色过渡的暗角与自上而下的渐变（与 Android 相同的透明度，颜色跟随浅色 / 深色模式）。
+    /// 海报放在 `Color.clear` 的 overlay 里并裁切：直接以填充模式铺开时，竖版海报在横屏宽屏上会按宽度放大，
+    /// 把 ZStack 撑得远高于屏幕，内容随之被挤出可视区。
     private func background(_ item: MediaItem) -> some View {
-        CachedImage(url: app.imageURL(for: item, kind: .primary, maxWidth: 800)) { Color.clear }
+        let base = Color.homeBackground
+        return Color.clear
+            .overlay {
+                CachedImage(url: app.imageURL(for: item, kind: .primary, maxWidth: 800)) { Color.clear }
+            }
+            .clipped()
             .overlay(
                 RadialGradient(
-                    colors: [.black.opacity(0.3), .black.opacity(0.6), .black.opacity(0.9)],
+                    colors: [base.opacity(0.3), base.opacity(0.6), base.opacity(0.9)],
                     center: .center, startRadius: 0, endRadius: 600
                 )
             )
-            .overlay(LinearGradient(colors: [.clear, .black.opacity(0.2), .black.opacity(0.8)], startPoint: .top, endPoint: .bottom))
+            .overlay(LinearGradient(colors: [.clear, base.opacity(0.2), base.opacity(0.8)], startPoint: .top, endPoint: .bottom))
             .ignoresSafeArea()
             .animation(.easeInOut(duration: 0.4), value: item.id)
             .accessibilityHidden(true)
@@ -426,10 +434,10 @@ private struct SearchSuggestionsView: View {
             .frame(height: 40)
             Text(metaLine(item))
                 .font(.footnote.weight(.medium).monospacedDigit())
-                .foregroundStyle(.white.opacity(0.85))
+                .foregroundStyle(.primary.opacity(0.85))
                 .lineLimit(1)
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(.primary)
         .padding(.horizontal, 32)
     }
 
@@ -456,7 +464,7 @@ private struct SearchSuggestionsView: View {
             ForEach(0..<visible, id: \.self) { slot in
                 let distance = abs(slot - center)
                 Capsule()
-                    .fill(distance == 0 ? Color.red : Color.white.opacity(distance == 1 ? 0.32 : 0.24))
+                    .fill(distance == 0 ? Color.red : Color.primary.opacity(distance == 1 ? 0.32 : 0.24))
                     .frame(width: distance == 0 ? 16 : (distance == 1 ? 8 : 6), height: 6)
             }
         }
