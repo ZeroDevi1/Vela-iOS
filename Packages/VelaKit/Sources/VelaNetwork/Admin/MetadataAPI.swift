@@ -129,6 +129,28 @@ extension MediaServerClient {
         _ = try await httpClient.data(APIRequest("/Items/\(itemID)", method: .post, body: body), baseURL: baseURL, headers: requestHeaders)
     }
 
+    /// 增删条目标签（不区分大小写比较），其余元数据原样保留；需要管理员权限，否则服务器返回 403。
+    /// 结果与现有标签相同时不提交。
+    public func updateTags(itemID: String, adding: [String], removing: [String]) async throws {
+        var json = try await itemJSON(itemID: itemID)
+        let existing = json["Tags"] as? [String] ?? []
+        let merged = Self.mergedTags(existing, adding: adding, removing: removing)
+        guard merged != existing else { return }
+        json["Tags"] = merged
+        let body = try JSONSerialization.data(withJSONObject: json)
+        _ = try await httpClient.data(APIRequest("/Items/\(itemID)", method: .post, body: body), baseURL: baseURL, headers: requestHeaders)
+    }
+
+    /// 先去掉 `removing`，再把 `adding` 中尚不存在的追加到末尾；保留原有标签的顺序与大小写。
+    static func mergedTags(_ existing: [String], adding: [String], removing: [String]) -> [String] {
+        let removed = Set(removing.map { $0.lowercased() })
+        var result = existing.filter { !removed.contains($0.lowercased()) }
+        for tag in adding where !result.contains(where: { $0.lowercased() == tag.lowercased() }) {
+            result.append(tag)
+        }
+        return result
+    }
+
     /// 刷新元数据；`replaceAll` 为 true 时替换全部元数据与图片（锁定字段除外）。
     public func refreshMetadata(itemID: String, replaceAll: Bool) async throws {
         let mode = replaceAll ? "FullRefresh" : "Default"

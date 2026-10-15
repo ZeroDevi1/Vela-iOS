@@ -59,6 +59,12 @@ struct VRLayoutParserTests {
         #expect(VRLayoutParser.parse(itemName: "Silver Linings") == nil)
     }
 
+    @Test func serverTagRoundTrips() {
+        for layout in VRLayoutParser.manualOptions {
+            #expect(VRLayoutParser.parse(itemName: "Holiday Clip", tags: [layout.serverTag]) == layout, "\(layout.serverTag)")
+        }
+    }
+
     @Test func video3DFormatFillsStereo() {
         let layout = VRLayoutParser.parse(tags: ["vr180"], video3DFormat: "FullTopAndBottom")
         #expect(layout?.stereo == .topBottom)

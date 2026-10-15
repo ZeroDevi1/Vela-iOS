@@ -41,6 +41,21 @@ public struct VRLayout: Hashable, Sendable, Codable {
         }
     }
 
+    /// 写到服务器条目上的标签，例如 `VR180_SBS`、`FISHEYE200_SBS`；`VRLayoutParser` 能从它还原出同一排布。
+    public var serverTag: String {
+        let projectionToken = switch projection {
+        case .halfEquirect: "VR180"
+        case .equirect: "VR360"
+        case .fisheye: "FISHEYE\(inputFOV)"
+        }
+        let stereoToken = switch stereo {
+        case .sideBySide: "SBS"
+        case .topBottom: "TB"
+        case .mono: "MONO"
+        }
+        return "\(projectionToken)_\(stereoToken)"
+    }
+
     /// 视角水平转动的上限（度）。
     public var yawLimit: Double { projection == .equirect ? 180 : 90 }
 }

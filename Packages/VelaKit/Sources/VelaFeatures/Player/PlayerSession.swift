@@ -55,6 +55,9 @@ final class PlayerSession {
     /// 最近一次截图，界面据此弹出分享提示；关闭提示时置 nil。
     var screenshot: CGImage?
 
+    /// 本次会话中已写入服务器标签的排布及其条目；用于写入后隐藏「保存」入口。
+    private var savedVRLayout: (itemID: String, layout: VRLayout)?
+
     @ObservationIgnored private weak var app: AppModel?
     @ObservationIgnored private var server: SavedServer?
     @ObservationIgnored private var client: MediaServerClient?
@@ -756,19 +759,47 @@ final class PlayerSession {
         controller.subtitleTrack != nil
     }
 
-    /// 与 Android 版一致：路径、名称、标签、3D 格式与画面尺寸都参与识别。
-    private static func vrLayout(stream: ResolvedStream, item: MediaItem) -> VRLayout? {
+    /// 与 Android 版一致：路径、名称、标签、3D 格式与画面尺寸都参与识别。`extraTags` 用于预演写入标签后的识别结果。
+    private static func vrLayout(stream: ResolvedStream, item: MediaItem, extraTags: [String] = []) -> VRLayout? {
         let video = stream.mediaSource.videoStream
         return VRLayoutParser.parse(
             mediaSourcePath: stream.mediaSource.path,
             itemPath: item.path,
             itemName: item.name,
             mediaSourceName: stream.mediaSource.name,
-            tags: item.tags,
+            tags: extraTags + item.tags,
             video3DFormat: item.video3DFormat,
             videoWidth: video?.width,
             videoHeight: video?.height
         )
+    }
+
+    /// 手动选择的排布能否写成服务器标签：仅服务器条目，且写入后自动识别确实会得到这一排布。
+    /// 文件名已带投影标记（优先于标签）或画面尺寸与排布不符时，标签不起作用，不提供入口。
+    var canSaveVRLayoutTag: Bool {
+        guard client != nil, let item, let stream, let layout = controller.vrLayoutOverride,
+              layout != controller.source?.vrLayout, savedVRLayout?.itemID != item.id || savedVRLayout?.layout != layout
+        else { return false }
+        return Self.vrLayout(stream: stream, item: item, extraTags: [layout.serverTag]) == layout
+    }
+
+    /// 把手动选择的排布写成条目标签，之后在任何设备上都能自动识别；同时去掉其它排布的标签。
+    /// 需要管理员权限；失败时提示原因，不影响当前播放。
+    func saveVRLayoutTag() {
+        guard canSaveVRLayoutTag, let client, let item, let layout = controller.vrLayoutOverride else { return }
+        let tag = layout.serverTag
+        let others = VRLayoutParser.manualOptions.map(\.serverTag).filter { $0 != tag }
+        Task { [weak self] in
+            do {
+                try await client.updateTags(itemID: item.id, adding: [tag], removing: others)
+                self?.savedVRLayout = (item.id, layout)
+                self?.controller.showMessage("已写入标签 \(tag)，下次播放自动识别", symbol: "tag", duration: .seconds(3))
+            } catch APIError.http(status: 403, _) {
+                self?.controller.showMessage("写入标签需要服务器管理员权限", symbol: "exclamationmark.triangle", duration: .seconds(3.5))
+            } catch {
+                self?.controller.showMessage("写入标签失败：\(error.localizedDescription)", symbol: "exclamationmark.triangle", duration: .seconds(3.5))
+            }
+        }
     }
 
     /// 能否切换内核。服务器条目都可切换：按新内核的能力重新向服务器选流，服务器不能直放时仍回到系统内核；

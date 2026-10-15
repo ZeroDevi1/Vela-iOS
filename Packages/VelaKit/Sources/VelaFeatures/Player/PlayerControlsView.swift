@@ -297,6 +297,9 @@ struct PlayerControlsView: View {
                     }
                 }
             }
+            if session.canSaveVRLayoutTag {
+                Button("保存排布到服务器标签", systemImage: "tag") { session.saveVRLayoutTag() }
+            }
         } label: {
             Label("VR 转平面", systemImage: "visionpro")
         }
