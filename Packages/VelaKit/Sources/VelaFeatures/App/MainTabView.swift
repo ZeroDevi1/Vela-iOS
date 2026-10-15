@@ -158,7 +158,7 @@ struct MainTabView: View {
         case .favorites: PrivacyGate { FavoritesView() }.measuresVelaLayout()
         case .discover: DiscoverView().measuresVelaLayout()
         case .subscriptions: SubscriptionsView().measuresVelaLayout()
-        case .search: SearchView().measuresVelaLayout()
+        case .search: PrivacyGate { SearchView() }.measuresVelaLayout()
         case .settings: SettingsView()
         }
     }

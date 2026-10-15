@@ -13,7 +13,6 @@ public final class AppModel {
     public let servers: ServerStore
     public let privacy: PrivacyGuard
     public let loginService: ServerLoginService
-    public let searchService = FederatedSearchService()
     public let playbackResolver = PlaybackResolver()
     public let playerPreferences = PlayerPreferences()
     public let libraryPreferences = LibraryPreferences()
@@ -101,7 +100,7 @@ public final class AppModel {
         return caps
     }
 
-    /// 跨服务器聚合（搜索、目录匹配、聚合继续观看）的数据源。
+    /// 跨服务器聚合（目录匹配、聚合继续观看）的数据源。
     ///
     /// 与 Android 版一致：私密服务器无论是否解锁都不参与聚合，只能切换为当前服务器后单独浏览，
     /// 避免其内容混入公共结果（例如解锁后忘记锁定、给他人演示搜索）。

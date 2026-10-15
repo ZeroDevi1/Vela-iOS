@@ -1,40 +1,45 @@
 import SwiftUI
 import VelaCore
-import VelaData
 import VelaDesignSystem
 import VelaNetwork
 
-/// 聚合搜索：同时搜索所有非私密服务器，结果按电影 / 剧集 / 单集分类（与 Android 版一致），
-/// 按标题与关键词的匹配程度排序（`SearchRanking`）；单个源失败单独提示。
+/// 当前服务器内搜索（与 Android 版进入服务器后的搜索页一致）：按选中的类型请求服务器，
+/// 结果按标题与关键词的匹配程度排序（`SearchRanking`），分为电影 / 剧集横排海报与单集列表。
+/// 未输入关键词时显示推荐大海报。
 struct SearchView: View {
     @Environment(AppModel.self) private var app
-    @Environment(\.isCompactLayout) private var isCompact
     @Environment(\.velaLayout) private var layout
     @State private var query = ""
-    @State private var sections: [FederatedSearchSection] = []
-    @State private var isSearching = false
-    /// 目录源（TMDB / 豆瓣）的结果：不是库条目，进入目录详情后再按 provider id 匹配服务器资源。
-    @State private var tmdbResults: Result<[CatalogTitle], any Error>?
-    @State private var doubanResults: Result<[DoubanTitle], any Error>?
+    /// nil：尚未搜索或关键词为空；`.failure` 时整页显示错误。
+    @State private var results: Result<[MediaItem], any Error>?
     /// 类型筛选（至少保留一项）。
     @State private var kinds: Set<SearchKind> = Set(SearchKind.allCases)
+    /// 推荐放在这里而不是推荐视图内：清空关键词回到推荐时保持同一批条目与翻页位置。nil 为加载中。
+    @State private var suggestions: [MediaItem]?
+    @State private var currentSuggestion: String?
+
+    private var trimmedQuery: String { query.trimmingCharacters(in: .whitespaces) }
 
     var body: some View {
         HistoryNavigationStack {
             Group {
-                if query.trimmingCharacters(in: .whitespaces).isEmpty {
-                    SearchSuggestionsView()
-                } else if isSearching && sections.isEmpty {
-                    ProgressView()
-                } else if rankedItems.isEmpty, sections.allSatisfy(\.isSuccess), catalogEmpty {
-                    ContentUnavailableView.search(text: query)
+                if trimmedQuery.isEmpty {
+                    SearchSuggestionsView(items: suggestions, current: $currentSuggestion)
                 } else {
-                    results
+                    switch results {
+                    case .failure(let error):
+                        ContentUnavailableView("搜索失败", systemImage: "exclamationmark.triangle", description: Text(error.localizedDescription))
+                    case .success(let items) where !items.isEmpty:
+                        resultList(items)
+                    case .success:
+                        ContentUnavailableView.search(text: query)
+                    case nil:
+                        // 刚输入、防抖等待或首次请求中。
+                        ProgressView()
+                    }
                 }
             }
-            .navigationTitle("搜索")
-            .navigationDestination(for: CatalogTitle.self) { CatalogDetailView(title: $0) }
-            .navigationDestination(for: DoubanTitle.self) { DoubanResolveView(title: $0) }
+            .navigationTitle(app.servers.activeServer?.displayName ?? "搜索")
             .detailDestinations()
         }
         .searchable(text: $query, prompt: "电影、剧集、单集")
@@ -44,48 +49,77 @@ struct SearchView: View {
                 Label(title, systemImage: "magnifyingglass").searchCompletion(title)
             }
         }
-        // 输入停顿 350ms 后再搜索，避免每个字符都打到所有服务器。
-        .task(id: query) {
-            try? await Task.sleep(for: .milliseconds(350))
+        // 输入停顿 300ms 后再搜索（与 Android 一致）；切换类型或服务器时重新搜索。
+        .task(id: SearchKey(query: trimmedQuery, kinds: kinds, serverID: app.servers.activeServer?.id)) {
+            try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
             await search()
         }
+        .task(id: app.servers.activeServer?.id) { await loadSuggestions() }
     }
 
-    private var results: some View {
+    private func resultList(_ items: [MediaItem]) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: VelaTheme.Spacing.xl) {
                 kindFilter
                 ForEach(SearchKind.allCases.filter(kinds.contains), id: \.self) { kind in
-                    let items = rankedItems.filter { kind.matches($0) }
-                    if !items.isEmpty {
-                        MediaShelf("\(kind.title)（\(items.count)）", items: items) { item in
-                            NavigationLink(value: item) {
-                                PosterCard(
-                                    title: item.seriesName ?? item.name,
-                                    subtitle: subtitle(for: item),
-                                    imageURL: app.imageURL(for: item, kind: .primary, maxWidth: 400),
-                                    progress: item.playedFraction,
-                                    width: layout.posterWidth
-                                )
+                    let matched = Array(items.filter { kind.matches($0) }.prefix(kind.limit))
+                    if !matched.isEmpty {
+                        if kind == .episode {
+                            episodeSection(matched)
+                        } else {
+                            MediaShelf("\(kind.title)（\(matched.count)）", items: matched) { item in
+                                NavigationLink(value: item) {
+                                    PosterCard(
+                                        title: item.name,
+                                        subtitle: item.productionYear.map(String.init),
+                                        imageURL: app.imageURL(for: item, kind: .primary, maxWidth: 400),
+                                        progress: item.playedFraction,
+                                        width: layout.posterWidth
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .itemContextMenu(item)
                             }
-                            .buttonStyle(.plain)
-                            .itemContextMenu(item)
                         }
                     }
                 }
-                ForEach(sections) { section in
-                    if case .failure(let error) = section.result {
-                        Label("\(section.sourceName)：\(error.message)", systemImage: "exclamationmark.triangle")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .velaPageMargin()
-                    }
-                }
-                catalogSections
             }
             .padding(.vertical, VelaTheme.Spacing.l)
         }
+    }
+
+    /// 单集为纵向列表：缩略图 + 剧名 + 集号与单集标题（与 Android `EpisodeResultCard` 一致）。
+    private func episodeSection(_ episodes: [MediaItem]) -> some View {
+        VStack(alignment: .leading, spacing: VelaTheme.Spacing.s) {
+            Text("\(SearchKind.episode.title)（\(episodes.count)）")
+                .font(.title3.weight(.semibold))
+            ForEach(episodes) { episode in
+                NavigationLink(value: episode) {
+                    HStack(spacing: VelaTheme.Spacing.m) {
+                        RemoteArtwork(url: app.imageURL(for: episode, kind: .primary, maxWidth: 320), placeholderSymbol: "tv")
+                            .frame(width: 107, height: 60)
+                            .clipShape(.rect(cornerRadius: 8))
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(episode.seriesName ?? episode.name)
+                                .font(.body.weight(.medium))
+                                .lineLimit(1)
+                            Text([episode.episodeLabel, episode.seriesName == nil ? nil : episode.name]
+                                .compactMap { $0 }
+                                .joined(separator: " · "))
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .itemContextMenu(episode)
+            }
+        }
+        .velaPageMargin()
     }
 
     /// 类型筛选胶囊（与 Android 版的类型切换一致）。
@@ -108,103 +142,66 @@ struct SearchView: View {
         .velaPageMargin()
     }
 
-    /// 所有服务器的结果合并后按相关度排序；搜索多台服务器时按服务器顺序保持稳定。
-    private var rankedItems: [MediaItem] {
-        let all = sections.flatMap { (try? $0.result.get()) ?? [] }
-        return SearchRanking.rank(all, query: query) { [$0.name, $0.seriesName] }
-    }
-
     private var completions: [String] {
+        guard case .success(let items) = results else { return [] }
         var seen: [String] = []
-        for title in rankedItems.map({ $0.seriesName ?? $0.name }) where !seen.contains(title) && title != query {
+        for title in items.map({ $0.seriesName ?? $0.name }) where !seen.contains(title) && title != query {
             seen.append(title)
             if seen.count == 6 { break }
         }
         return seen
     }
 
-    /// 年份或集号；搜索了多台服务器时附上来源服务器名。
-    private func subtitle(for item: MediaItem) -> String? {
-        let base = item.episodeLabel ?? item.productionYear.map(String.init)
-        guard sections.count > 1, let source = sections.first(where: { $0.sourceID == item.serverID })?.sourceName else { return base }
-        return [base, source].compactMap { $0 }.joined(separator: " · ")
-    }
-
-    @ViewBuilder
-    private var catalogSections: some View {
-        switch tmdbResults {
-        case .success(let titles) where !titles.isEmpty:
-            MediaShelf("TMDB（\(titles.count)）", items: titles) { title in
-                NavigationLink(value: title) { CatalogPosterCard(title: title) }.buttonStyle(.plain)
-            }
-        case .failure(let error):
-            sourceFailure("TMDB", error)
-        default:
-            EmptyView()
+    /// 与 Android `getSuggestions(mediaType = "Movie,Series", limit = 15)` 对应；Emby / Jellyfin 的推荐接口不一致，统一取随机条目。
+    private func loadSuggestions() async {
+        suggestions = nil
+        guard let client = app.activeClient else {
+            suggestions = []
+            return
         }
-        switch doubanResults {
-        case .success(let titles) where !titles.isEmpty:
-            MediaShelf("豆瓣（\(titles.count)）", items: titles) { title in
-                NavigationLink(value: title) {
-                    PosterCard(
-                        title: title.title,
-                        subtitle: title.year,
-                        imageURL: title.posterURL,
-                        width: layout.posterWidth,
-                        badges: PosterBadges(rating: title.rating)
-                    )
-                }
-                .buttonStyle(.plain)
-            }
-        case .failure(let error):
-            sourceFailure("豆瓣", error)
-        default:
-            EmptyView()
-        }
-    }
-
-    private func sourceFailure(_ name: String, _ error: any Error) -> some View {
-        Label("\(name)：\(error.localizedDescription)", systemImage: "exclamationmark.triangle")
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-            .velaPageMargin()
-    }
-
-    private var catalogEmpty: Bool {
-        let tmdbEmpty = (try? tmdbResults?.get().isEmpty) ?? true
-        let doubanEmpty = (try? doubanResults?.get().isEmpty) ?? true
-        return tmdbEmpty && doubanEmpty
+        let page = try? await client.items(ItemQuery(
+            includeItemTypes: ["Movie", "Series"],
+            recursive: true,
+            sortBy: .random,
+            limit: 15,
+            imageTypes: ["Primary"]
+        ))
+        guard !Task.isCancelled else { return }
+        suggestions = page?.items ?? []
+        currentSuggestion = suggestions?.first?.id
     }
 
     private func search() async {
-        let term = query
-        guard !term.trimmingCharacters(in: .whitespaces).isEmpty else {
-            sections = []
-            tmdbResults = nil
-            doubanResults = nil
+        let term = trimmedQuery
+        guard !term.isEmpty, let client = app.activeClient else {
+            results = nil
             return
         }
-        isSearching = true
-        defer { isSearching = false }
-        let tmdb = app.catalog.client
-        let subscriptions = app.subscriptions
-        async let servers = app.searchService.search(term, in: app.searchableSources)
-        async let tmdbTask: Result<[CatalogTitle], any Error>? = tmdb == nil ? nil : await capture { try await tmdb!.search(term) }
-        async let doubanTask: Result<[DoubanTitle], any Error>? = subscriptions.isConnected ? await capture { try await subscriptions.searchDouban(term) } : nil
-        let (serverResult, tmdbResult, doubanResult) = await (servers, tmdbTask, doubanTask)
-        // 期间用户继续输入时丢弃过期结果。
-        guard term == query else { return }
-        sections = serverResult
-        tmdbResults = tmdbResult
-        doubanResults = doubanResult
+        let selected = SearchKind.allCases.filter(kinds.contains)
+        let outcome: Result<[MediaItem], any Error>
+        do {
+            let page = try await client.items(ItemQuery(
+                searchTerm: term,
+                includeItemTypes: selected.map(\.serverType),
+                recursive: true,
+                limit: 60
+            ))
+            outcome = .success(SearchRanking.rank(page.items, query: term) { [$0.name, $0.seriesName] })
+        } catch is CancellationError {
+            return
+        } catch {
+            outcome = .failure(error)
+        }
+        // 期间用户继续输入或切换类型时丢弃过期结果。
+        guard !Task.isCancelled, term == trimmedQuery else { return }
+        results = outcome
     }
 }
 
-private extension FederatedSearchSection {
-    var isSuccess: Bool {
-        if case .success = result { return true }
-        return false
-    }
+private struct SearchKey: Hashable {
+    var query: String
+    var kinds: Set<SearchKind>
+    var serverID: String?
 }
 
 /// 搜索结果分类（与 Android `SearchMediaType` 对应）。
@@ -219,142 +216,125 @@ private enum SearchKind: CaseIterable, Hashable {
         }
     }
 
-    /// 视频 / 音乐视频等归入电影，合集 / 季归入剧集，其余不显示。
+    /// 请求服务器时的 `IncludeItemTypes`。
+    var serverType: String {
+        switch self {
+        case .movie: "Movie"
+        case .series: "Series"
+        case .episode: "Episode"
+        }
+    }
+
+    /// 每类最多显示的条数（与 Android `resultsFor` 一致）。
+    var limit: Int { self == .episode ? 40 : 20 }
+
     func matches(_ item: MediaItem) -> Bool {
         switch self {
-        case .movie: [.movie, .video, .musicVideo, .boxSet].contains(item.kind)
-        case .series: [.series, .season].contains(item.kind)
+        case .movie: item.kind == .movie
+        case .series: item.kind == .series
         case .episode: item.kind == .episode
         }
     }
 }
 
-/// 豆瓣条目 → 目录条目：只按豆瓣返回的 TMDB / IMDb id 换算，不按标题猜测；都没有时提供豆瓣页面链接。
-private struct DoubanResolveView: View {
-    let title: DoubanTitle
-    @Environment(AppModel.self) private var app
-    @Environment(\.openURL) private var openURL
-    @State private var resolved: CatalogTitle?
-    @State private var failed = false
-
-    var body: some View {
-        Group {
-            if let resolved {
-                CatalogDetailView(title: resolved)
-            } else if failed {
-                ContentUnavailableView {
-                    Label("无法匹配到 TMDB 条目", systemImage: "questionmark.circle")
-                } description: {
-                    Text("豆瓣没有提供该条目的 TMDB / IMDb id，无法确认它在服务器中对应哪部作品。")
-                } actions: {
-                    Button("在豆瓣查看") { openURL(URL(string: "https://movie.douban.com/subject/\(title.doubanID)/")!) }
-                        .buttonStyle(.bordered)
-                }
-            } else {
-                ProgressView()
-            }
-        }
-        .navigationTitle(title.title)
-        .task(id: title.id) { await resolve() }
-    }
-
-    private func resolve() async {
-        if let tmdbID = title.tmdbID {
-            resolved = CatalogTitle(tmdbID: tmdbID, mediaType: title.mediaType, title: title.title, posterPath: nil,
-                                    date: title.year.map { "\($0)-01-01" }, voteAverage: title.rating)
-            return
-        }
-        if let imdb = title.imdbID, let client = app.catalog.client,
-           let match = try? await client.find(imdbID: imdb).first(where: { $0.mediaType == title.mediaType }) {
-            resolved = match
-            return
-        }
-        failed = true
-    }
-}
-
 // MARK: - 推荐（未输入时）
 
-/// 未输入关键词时的沉浸式推荐（与 Android 版搜索页一致）：当前服务器随机条目的大海报横向翻页，
-/// 背景为当前海报的模糊放大，下方显示标志 / 标题与「★ 评分 • 年份 • 类型」。
-///
-/// 私密服务器不提供推荐：搜索页是跨服务器入口，不在这里展示私密内容。
+/// 未输入关键词时的沉浸式推荐（与 Android `SuggestionsStoriesView` 一致）：当前服务器随机电影 / 剧集的大海报横向翻页，
+/// 两侧海报缩小、半透明并带 3D 倾斜；背景为当前海报铺满加暗角，下方显示标志与「★ 评分 • 年份 • 类型」。
 private struct SearchSuggestionsView: View {
+    /// nil 为加载中。
+    let items: [MediaItem]?
+    @Binding var current: String?
     @Environment(AppModel.self) private var app
-    @State private var items: [MediaItem] = []
-    @State private var current: String?
-    @State private var hasLoaded = false
-
-    private static let limit = 10
+    @Environment(\.isCompactLayout) private var isCompact
 
     var body: some View {
         GeometryReader { proxy in
-            let cardWidth = min(proxy.size.width * 0.66, 420)
+            // 手机卡片宽 280pt，宽屏固定 320pt（Android `SuggestionsCard` / 平板 `tabletPageWidth`）。
+            let cardWidth: CGFloat = isCompact ? min(280, proxy.size.width - 96) : 320
+            let items = items ?? []
             let currentItem = items.first { $0.id == current } ?? items.first
             ZStack {
+                Color.black.ignoresSafeArea()
                 if let currentItem {
                     background(currentItem)
                 }
                 if items.isEmpty {
-                    if hasLoaded {
+                    if self.items != nil {
                         ContentUnavailableView(
-                            "聚合搜索",
+                            "暂无推荐",
                             systemImage: "magnifyingglass",
-                            description: Text("同时搜索所有非私密服务器，以及 TMDB（已配置时）与豆瓣（已连接 MoviePilot 时）。")
+                            description: Text("在当前服务器中搜索电影、剧集与单集。")
                         )
                     } else {
                         ProgressView()
                     }
                 } else {
-                    VStack(alignment: .leading, spacing: VelaTheme.Spacing.l) {
+                    VStack(spacing: VelaTheme.Spacing.l) {
                         Text("推荐")
-                            .font(.subheadline.weight(.semibold))
-                            .padding(.horizontal, 16)
-                            .frame(height: 36)
-                            .background(.regularMaterial, in: .capsule)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.black)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(.white, in: .capsule)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .velaPageMargin()
-                        carousel(cardWidth: cardWidth, height: min(cardWidth * 1.5, proxy.size.height * 0.62))
+                        Spacer(minLength: 0)
+                        carousel(items, cardWidth: cardWidth, height: min(cardWidth / 0.67, proxy.size.height * 0.6))
                         if let currentItem {
-                            info(currentItem).frame(maxWidth: .infinity)
+                            info(currentItem)
                         }
-                        pageDots.frame(maxWidth: .infinity)
+                        pageDots(items)
                         Spacer(minLength: 0)
                     }
-                    .padding(.top, VelaTheme.Spacing.s)
+                    .padding(.vertical, VelaTheme.Spacing.s)
                 }
             }
         }
-        .task(id: app.servers.activeServer?.id) { await load() }
+        .environment(\.colorScheme, .dark)
     }
 
     private func background(_ item: MediaItem) -> some View {
-        CachedImage(url: app.imageURL(for: item, kind: .primary, maxWidth: 400)) { Color.clear }
-            .blur(radius: 40)
-            .overlay(Color.black.opacity(0.55))
+        CachedImage(url: app.imageURL(for: item, kind: .primary, maxWidth: 800)) { Color.clear }
+            .overlay(
+                RadialGradient(
+                    colors: [.black.opacity(0.3), .black.opacity(0.6), .black.opacity(0.9)],
+                    center: .center, startRadius: 0, endRadius: 600
+                )
+            )
+            .overlay(LinearGradient(colors: [.clear, .black.opacity(0.2), .black.opacity(0.8)], startPoint: .top, endPoint: .bottom))
             .ignoresSafeArea()
             .animation(.easeInOut(duration: 0.4), value: item.id)
             .accessibilityHidden(true)
     }
 
-    private func carousel(cardWidth: CGFloat, height: CGFloat) -> some View {
+    private func carousel(_ items: [MediaItem], cardWidth: CGFloat, height: CGFloat) -> some View {
         GeometryReader { proxy in
             ScrollView(.horizontal) {
-                LazyHStack(spacing: 14) {
+                LazyHStack(spacing: 16) {
                     ForEach(items) { item in
                         NavigationLink(value: item) {
                             RemoteArtwork(url: app.imageURL(for: item, kind: .primary, maxWidth: 600))
                                 .frame(width: cardWidth, height: height)
+                                .overlay(Color.black.opacity(0.2))
                                 .clipShape(.rect(cornerRadius: 20))
-                                .shadow(color: .black.opacity(0.4), radius: 16, y: 8)
+                                .shadow(color: .black.opacity(0.5), radius: item.id == current ? 12 : 6, y: 6)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(item.name)
+                        // 偏离中心的卡片缩小到 0.85、透明度 0.6，并绕 Y 轴倾斜（Android `graphicsLayer` 的 rotationY = 偏移 × 25°）。
+                        .scrollTransition(.interactive, axis: .horizontal) { content, phase in
+                            content
+                                .scaleEffect(1 - 0.15 * min(abs(phase.value), 1))
+                                .opacity(1 - 0.4 * min(abs(phase.value), 1))
+                                .rotation3DEffect(.degrees(phase.value * 25), axis: (x: 0, y: 1, z: 0), perspective: 0.5)
+                        }
                         .id(item.id)
                     }
                 }
                 .scrollTargetLayout()
             }
-            .contentMargins(.horizontal, (proxy.size.width - cardWidth) / 2, for: .scrollContent)
+            .contentMargins(.horizontal, max((proxy.size.width - cardWidth) / 2, 0), for: .scrollContent)
             .scrollTargetBehavior(.viewAligned)
             .scrollIndicators(.hidden)
             .scrollPosition(id: $current, anchor: .center)
@@ -363,61 +343,55 @@ private struct SearchSuggestionsView: View {
     }
 
     private func info(_ item: MediaItem) -> some View {
-        VStack(spacing: 8) {
-            if let logo = app.client(forServerID: item.serverID)?.logoURL(for: item, maxWidth: 500) {
-                CachedImage(url: logo, contentMode: .fit) { Text(item.name).font(.title2.weight(.bold)) }
-                    .frame(maxWidth: 220, maxHeight: 60)
-            } else {
-                Text(item.name).font(.title2.weight(.bold)).lineLimit(1)
-            }
-            HStack(spacing: 8) {
-                if let rating = item.communityRating, rating > 0 {
-                    HStack(spacing: 3) {
-                        Image(systemName: "star.fill").foregroundStyle(.red)
-                        Text(rating.formatted(.number.precision(.fractionLength(1))))
-                    }
-                    Text("•")
+        VStack(spacing: 12) {
+            Group {
+                if let logo = app.client(forServerID: item.serverID)?.logoURL(for: item, maxWidth: 400) {
+                    CachedImage(url: logo, contentMode: .fit) { Text(item.name).font(.title3.weight(.bold)) }
+                        .frame(maxWidth: 180, maxHeight: 40)
+                } else {
+                    Text(item.name).font(.title3.weight(.bold)).lineLimit(1)
                 }
-                if let year = item.productionYear {
-                    Text(String(year))
-                    Text("•")
-                }
-                Text(item.kind == .series ? "剧集" : "电影")
             }
-            .font(.subheadline.monospacedDigit())
-            .foregroundStyle(.white.opacity(0.9))
+            .frame(height: 40)
+            Text(metaLine(item))
+                .font(.footnote.weight(.medium).monospacedDigit())
+                .foregroundStyle(.white.opacity(0.85))
+                .lineLimit(1)
         }
         .foregroundStyle(.white)
-        .padding(.horizontal, VelaTheme.Spacing.l)
+        .padding(.horizontal, 32)
     }
 
-    private var pageDots: some View {
-        HStack(spacing: 6) {
-            ForEach(items) { item in
-                let selected = item.id == (current ?? items.first?.id)
+    /// 「★ 评分 • 年份 • 类型」，星号为红色（Android `0xFFFF4D4F`）。
+    private func metaLine(_ item: MediaItem) -> AttributedString {
+        var parts: [AttributedString] = []
+        if let rating = item.communityRating, rating > 0 {
+            var star = AttributedString("★ ")
+            star.foregroundColor = Color(red: 1, green: 0.302, blue: 0.31)
+            parts.append(star + AttributedString(rating.formatted(.number.precision(.fractionLength(1)))))
+        }
+        if let year = item.productionYear {
+            parts.append(AttributedString(String(year)))
+        }
+        parts.append(AttributedString(item.kind == .series ? "剧集" : "电影"))
+        return parts.dropFirst().reduce(parts[0]) { $0 + AttributedString("  •  ") + $1 }
+    }
+
+    /// 最多显示 7 个圆点，当前项为居中的红色长条（与 Android 指示器一致）。
+    private func pageDots(_ items: [MediaItem]) -> some View {
+        let index = items.firstIndex { $0.id == current } ?? 0
+        let visible = min(items.count, 7)
+        let start = min(max(index - visible / 2, 0), items.count - visible)
+        return HStack(spacing: 7) {
+            ForEach(start..<(start + visible), id: \.self) { slot in
+                let distance = abs(slot - index)
                 Capsule()
-                    .fill(selected ? Color.red : Color.white.opacity(0.35))
-                    .frame(width: selected ? 20 : 7, height: 7)
+                    .fill(slot == index ? Color.red : Color.white.opacity(distance == 1 ? 0.32 : 0.24))
+                    .frame(width: slot == index ? 16 : (distance == 1 ? 8 : 6), height: 6)
             }
         }
         .animation(.snappy, value: current)
+        .opacity(items.count > 1 ? 1 : 0)
         .accessibilityHidden(true)
-    }
-
-    private func load() async {
-        defer { hasLoaded = true }
-        guard let server = app.servers.activeServer, !server.isPrivate, let client = app.activeClient else {
-            items = []
-            return
-        }
-        let page = try? await client.items(ItemQuery(
-            includeItemTypes: ["Movie", "Series"],
-            recursive: true,
-            sortBy: .random,
-            limit: Self.limit,
-            imageTypes: ["Primary"]
-        ))
-        items = page?.items ?? []
-        current = items.first?.id
     }
 }
