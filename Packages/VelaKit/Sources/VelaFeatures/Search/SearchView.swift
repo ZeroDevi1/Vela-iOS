@@ -16,7 +16,8 @@ struct SearchView: View {
     @State private var kinds: Set<SearchKind> = Set(SearchKind.allCases)
     /// 推荐放在这里而不是推荐视图内：清空关键词回到推荐时保持同一批条目与翻页位置。nil 为加载中。
     @State private var suggestions: [MediaItem]?
-    @State private var currentSuggestion: String?
+    /// 推荐翻页的虚拟页号（见 `SearchSuggestionsView.pageCount`），条目为 `suggestions[page % count]`。
+    @State private var suggestionPage: Int?
 
     private var trimmedQuery: String { query.trimmingCharacters(in: .whitespaces) }
 
@@ -24,7 +25,7 @@ struct SearchView: View {
         HistoryNavigationStack {
             Group {
                 if trimmedQuery.isEmpty {
-                    SearchSuggestionsView(items: suggestions, current: $currentSuggestion)
+                    SearchSuggestionsView(items: suggestions, page: $suggestionPage)
                 } else {
                     switch results {
                     case .failure(let error):
@@ -40,6 +41,7 @@ struct SearchView: View {
                 }
             }
             .navigationTitle(app.servers.activeServer?.displayName ?? "搜索")
+            .navigationDestination(for: SearchCategoryRoute.self) { SearchCategoryView(route: $0) }
             .detailDestinations()
         }
         .searchable(text: $query, prompt: "电影、剧集、单集")
@@ -68,7 +70,7 @@ struct SearchView: View {
                         if kind == .episode {
                             episodeSection(matched)
                         } else {
-                            MediaShelf("\(kind.title)（\(matched.count)）", items: matched) { item in
+                            MediaShelf(kind.title, items: matched) { item in
                                 NavigationLink(value: item) {
                                     PosterCard(
                                         title: item.name,
@@ -80,6 +82,8 @@ struct SearchView: View {
                                 }
                                 .buttonStyle(.plain)
                                 .itemContextMenu(item)
+                            } accessory: {
+                                viewAllLink(kind)
                             }
                         }
                     }
@@ -92,8 +96,12 @@ struct SearchView: View {
     /// 单集为纵向列表：缩略图 + 剧名 + 集号与单集标题（与 Android `EpisodeResultCard` 一致）。
     private func episodeSection(_ episodes: [MediaItem]) -> some View {
         VStack(alignment: .leading, spacing: VelaTheme.Spacing.s) {
-            Text("\(SearchKind.episode.title)（\(episodes.count)）")
-                .font(.title3.weight(.semibold))
+            HStack(alignment: .firstTextBaseline) {
+                Text(SearchKind.episode.title)
+                    .font(.title3.weight(.semibold))
+                Spacer(minLength: VelaTheme.Spacing.s)
+                viewAllLink(.episode)
+            }
             ForEach(episodes) { episode in
                 NavigationLink(value: episode) {
                     HStack(spacing: VelaTheme.Spacing.m) {
@@ -120,6 +128,17 @@ struct SearchView: View {
             }
         }
         .velaPageMargin()
+    }
+
+    /// 分区标题右侧的「查看全部」：进入该类型的完整搜索结果（分页、可排序，与 Android `onNavigateToSearchCategory` 一致）。
+    @ViewBuilder
+    private func viewAllLink(_ kind: SearchKind) -> some View {
+        if let serverID = app.servers.activeServer?.id {
+            NavigationLink(value: SearchCategoryRoute(serverID: serverID, query: trimmedQuery, kind: kind)) {
+                ShelfViewAllArrow()
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     /// 类型筛选胶囊（与 Android 版的类型切换一致）。
@@ -152,23 +171,28 @@ struct SearchView: View {
         return seen
     }
 
-    /// 与 Android `getSuggestions(mediaType = "Movie,Series", limit = 15)` 对应；Emby / Jellyfin 的推荐接口不一致，统一取随机条目。
+    /// 服务器推荐（与 Android `getSuggestions(mediaType = "Movie,Series", limit = 15)` 相同）。
+    /// 推荐接口报错（旧版服务器未实现）或返回为空（新服务器尚无观看记录）时，改取随机电影 / 剧集，避免整页空白；
+    /// 两者都失败时显示「暂无推荐」。
     private func loadSuggestions() async {
         suggestions = nil
         guard let client = app.activeClient else {
             suggestions = []
             return
         }
-        let page = try? await client.items(ItemQuery(
-            includeItemTypes: ["Movie", "Series"],
-            recursive: true,
-            sortBy: .random,
-            limit: 15,
-            imageTypes: ["Primary"]
-        ))
+        var items = (try? await client.suggestions(types: ["Movie", "Series"], limit: 15)) ?? []
+        if items.isEmpty, !Task.isCancelled {
+            items = (try? await client.items(ItemQuery(
+                includeItemTypes: ["Movie", "Series"],
+                recursive: true,
+                sortBy: .random,
+                limit: 15,
+                imageTypes: ["Primary"]
+            )).items) ?? []
+        }
         guard !Task.isCancelled else { return }
-        suggestions = page?.items ?? []
-        currentSuggestion = suggestions?.first?.id
+        suggestions = items
+        suggestionPage = SearchSuggestionsView.initialPage(count: items.count)
     }
 
     private func search() async {
@@ -237,23 +261,70 @@ private enum SearchKind: CaseIterable, Hashable {
     }
 }
 
+// MARK: - 查看全部
+
+private struct SearchCategoryRoute: Hashable {
+    var serverID: String
+    var query: String
+    var kind: SearchKind
+}
+
+/// 某一类型的完整搜索结果：服务器分页、可排序（与 Android 搜索分类进入的「查看全部」一致）。
+/// 不再按标题相关度过滤，列出服务器认为匹配的全部条目（包括只命中原标题、简介的）。
+private struct SearchCategoryView: View {
+    let route: SearchCategoryRoute
+    @State private var sort = LibrarySort(field: .name, descending: false)
+
+    var body: some View {
+        PagedItemGrid(
+            serverID: route.serverID,
+            template: ItemQuery(searchTerm: route.query, includeItemTypes: [route.kind.serverType], recursive: true),
+            sort: sort,
+            played: nil,
+            style: route.kind == .episode ? .landscape : .poster,
+            counts: nil
+        ) {
+            EmptyView()
+        }
+        .navigationTitle("\(route.kind.title)：\(route.query)")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                LibrarySortMenu(options: LibrarySort.fields(for: route.kind == .series ? "tvshows" : nil), sort: $sort)
+            }
+        }
+    }
+}
+
 // MARK: - 推荐（未输入时）
 
-/// 未输入关键词时的沉浸式推荐（与 Android `SuggestionsStoriesView` 一致）：当前服务器随机电影 / 剧集的大海报横向翻页，
-/// 两侧海报缩小、半透明并带 3D 倾斜；背景为当前海报铺满加暗角，下方显示标志与「★ 评分 • 年份 • 类型」。
+/// 未输入关键词时的沉浸式推荐（与 Android `SuggestionsStoriesView` 一致）：当前服务器推荐电影 / 剧集的大海报横向翻页，
+/// 首尾相接可无限循环；两侧海报缩小、半透明并带 3D 倾斜；背景为当前海报铺满加暗角，下方显示标志与「★ 评分 • 年份 • 类型」。
 private struct SearchSuggestionsView: View {
     /// nil 为加载中。
     let items: [MediaItem]?
-    @Binding var current: String?
+    /// 当前虚拟页号；nil 时视为 `initialPage`。
+    @Binding var page: Int?
     @Environment(AppModel.self) private var app
     @Environment(\.isCompactLayout) private var isCompact
+
+    /// 每个条目重复的轮数。循环做法与 Android 相同：把条目铺成一长串虚拟页、从中间开始，页号取模得到条目；
+    /// 1000 轮即每个方向约 500 × 条目数页，手动翻页翻不到头，而 LazyHStack 只创建可见的几页。
+    private static let rounds = 1000
+
+    static func pageCount(count: Int) -> Int { count <= 1 ? count : count * rounds }
+
+    /// 位于中间、且对齐到第一个条目的页号。
+    static func initialPage(count: Int) -> Int { count <= 1 ? 0 : count * (rounds / 2) }
+
+    private func index(of page: Int, count: Int) -> Int { count == 0 ? 0 : page % count }
 
     var body: some View {
         GeometryReader { proxy in
             // 手机卡片宽 280pt，宽屏固定 320pt（Android `SuggestionsCard` / 平板 `tabletPageWidth`）。
             let cardWidth: CGFloat = isCompact ? min(280, proxy.size.width - 96) : 320
             let items = items ?? []
-            let currentItem = items.first { $0.id == current } ?? items.first
+            let currentPage = page ?? Self.initialPage(count: items.count)
+            let currentItem = items.isEmpty ? nil : items[index(of: currentPage, count: items.count)]
             ZStack {
                 Color.black.ignoresSafeArea()
                 if let currentItem {
@@ -284,7 +355,7 @@ private struct SearchSuggestionsView: View {
                         if let currentItem {
                             info(currentItem)
                         }
-                        pageDots(items)
+                        pageDots(count: items.count)
                         Spacer(minLength: 0)
                     }
                     .padding(.vertical, VelaTheme.Spacing.s)
@@ -312,13 +383,14 @@ private struct SearchSuggestionsView: View {
         GeometryReader { proxy in
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 16) {
-                    ForEach(items) { item in
+                    ForEach(0..<Self.pageCount(count: items.count), id: \.self) { slot in
+                        let item = items[index(of: slot, count: items.count)]
                         NavigationLink(value: item) {
                             RemoteArtwork(url: app.imageURL(for: item, kind: .primary, maxWidth: 600))
                                 .frame(width: cardWidth, height: height)
                                 .overlay(Color.black.opacity(0.2))
                                 .clipShape(.rect(cornerRadius: 20))
-                                .shadow(color: .black.opacity(0.5), radius: item.id == current ? 12 : 6, y: 6)
+                                .shadow(color: .black.opacity(0.5), radius: slot == page ? 12 : 6, y: 6)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(item.name)
@@ -329,7 +401,6 @@ private struct SearchSuggestionsView: View {
                                 .opacity(1 - 0.4 * min(abs(phase.value), 1))
                                 .rotation3DEffect(.degrees(phase.value * 25), axis: (x: 0, y: 1, z: 0), perspective: 0.5)
                         }
-                        .id(item.id)
                     }
                 }
                 .scrollTargetLayout()
@@ -337,7 +408,7 @@ private struct SearchSuggestionsView: View {
             .contentMargins(.horizontal, max((proxy.size.width - cardWidth) / 2, 0), for: .scrollContent)
             .scrollTargetBehavior(.viewAligned)
             .scrollIndicators(.hidden)
-            .scrollPosition(id: $current, anchor: .center)
+            .scrollPosition(id: $page, anchor: .center)
         }
         .frame(height: height)
     }
@@ -377,21 +448,19 @@ private struct SearchSuggestionsView: View {
         return parts.dropFirst().reduce(parts[0]) { $0 + AttributedString("  •  ") + $1 }
     }
 
-    /// 最多显示 7 个圆点，当前项为居中的红色长条（与 Android 指示器一致）。
-    private func pageDots(_ items: [MediaItem]) -> some View {
-        let index = items.firstIndex { $0.id == current } ?? 0
-        let visible = min(items.count, 7)
-        let start = min(max(index - visible / 2, 0), items.count - visible)
+    /// 循环翻页没有首尾，指示器与 Android 相同：最多 7 个圆点，红色长条固定在正中，越靠两侧越小越淡。
+    private func pageDots(count: Int) -> some View {
+        let visible = min(count, 7)
+        let center = visible / 2
         return HStack(spacing: 7) {
-            ForEach(start..<(start + visible), id: \.self) { slot in
-                let distance = abs(slot - index)
+            ForEach(0..<visible, id: \.self) { slot in
+                let distance = abs(slot - center)
                 Capsule()
-                    .fill(slot == index ? Color.red : Color.white.opacity(distance == 1 ? 0.32 : 0.24))
-                    .frame(width: slot == index ? 16 : (distance == 1 ? 8 : 6), height: 6)
+                    .fill(distance == 0 ? Color.red : Color.white.opacity(distance == 1 ? 0.32 : 0.24))
+                    .frame(width: distance == 0 ? 16 : (distance == 1 ? 8 : 6), height: 6)
             }
         }
-        .animation(.snappy, value: current)
-        .opacity(items.count > 1 ? 1 : 0)
+        .opacity(count > 1 ? 1 : 0)
         .accessibilityHidden(true)
     }
 }

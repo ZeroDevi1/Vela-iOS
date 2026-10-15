@@ -259,3 +259,21 @@ struct SubtitleDecodingTests {
         #expect(try !stream(#""Profile":"Dolby Digital Plus""#).isDolbyAtmos)
     }
 }
+
+struct SuggestionsProviderTests {
+    private func query(_ request: APIRequest) -> [String: String] {
+        Dictionary(uniqueKeysWithValues: request.query.map { ($0.name, $0.value ?? "") })
+    }
+
+    @Test func jellyfinUsesItemsSuggestionsWithUserIDAndType() {
+        let request = MediaServerKind.jellyfin.suggestionsProvider.request(userID: "u1", types: ["Movie", "Series"], limit: 15, fields: "Overview")
+        #expect(request.path == "/Items/Suggestions")
+        #expect(query(request) == ["userId": "u1", "type": "Movie,Series", "limit": "15", "fields": "Overview"])
+    }
+
+    @Test func embyUsesUserScopedPathAndIncludeItemTypes() {
+        let request = MediaServerKind.emby.suggestionsProvider.request(userID: "u1", types: ["Movie", "Series"], limit: 15, fields: "Overview")
+        #expect(request.path == "/Users/u1/Suggestions")
+        #expect(query(request) == ["IncludeItemTypes": "Movie,Series", "Limit": "15", "Fields": "Overview"])
+    }
+}
