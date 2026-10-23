@@ -17,22 +17,26 @@ struct MetadataManagerView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                NavigationLink { MetadataEditView(item: item, onChange: onChange) } label: {
-                    Label("编辑元数据", systemImage: "pencil")
-                }
-                if MediaServerClient.remoteSearchType(for: item.kind) != nil {
-                    NavigationLink { IdentifyView(item: item, onChange: onChange) } label: {
-                        Label("识别", systemImage: "magnifyingglass")
+            Form {
+                Section {
+                    NavigationLink { MetadataEditView(item: item, onChange: onChange) } label: {
+                        Label("编辑元数据", systemImage: "pencil")
                     }
-                }
-                NavigationLink { ImageManagerView(item: item, onChange: onChange) } label: {
-                    Label("编辑图片", systemImage: "photo.on.rectangle")
-                }
-                if item.kind.isPlayable {
-                    NavigationLink { SubtitleManagerView(item: item, mediaSource: mediaSource, onChange: onChange) } label: {
-                        Label("管理字幕", systemImage: "captions.bubble")
+                    if MediaServerClient.remoteSearchType(for: item.kind) != nil {
+                        NavigationLink { IdentifyView(item: item, onChange: onChange) } label: {
+                            Label("识别", systemImage: "magnifyingglass")
+                        }
                     }
+                    NavigationLink { ImageManagerView(item: item, onChange: onChange) } label: {
+                        Label("编辑图片", systemImage: "photo.on.rectangle")
+                    }
+                    if item.kind.isPlayable {
+                        NavigationLink { SubtitleManagerView(item: item, mediaSource: mediaSource, onChange: onChange) } label: {
+                            Label("管理字幕", systemImage: "captions.bubble")
+                        }
+                    }
+                } footer: {
+                    Text("修改提交到服务器后对所有客户端生效。")
                 }
             }
             .navigationTitle(item.name)
@@ -41,8 +45,10 @@ struct MetadataManagerView: View {
             #endif
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
+        // 与设置页一致的分组样式，加在导航栈上使推入的子页面经环境继承（macOS 默认的分栏表单不适合这里的长文本与图片）。
+        .formStyle(.grouped)
         #if os(macOS)
-        // macOS 的 sheet 按内容理想尺寸定大小，List 的理想高度接近 0，不设下限只剩标题栏；
+        // macOS 的 sheet 按内容理想尺寸定大小，表单的理想高度接近 0，不设下限只剩标题栏；
         // 编辑、识别、图片等子页面也在这个导航栈里推入，按其中内容最多的页面取尺寸。
         .frame(minWidth: 560, minHeight: 640)
         #endif
@@ -344,7 +350,7 @@ private struct ImageManagerView: View {
     private static let maxUploadBytes = 20 * 1024 * 1024
 
     var body: some View {
-        List {
+        Form {
             if let error {
                 Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
             }
