@@ -7,7 +7,8 @@ import VelaNetwork
 ///
 /// 只播放服务器上的本地预告片（`LocalTrailers`）：远程预告片多为 YouTube 页面地址，iOS 上不能直接取流。
 /// 默认关闭（「媒体库配置 → 轮播自动播放预告片」），只在联网且非蜂窝 / 非低数据模式时播放；
-/// 其他应用正在播放音频时也不播放（即使静音，开始播放也可能打断它们）。视图离开屏幕时停止。
+/// 其他应用正在播放音频、或本应用自己的播放器（全屏 / 画中画）正在播放时都不播放：预告片只作为轮播的动态预览，
+/// 不能打断或抢占正在进行的播放。视图离开屏幕、或开始正式播放时停止。
 struct InlineTrailerOverlay: View {
     let item: MediaItem
     /// 预告片开始播放 / 结束（或失败）时回调，轮播据此暂停与恢复自动翻页。
@@ -31,10 +32,15 @@ struct InlineTrailerOverlay: View {
             stop()
         }
         .onDisappear { stop() }
+        // 全屏播放器盖在首页之上时首页不一定收到 onDisappear，正式播放开始就停掉预览。
+        .onChange(of: app.presentedPlayback != nil) { _, presenting in
+            if presenting { stop() }
+        }
     }
 
     private var isAllowed: Bool {
         guard app.libraryPreferences.autoplayTrailers, app.network.isOnline, !app.network.isMetered else { return false }
+        guard app.presentedPlayback == nil, app.pictureInPictureSession == nil else { return false }
         #if os(iOS)
         if AVAudioSession.sharedInstance().isOtherAudioPlaying { return false }
         #endif
@@ -48,6 +54,8 @@ struct InlineTrailerOverlay: View {
         let player = AVPlayer(url: url)
         player.isMuted = true
         player.preventsDisplaySleepDuringVideoPlayback = false
+        // 预览不进入后台播放、不投屏，避免被系统当作正式播放（锁屏 / 控制中心、画中画路由）。
+        player.audiovisualBackgroundPlaybackPolicy = .pauses
         #if os(iOS)
         player.allowsExternalPlayback = false
         #endif
@@ -58,7 +66,11 @@ struct InlineTrailerOverlay: View {
             if player.currentItem?.status == .failed || Task.isCancelled { return }
             try? await Task.sleep(for: .milliseconds(200))
         }
-        guard player.currentItem?.status == .readyToPlay, !Task.isCancelled else { return }
+        guard let ready = player.currentItem, ready.status == .readyToPlay, !Task.isCancelled, isAllowed else { return }
+        // 只播画面：禁用音轨后不输出音频，不会和正式播放或其他应用争用音频会话（静音只是音量为 0，仍会参与音频会话）。
+        for track in ready.tracks where track.assetTrack?.mediaType == .audio {
+            track.isEnabled = false
+        }
         player.play()
         isPlaying = true
         onStart()
