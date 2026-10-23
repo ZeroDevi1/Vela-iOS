@@ -332,9 +332,14 @@ struct PagedItemGrid<Header: View>: View {
     @State private var total = 0
     /// 已取到的原始条目数（合并前），分页偏移与「是否还有下一页」都以它为准。
     @State private var fetchedCount = 0
+    /// 已取到的原始条目 id；随机排序每页都由服务器重新打乱，跨页会重复，据此去重（重复 id 会让网格错乱）。
+    @State private var fetchedIDs: Set<String> = []
     @State private var isLoading = false
     @State private var error: String?
     @State private var loadedOnce = false
+    /// 当前内容对应的查询；从详情页返回时视图重新出现、`.task` 会再次执行，查询未变且上次成功时不重新加载，
+    /// 保留已加载的条目与滚动位置（随机排序也不会被重新打乱）。
+    @State private var loadedKey: QueryKey?
 
     private static var pageSize: Int { 60 }
     /// 距离末尾还剩多少项时开始加载下一页，滚动到底前数据已就绪。
@@ -345,6 +350,8 @@ struct PagedItemGrid<Header: View>: View {
         var sort: LibrarySort
         var played: Bool?
     }
+
+    private var queryKey: QueryKey { QueryKey(template: template, sort: sort, played: played) }
 
     private var cardWidth: CGFloat {
         // 宽屏横卡随分档放大（260 / 320 / 360 减去网格间距余量），与首页横卡观感一致。
@@ -383,7 +390,10 @@ struct PagedItemGrid<Header: View>: View {
             }
         }
         .refreshable { await reload() }
-        .task(id: QueryKey(template: template, sort: sort, played: played)) { await reload() }
+        .task(id: queryKey) {
+            guard loadedKey != queryKey || error != nil else { return }
+            await reload()
+        }
         .onChange(of: GridCounts(loaded: fetchedCount, total: total)) { _, value in counts?.wrappedValue = value }
     }
 
@@ -417,7 +427,9 @@ struct PagedItemGrid<Header: View>: View {
         items = []
         total = 0
         fetchedCount = 0
+        fetchedIDs = []
         error = nil
+        loadedKey = queryKey
         await loadMore()
         loadedOnce = true
     }
@@ -434,8 +446,10 @@ struct PagedItemGrid<Header: View>: View {
         query.isPlayed = played
         do {
             let page = try await client.items(query)
+            // 偏移仍按服务器返回的条数推进；随机排序下跨页重复的条目丢弃（代价是少数条目可能取不到）。
+            let fresh = page.items.filter { fetchedIDs.insert($0.id).inserted }
             // 同一部电影的多个文件合并为一张卡片（可能跨页，因此对全部条目重新合并）。
-            items = MediaItemMerger.merge(items + page.items)
+            items = MediaItemMerger.merge(items + fresh)
             fetchedCount += page.items.count
             total = page.total
             error = nil
@@ -493,7 +507,8 @@ private struct FacetGrid: View {
                 ProgressView().padding(.top, 40)
             }
         }
-        .task { await load() }
+        // 从下级页面返回时已有内容，不重新请求。
+        .task { if facets.value == nil { await load() } }
     }
 
     private func load() async {
@@ -598,7 +613,8 @@ private struct FolderContentsView: View {
                 ProgressView().padding(.top, 40)
             }
         }
-        .task(id: parentID) { await load() }
+        // 从详情 / 子文件夹返回时已有内容，不重新请求，保持滚动位置；加载失败时重新出现会重试。
+        .task(id: parentID) { if content.value == nil { await load() } }
     }
 
     private func folderCard(_ item: MediaItem) -> some View {
