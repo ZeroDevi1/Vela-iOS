@@ -3,7 +3,7 @@ import Foundation
 /// 播放内核偏好（设置项）。
 public enum PlaybackEngineMode: String, CaseIterable, Sendable {
     /// 始终优先系统内核：硬件解码、系统级功耗优化，能效最高。系统内核不能直接打开的格式（MKV 等）
-    /// 由服务器用 FFmpeg 转封装 / 转码为 HLS；系统内核播放失败时可手动「用 KSPlayer 内核重试」。
+    /// 由服务器用 FFmpeg 转封装 / 转码为 HLS；系统内核播放失败时自动改用 KSPlayer（见 `PlaybackEngineChoice.fallsBackToKSPlayer`）。
     case auto
     /// 始终使用系统内核（AVPlayer）。MKV 内嵌字幕也交给服务器提取，不自动切换。
     case system
@@ -92,6 +92,29 @@ public enum PlaybackEngineChoice {
         let systemContainers: Set<String> = ["mp4", "m4v", "mov"]
         let containers = (container ?? "").lowercased().split(separator: ",").map(String.init)
         return !containers.contains { systemContainers.contains($0) }
+    }
+
+    /// 系统内核在播放中遇到的问题。
+    public enum SystemEngineFailure: Sendable, Equatable {
+        /// 内核报错（`AVPlayerItem` 失败）。
+        case error
+        /// 有声音但解不出画面；`width` 为片源视频宽度，未知为 nil。
+        case noVideoOutput(width: Int?)
+    }
+
+    /// 无画面时只对不超过该宽度的片源改用 KSPlayer：4K 以内多为编码标签（如 `hev1`）不被系统接受，KSPlayer 可绕过；
+    /// 更宽的片源（8K 等）多半超过本机硬件解码上限，KSPlayer 同样解不动，留给「服务器转码为 4K」。
+    public static let noVideoFallbackMaxWidth = 3840
+
+    /// 系统内核失败后是否自动改用 KSPlayer 从当前位置继续，不必让用户手动重试。
+    /// 只在自动模式下进行（选了「AVPlayer」时保留错误界面）；「服务器转码为 4K」的码流和原盘只有系统内核能播放；
+    /// 同一条目只回退一次：按 KSPlayer 请求后服务器仍可能要求转码而回到系统内核，再失败就交给错误界面，避免来回切换。
+    public static func fallsBackToKSPlayer(
+        after failure: SystemEngineFailure, mode: PlaybackEngineMode, serverDownscaled: Bool, isDiscImage: Bool, alreadyFellBack: Bool
+    ) -> Bool {
+        guard mode == .auto, !serverDownscaled, !isDiscImage, !alreadyFellBack else { return false }
+        if case .noVideoOutput(let width?) = failure, width > noVideoFallbackMaxWidth { return false }
+        return true
     }
 
     /// 服务器给出的 `TranscodeReasons` 是否意味着重新编码视频；只涉及容器 / 音频时视频流为复制，画质无损。

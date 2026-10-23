@@ -81,6 +81,8 @@ final class PlayerSession {
     @ObservationIgnored private var traktPaused: Bool?
     /// 用户手动切换内核（失败后「用 KSPlayer 重试」或「更多 → 切换内核」）时强制使用的内核；nil 表示按设置自动选择。
     @ObservationIgnored private var engineOverride: PlaybackEngineMode?
+    /// 自动模式下系统内核失败、已自动改用 KSPlayer 的条目：该条目之后（含重试）按 KSPlayer 起播，其它条目仍按设置先用系统内核。
+    @ObservationIgnored private var ksPlayerFallbackItemID: String?
     /// 睡眠定时的到期时刻；到期暂停播放并清除。nil 表示未开启。与 Android 版一致，切集后继续计时。
     private(set) var sleepDeadline: Date?
     /// 睡眠定时预设（分钟），与 Android 版相同。
@@ -225,7 +227,7 @@ final class PlayerSession {
         isNextPreloaded = false
         // 内核（与 Android 版一致）：设置为 KSPlayer 或手动切换时按 KSPlayer 能力请求，服务器直接给原文件；
         // 「服务器转码为 4K」需要服务器缩放后的码流，始终交给系统内核。
-        let mode = engineOverride ?? app.playerPreferences.engineMode
+        let mode = engineOverride ?? (ksPlayerFallbackItemID == item.id ? .ksPlayer : app.playerPreferences.engineMode)
         let downscaled = maxVideoWidthOverride?.itemID == item.id
         var requested = PlaybackEngineChoice.requestedEngine(mode: mode, serverDownscaled: downscaled)
         var profile: DeviceProfile.Kind { requested.directPlaysOriginal ? .ksPlayer : .avFoundation }
@@ -860,6 +862,29 @@ final class PlayerSession {
         restart(with: .ksPlayer)
     }
 
+    /// 自动模式下系统内核报错或解不出画面时，改用 KSPlayer 从当前位置继续（规则见 `PlaybackEngineChoice.fallsBackToKSPlayer`）。
+    /// 不满足条件时返回 false，由错误界面 / 无画面卡片让用户选择。
+    private func fallBackToKSPlayerIfNeeded(after failure: PlaybackEngineChoice.SystemEngineFailure, detail: String) -> Bool {
+        guard controller.engine.kind == .avFoundation, canSwitchEngine,
+              PlaybackEngineChoice.fallsBackToKSPlayer(
+                  after: failure,
+                  mode: engineOverride ?? app?.playerPreferences.engineMode ?? .auto,
+                  serverDownscaled: isServerDownscaled,
+                  isDiscImage: stream?.mediaSource.isDiscImage ?? false,
+                  alreadyFellBack: item != nil && ksPlayerFallbackItemID == item?.id
+              ) else { return false }
+        Log.player.error("系统内核失败，自动改用 KSPlayer：\(detail, privacy: .public)")
+        controller.showMessage("系统内核无法播放，已自动改用 KSPlayer", symbol: "arrow.triangle.2.circlepath", duration: .seconds(3))
+        if let item {
+            ksPlayerFallbackItemID = item.id
+            restart(with: nil)
+        } else {
+            // 离线文件 / 外部地址：改为固定使用 KSPlayer，模式不再是「自动」，不会重复回退。
+            restart(with: .ksPlayer)
+        }
+        return true
+    }
+
     /// 本机解码器打不开的超高分辨率片源（如 8192 宽的 8K VR）：让服务器缩小到 4K 重新编码，从当前位置重试。
     /// 只对当前条目生效；服务器需开启视频转码，且 8K 实时转码对服务器性能要求较高。
     func retryWithServerDownscale() {
@@ -909,13 +934,14 @@ final class PlayerSession {
     }
 
     /// 换内核从当前位置重新起播，保留当前版本、音轨与字幕选择。
-    private func restart(with mode: PlaybackEngineMode, subtitle: Int?? = nil) {
+    /// - Parameter mode: 强制使用的内核；nil 不改 `engineOverride`，仍按设置与自动回退选择（只用于服务器条目）。
+    private func restart(with mode: PlaybackEngineMode?, subtitle: Int?? = nil) {
         let position = controller.engine.currentTime
         guard let item else {
-            restartURL(with: mode, at: position)
+            if let mode { restartURL(with: mode, at: position) }
             return
         }
-        engineOverride = mode
+        if let mode { engineOverride = mode }
         reporter?.stop(position: position)
         reporter = nil
         let keptSubtitle = subtitle ?? selectedSubtitleIndex
@@ -1225,11 +1251,17 @@ final class PlayerSession {
         let isPaused = !controller.isPlaying
 
         // 转码流偶发起播失败（服务器在新位置的转码尚未就绪，分片请求出错，如 CoreMedia -16046）：
-        // 自动从当前位置重新请求一次；再失败才交给错误界面，由用户选择重试 / 换内核。
-        if case .failed(let message) = engine.status, stream?.method == .transcode, !autoRetriedFailure {
-            autoRetriedFailure = true
-            Log.player.error("转码流播放失败，自动重试一次：\(message, privacy: .public)")
-            retryAfterFailure()
+        // 自动从当前位置重新请求一次；再失败才按系统内核失败处理。
+        if case .failed(let message) = engine.status {
+            if stream?.method == .transcode, !autoRetriedFailure {
+                autoRetriedFailure = true
+                Log.player.error("转码流播放失败，自动重试一次：\(message, privacy: .public)")
+                retryAfterFailure()
+                return
+            }
+            if fallBackToKSPlayerIfNeeded(after: .error, detail: message) { return }
+        } else if let issue = (engine as? any VideoDecodeDiagnosing)?.videoDecodeIssue,
+                  fallBackToKSPlayerIfNeeded(after: .noVideoOutput(width: stream?.mediaSource.videoStream?.width), detail: issue) {
             return
         }
         if engine.status == .playing { autoRetriedFailure = false }

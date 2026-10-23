@@ -32,6 +32,24 @@ struct PlaybackEngineChoiceTests {
         #expect(switches(nil))
     }
 
+    /// 系统内核失败后只在自动模式、同一条目首次时回退 KSPlayer；超过 4K 宽的无画面留给服务器缩放。
+    @Test func fallsBackToKSPlayerAfterSystemFailure() {
+        func fallsBack(_ failure: PlaybackEngineChoice.SystemEngineFailure = .error, mode: PlaybackEngineMode = .auto,
+                       serverDownscaled: Bool = false, isDiscImage: Bool = false, alreadyFellBack: Bool = false) -> Bool {
+            PlaybackEngineChoice.fallsBackToKSPlayer(
+                after: failure, mode: mode, serverDownscaled: serverDownscaled, isDiscImage: isDiscImage, alreadyFellBack: alreadyFellBack)
+        }
+        #expect(fallsBack())
+        #expect(!fallsBack(mode: .system))
+        #expect(!fallsBack(mode: .ksPlayer))
+        #expect(!fallsBack(serverDownscaled: true))
+        #expect(!fallsBack(isDiscImage: true))
+        #expect(!fallsBack(alreadyFellBack: true))
+        #expect(fallsBack(.noVideoOutput(width: 3840)))
+        #expect(fallsBack(.noVideoOutput(width: nil)))
+        #expect(!fallsBack(.noVideoOutput(width: 7680)))
+    }
+
     @Test func ksPlayerLimitationsBySource() {
         typealias Traits = PlaybackEngineChoice.SourceTraits
         func limitation(_ traits: Traits, passthrough: Bool = true) -> KSPlayerLimitation? {

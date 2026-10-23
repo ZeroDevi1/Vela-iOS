@@ -60,6 +60,8 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         status = .loading
         videoDecodeIssue = nil
         loadedAt = source.startTime
+        // 时间回调要等开始播放才更新；起播即失败时换内核 / 重试要从这里取位置，不能沿用上一条目的时间或 0。
+        currentTime = source.startTime
         activateAudioSession()
         var options: [String: Any] = [:]
         if !source.httpHeaders.isEmpty {
