@@ -41,6 +41,11 @@ struct MetadataManagerView: View {
             #endif
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
+        #if os(macOS)
+        // macOS 的 sheet 按内容理想尺寸定大小，List 的理想高度接近 0，不设下限只剩标题栏；
+        // 编辑、识别、图片等子页面也在这个导航栈里推入，按其中内容最多的页面取尺寸。
+        .frame(minWidth: 560, minHeight: 640)
+        #endif
     }
 }
 
