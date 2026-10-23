@@ -320,7 +320,8 @@ struct ItemDetailView: View {
     private var directorsLine: some View {
         let directors = (model.details?.people ?? []).filter { $0.type == "Director" }
         if !directors.isEmpty {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
+            // 横向 ScrollView 不向外提供文字基线，按基线对齐会把它压到行尾下方并撑高整行；两侧同字号，居中对齐即可。
+            HStack(alignment: .center, spacing: 6) {
                 Text("导演：").font(.subheadline.weight(.semibold))
                 ScrollView(.horizontal) {
                     HStack(spacing: 8) {
