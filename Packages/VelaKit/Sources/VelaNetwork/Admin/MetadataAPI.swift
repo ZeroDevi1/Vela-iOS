@@ -102,9 +102,41 @@ public struct RemoteImageInfo: Decodable, Identifiable, Sendable {
     }
 }
 
-private struct RemoteImagesDTO: Decodable {
-    var images: [RemoteImageInfo]?
-    enum CodingKeys: String, CodingKey { case images = "Images" }
+/// 远程图片查询结果：候选图片与本次可选的提供方（用于按提供方筛选）。
+public struct RemoteImagesResult: Decodable, Sendable {
+    public var images: [RemoteImageInfo]
+    public var providers: [String]
+
+    enum CodingKeys: String, CodingKey { case images = "Images", providers = "Providers" }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        images = try container.decodeIfPresent([RemoteImageInfo].self, forKey: .images) ?? []
+        providers = try container.decodeIfPresent([String].self, forKey: .providers) ?? []
+    }
+}
+
+/// 条目支持的外部 ID（`GET /Items/{id}/ExternalIdInfos`）。识别表单按它生成输入框，插件提供方（如 MetaTube）也能按 ID 搜索。
+public struct ExternalIDInfo: Decodable, Identifiable, Sendable {
+    public var name: String?
+    /// 提供方键，即 `ProviderIds` 中的键（如 `Tmdb`）。
+    public var key: String?
+    /// Jellyfin：ID 所属的实体类型（如 Movie、Series），用于区分同名提供方。
+    public var type: String?
+    /// Emby：为 false 时该 ID 不能用于识别。
+    public var isSupportedAsIdentifier: Bool?
+    public var id: String { key ?? name ?? "" }
+
+    public init(name: String?, key: String?, type: String? = nil, isSupportedAsIdentifier: Bool? = nil) {
+        self.name = name
+        self.key = key
+        self.type = type
+        self.isSupportedAsIdentifier = isSupportedAsIdentifier
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name = "Name", key = "Key", type = "Type", isSupportedAsIdentifier = "IsSupportedAsIdentifier"
+    }
 }
 
 extension MediaServerClient {
@@ -177,6 +209,12 @@ extension MediaServerClient {
         }
     }
 
+    /// 条目可用于识别的外部 ID 类型；Emby 标记为不可识别的、以及没有键的项已排除。
+    public func externalIDInfos(itemID: String) async throws -> [ExternalIDInfo] {
+        try await httpClient.decode([ExternalIDInfo].self, APIRequest("/Items/\(itemID)/ExternalIdInfos"), baseURL: baseURL, headers: requestHeaders)
+            .filter { !($0.key ?? "").isEmpty && $0.isSupportedAsIdentifier != false }
+    }
+
     /// 用名称 / 年份 / 外部 id 向服务器的元数据提供方搜索候选。
     public func remoteMetadataSearch(
         itemID: String, kind: MediaItem.Kind, name: String, year: Int?, providerIDs: [String: String]
@@ -226,16 +264,30 @@ extension MediaServerClient {
         try await httpClient.decode([ItemImageInfo].self, APIRequest("/Items/\(itemID)/Images"), baseURL: baseURL, headers: requestHeaders)
     }
 
-    /// 远程候选图片；`type` 为 `Primary` / `Backdrop` / `Logo` / `Thumb` 等。
-    public func remoteImages(itemID: String, type: String, allLanguages: Bool) async throws -> [RemoteImageInfo] {
-        try await httpClient.decode(
-            RemoteImagesDTO.self,
-            APIRequest("/Items/\(itemID)/RemoteImages", query: [
-                .init(name: "Type", value: type),
-                .init(name: "IncludeAllLanguages", value: allLanguages ? "true" : "false"),
-            ], timeout: 60),
+    /// 远程候选图片；`type` 为 `Primary` / `Backdrop` / `Logo` / `Thumb` 等，`providerName` 为 nil 时查询全部提供方。
+    public func remoteImages(itemID: String, type: String, providerName: String?, allLanguages: Bool) async throws -> RemoteImagesResult {
+        var query: [URLQueryItem] = [
+            .init(name: "Type", value: type),
+            .init(name: "IncludeAllLanguages", value: allLanguages ? "true" : "false"),
+        ]
+        if let providerName { query.append(.init(name: "ProviderName", value: providerName)) }
+        return try await httpClient.decode(
+            RemoteImagesResult.self,
+            APIRequest("/Items/\(itemID)/RemoteImages", query: query, timeout: 60),
             baseURL: baseURL, headers: requestHeaders
-        ).images ?? []
+        )
+    }
+
+    /// 上传本地图片设为该类型的图片（背景图为追加）。服务器要求请求体为 Base64 文本、`Content-Type` 为图片类型。
+    /// - Parameter mimeType: 例如 `image/jpeg`、`image/png`。
+    public func uploadImage(itemID: String, type: String, data: Data, mimeType: String) async throws {
+        let body = Data(data.base64EncodedString().utf8)
+        var headers = requestHeaders
+        headers["Content-Type"] = mimeType
+        _ = try await httpClient.data(
+            APIRequest("/Items/\(itemID)/Images/\(type)", method: .post, body: body, timeout: 120),
+            baseURL: baseURL, headers: headers
+        )
     }
 
     /// 让服务器下载远程图片并设为该类型的图片（背景图为追加）。

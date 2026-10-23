@@ -1,4 +1,6 @@
+import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
 import VelaCore
 import VelaDesignSystem
 import VelaNetwork
@@ -25,11 +27,11 @@ struct MetadataManagerView: View {
                     }
                 }
                 NavigationLink { ImageManagerView(item: item, onChange: onChange) } label: {
-                    Label("图片", systemImage: "photo.on.rectangle")
+                    Label("编辑图片", systemImage: "photo.on.rectangle")
                 }
                 if item.kind.isPlayable {
                     NavigationLink { SubtitleManagerView(item: item, mediaSource: mediaSource, onChange: onChange) } label: {
-                        Label("字幕", systemImage: "captions.bubble")
+                        Label("管理字幕", systemImage: "captions.bubble")
                     }
                 }
             }
@@ -173,8 +175,11 @@ private struct IdentifyView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var year: Int?
-    @State private var tmdbID = ""
-    @State private var imdbID = ""
+    /// 外部 ID 输入框，来自服务器的 `ExternalIdInfos`（含插件提供方）；取不到时退回 TMDB / IMDb。
+    @State private var idFields: [ExternalIDInfo] = []
+    /// 提供方键 → 输入的 ID。
+    @State private var ids: [String: String] = [:]
+    @State private var loadedFields = false
     @State private var results: LoadState<[RemoteMetadataResult]> = .idle
     @State private var replaceImages = true
     @State private var pending: RemoteMetadataResult?
@@ -185,10 +190,12 @@ private struct IdentifyView: View {
             Section {
                 TextField("名称", text: $name)
                 TextField("年份", value: $year, format: .number.grouping(.never))
-                TextField("TMDB ID", text: $tmdbID)
-                TextField("IMDb ID", text: $imdbID)
+                ForEach(idFields) { field in
+                    TextField(Self.label(field), text: Binding(get: { ids[field.id] ?? "" }, set: { ids[field.id] = $0 }))
+                        .autocorrectionDisabled()
+                }
                 Button("搜索", systemImage: "magnifyingglass") { Task { await search() } }
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty && tmdbID.isEmpty && imdbID.isEmpty)
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty && filledIDs.isEmpty)
             } footer: {
                 Text("按名称与年份搜索，或填写外部 ID 精确匹配。")
             }
@@ -221,10 +228,9 @@ private struct IdentifyView: View {
             if name.isEmpty {
                 name = item.name
                 year = item.productionYear
-                tmdbID = item.providerIDs["Tmdb"] ?? ""
-                imdbID = item.providerIDs["Imdb"] ?? ""
             }
         }
+        .task { await loadFields() }
         .confirmationDialog(
             "将「\(item.name)」识别为「\(pending?.name ?? "")」？",
             isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }),
@@ -239,14 +245,41 @@ private struct IdentifyView: View {
     private func search() async {
         guard let client = app.client(forServerID: item.serverID) else { return }
         results = .loading
-        var ids: [String: String] = [:]
-        if !tmdbID.isEmpty { ids["Tmdb"] = tmdbID }
-        if !imdbID.isEmpty { ids["Imdb"] = imdbID }
-        let providerIDs = ids
+        let providerIDs = filledIDs
         let (itemID, kind, name, year) = (item.id, item.kind, name, year)
         results = LoadState(await capture {
             try await client.remoteMetadataSearch(itemID: itemID, kind: kind, name: name, year: year, providerIDs: providerIDs)
         })
+    }
+
+    private var filledIDs: [String: String] {
+        ids.compactMapValues { value in
+            let trimmed = value.trimmingCharacters(in: .whitespaces)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+    }
+
+    /// 「TMDB Id」；Jellyfin 同一提供方有多种实体类型时附上类型（如「TheMovieDb Id · Movie」）。
+    private static func label(_ field: ExternalIDInfo) -> String {
+        let base = "\(field.name ?? field.key ?? "") Id"
+        guard let type = field.type, !type.isEmpty else { return base }
+        return "\(base) · \(type)"
+    }
+
+    /// 取外部 ID 输入框并预填条目现有的 ID（映射时键已转小写，按小写匹配）。只在首次出现时执行。
+    private func loadFields() async {
+        guard !loadedFields, let client = app.client(forServerID: item.serverID) else { return }
+        loadedFields = true
+        var fields = (try? await client.externalIDInfos(itemID: item.id)) ?? []
+        if fields.isEmpty {
+            fields = [ExternalIDInfo(name: "TMDB", key: "Tmdb"), ExternalIDInfo(name: "IMDb", key: "Imdb")]
+        }
+        // Jellyfin 可能对同一键返回多种实体类型，ID 只按键提交，同键只保留一个输入框。
+        var seen: Set<String> = []
+        idFields = fields.filter { seen.insert($0.id.lowercased()).inserted }
+        for field in idFields where ids[field.id] == nil {
+            ids[field.id] = item.providerIDs[field.id.lowercased()] ?? ""
+        }
     }
 
     private func apply(_ result: RemoteMetadataResult) async {
@@ -293,9 +326,17 @@ private struct ImageManagerView: View {
     @State private var images: LoadState<[ItemImageInfo]> = .idle
     @State private var pendingDelete: ItemImageInfo?
     @State private var error: String?
+    /// 正在上传的图片类型；上传期间其余上传入口禁用。
+    @State private var uploadingType: String?
 
     /// 可替换的图片类型（与 Android 相同）。
-    static let types: [(String, String)] = [("Primary", "海报"), ("Backdrop", "背景"), ("Logo", "标志"), ("Thumb", "缩略图"), ("Banner", "横幅")]
+    static let types: [(String, String)] = [
+        ("Primary", "海报"), ("Backdrop", "背景"), ("Logo", "标志"), ("Thumb", "缩略图"),
+        ("Banner", "横幅"), ("Art", "艺术图"), ("Disc", "光盘")
+    ]
+
+    /// 单张图片超过该大小（字节）不上传：服务器要求 Base64 请求体，过大的图会让请求体膨胀。与 Android 版相同。
+    private static let maxUploadBytes = 20 * 1024 * 1024
 
     var body: some View {
         List {
@@ -325,8 +366,17 @@ private struct ImageManagerView: View {
                             Task { await load() }
                         }
                     } label: {
-                        Label(current.isEmpty ? "选择\(title)" : (type == "Backdrop" ? "添加\(title)" : "更换\(title)"), systemImage: "photo.badge.plus")
+                        Label(current.isEmpty ? "搜索\(title)" : (type == "Backdrop" ? "搜索并添加\(title)" : "搜索并更换\(title)"), systemImage: "magnifyingglass")
                     }
+                    PhotosPicker(selection: Binding(get: { nil }, set: { selection in
+                        if let selection { Task { await upload(selection, type: type) } }
+                    }), matching: .images) {
+                        HStack {
+                            Label("上传本地图片", systemImage: "square.and.arrow.up")
+                            if uploadingType == type { Spacer(); ProgressView() }
+                        }
+                    }
+                    .disabled(uploadingType != nil)
                 } header: {
                     Text(title)
                 }
@@ -342,6 +392,31 @@ private struct ImageManagerView: View {
     private func load() async {
         guard let client = app.client(forServerID: item.serverID) else { return }
         images = LoadState(await capture { try await client.itemImages(itemID: item.id) })
+    }
+
+    /// 把相册中选中的图片上传为该类型的图片。
+    private func upload(_ selection: PhotosPickerItem, type: String) async {
+        guard let client = app.client(forServerID: item.serverID) else { return }
+        uploadingType = type
+        defer { uploadingType = nil }
+        do {
+            guard let data = try await selection.loadTransferable(type: Data.self), !data.isEmpty else {
+                error = "无法读取这张图片。"
+                return
+            }
+            guard data.count <= Self.maxUploadBytes else {
+                error = "图片超过 20 MB，无法上传。"
+                return
+            }
+            // 优先用照片自带的类型（HEIC / PNG …）；取不到时按 JPEG 提交。
+            let mime = selection.supportedContentTypes.lazy.compactMap(\.preferredMIMEType).first { $0.hasPrefix("image/") } ?? "image/jpeg"
+            try await client.uploadImage(itemID: item.id, type: type, data: data, mimeType: mime)
+            error = nil
+            onChange()
+            await load()
+        } catch {
+            self.error = "上传失败：\(error.localizedDescription)"
+        }
     }
 
     private func delete(_ image: ItemImageInfo) async {
@@ -364,6 +439,10 @@ private struct RemoteImagePicker: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
     @State private var images: LoadState<[RemoteImageInfo]> = .idle
+    /// 服务器返回的可选提供方；首次查询（全部提供方）时填充，之后切换筛选不变。
+    @State private var providers: [String] = []
+    /// 选中的提供方；nil 为全部。
+    @State private var provider: String?
     @State private var allLanguages = false
     @State private var applying: String?
     @State private var error: String?
@@ -371,6 +450,14 @@ private struct RemoteImagePicker: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: VelaTheme.Spacing.m) {
+                if providers.count > 1 {
+                    Picker("提供方", selection: $provider) {
+                        Text("全部").tag(String?.none)
+                        ForEach(providers, id: \.self) { Text($0).tag(String?.some($0)) }
+                    }
+                    .pickerStyle(.menu)
+                    .padding(.horizontal)
+                }
                 Toggle("显示全部语言", isOn: $allLanguages).padding(.horizontal)
                 if let error {
                     Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red).padding(.horizontal)
@@ -404,14 +491,22 @@ private struct RemoteImagePicker: View {
             }
             .padding(.vertical)
         }
-        .navigationTitle("选择\(title)")
-        .task(id: allLanguages) { await load() }
+        .navigationTitle("搜索\(title)")
+        .task(id: Query(provider: provider, allLanguages: allLanguages)) { await load() }
+    }
+
+    private struct Query: Hashable {
+        var provider: String?
+        var allLanguages: Bool
     }
 
     private func load() async {
         guard let client = app.client(forServerID: item.serverID) else { return }
         images = .loading
-        images = LoadState(await capture { try await client.remoteImages(itemID: item.id, type: type, allLanguages: allLanguages) })
+        let (itemID, type, provider, allLanguages) = (item.id, type, provider, allLanguages)
+        let result = await capture { try await client.remoteImages(itemID: itemID, type: type, providerName: provider, allLanguages: allLanguages) }
+        if case .success(let value) = result, providers.isEmpty { providers = value.providers }
+        images = LoadState(result.map(\.images))
     }
 
     private func apply(_ image: RemoteImageInfo) async {
