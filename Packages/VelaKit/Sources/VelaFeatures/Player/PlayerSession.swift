@@ -160,7 +160,8 @@ final class PlayerSession {
                 let vrLayout = VRLayoutParser.parse(mediaSourcePath: url.path)
                 controller.load(PlaybackSource(url: url, title: request.title, vrLayout: vrLayout))
                 // 外部地址不涉及服务器转码会话，预览可以直接用同一地址。
-                controller.scrubPreview.configure(url.pathExtension.lowercased() == "m3u8" ? .stream(url) : .file(url))
+                controller.scrubPreview.configure(url.pathExtension.lowercased() == "m3u8" ? .stream(url) : .file(url),
+                                                  allowsSweep: previewAllowsSweep(url))
                 #if DEBUG
                 scheduleDebugEngineSwitches()
                 #endif
@@ -1129,7 +1130,7 @@ final class PlayerSession {
         let container = stream.mediaSource.container?.split(separator: ",").first.map { String($0).lowercased() } ?? ""
         let systemReadable = controller.engine.kind == .avFoundation || ["mp4", "m4v", "mov"].contains(container)
         if stream.method == .directPlay, !isPlaylist, systemReadable {
-            controller.scrubPreview.configure(.file(stream.url))
+            controller.scrubPreview.configure(.file(stream.url), allowsSweep: previewAllowsSweep(stream.url))
             return
         }
         guard let app, let client else {
@@ -1138,7 +1139,7 @@ final class PlayerSession {
         }
         let resolver = app.playbackResolver
         let mediaSourceID = stream.mediaSource.id
-        controller.scrubPreview.configure { [weak self] in
+        controller.scrubPreview.configure(allowsSweep: previewAllowsSweep(nil)) { [weak self] in
             do {
                 let preview = try await resolver.resolvePreview(item: item, client: client, mediaSourceID: mediaSourceID)
                 guard let self, self.item?.id == item.id, !self.closed else {
@@ -1153,6 +1154,12 @@ final class PlayerSession {
                 return nil
             }
         }
+    }
+
+    /// 预览能否在后台预生成整片网格：本地文件总是可以；网络片源在计费网络（蜂窝 / 低数据模式）下不额外下载关键帧。
+    private func previewAllowsSweep(_ url: URL?) -> Bool {
+        if url?.isFileURL == true { return true }
+        return app.map { !$0.network.isMetered } ?? false
     }
 
     private func stopPreviewEncoding() {

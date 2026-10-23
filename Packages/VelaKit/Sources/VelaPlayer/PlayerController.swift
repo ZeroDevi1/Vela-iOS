@@ -118,6 +118,11 @@ public final class PlayerController {
 
     public init(engine: any PlaybackEngine = AVPlayerEngine()) {
         self.engine = engine
+        // 主播放缓冲或倍速时，预览的后台预生成让出网络与解码器。
+        scrubPreview.shouldYield = { [weak self] in
+            guard let self else { return true }
+            return self.engine.status == .buffering || self.engine.status == .loading || self.engine.rate > 1
+        }
     }
 
     /// 加载新条目。`resetMetadata` 为 false 时保留片段与字幕（同一条目切换音轨 / 码流时使用）。
@@ -482,14 +487,21 @@ public final class PlayerController {
         let upper = engine.duration > 0 ? engine.duration : .greatestFiniteMagnitude
         let target = min(max(0, scrubOrigin + offset), upper)
         scrubTime = target
-        if preferences.scrubPreview != .off { scrubPreview.request(time: target) }
+        requestScrubPreview(at: target)
     }
 
     /// 进度条直接拖动到绝对位置。
     public func updateScrub(to time: TimeInterval) {
         if scrubTime == nil { beginScrub() }
         scrubTime = time
-        if preferences.scrubPreview != .off { scrubPreview.request(time: time) }
+        requestScrubPreview(at: time)
+    }
+
+    private func requestScrubPreview(at time: TimeInterval) {
+        guard preferences.scrubPreview != .off else { return }
+        // 全屏模式把预览铺满画面，停手后需要补一张高清帧。
+        scrubPreview.refinesAtRest = preferences.scrubPreview == .fullscreen
+        scrubPreview.request(time: time, duration: engine.duration)
     }
 
     public func endScrub(commit: Bool = true) {
