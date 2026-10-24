@@ -846,7 +846,9 @@ private struct PlayerScrubber: View {
         let bounds = [0] + chapterStarts
             .filter { duration > 0 && $0 > 0 && $0 < duration }
             .map { CGFloat($0 / duration) * width } + [width]
-        let bufferedX = width * buffered
+        // 已缓冲段从间隙之后起算并整体后移间隙宽度：内核默认只预读几十秒，长片中只有一两个点宽，
+        // 按绝对位置画会被滑块后的间隙完全吞掉。
+        let bufferedX = playedX + Self.segmentGap + lineWidth / 2 + max(0, width * buffered - playedX)
         for (a, b) in zip(bounds, bounds.dropFirst()) {
             let start = max(a + (a > 0 ? Self.segmentGap / 2 : 0), playedX + Self.segmentGap + lineWidth / 2)
             let end = b - (b < width ? Self.segmentGap / 2 : 0)
