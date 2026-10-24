@@ -59,7 +59,7 @@ struct HomeListView: View {
             }
         }
         .navigationTitle(route.title)
-        .refreshable { await reload() }
+        .refreshableLoad { await reload() }
         .task(id: app.servers.activeServer?.baseURL) { await reload() }
     }
 

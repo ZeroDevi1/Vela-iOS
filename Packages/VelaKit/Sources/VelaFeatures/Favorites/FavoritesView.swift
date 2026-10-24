@@ -37,7 +37,7 @@ struct FavoritesView: View {
             .navigationTitle("收藏")
             .navigationDestination(for: HomeListRoute.self) { HomeListView(route: $0) }
             .detailDestinations()
-            .refreshable { await load() }
+            .refreshableLoad { await load() }
             .task(id: app.servers.activeServer?.baseURL) { await load() }
         }
     }

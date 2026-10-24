@@ -31,7 +31,7 @@ struct ServerAdminView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("服务器管理")
-        .refreshable { await load() }
+        .refreshableLoad { await load() }
         .task { await load() }
         .confirmationDialog("执行「\(pendingTask?.name ?? "")」？", isPresented: Binding(get: { pendingTask != nil }, set: { if !$0 { pendingTask = nil } }), titleVisibility: .visible) {
             Button("立即执行") {
@@ -220,7 +220,7 @@ private struct ActivityLogView: View {
             }
         }
         .navigationTitle("活动日志")
-        .refreshable { await reload() }
+        .refreshableLoad { await reload() }
         .task { await reload() }
     }
 

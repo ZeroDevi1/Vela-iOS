@@ -48,7 +48,7 @@ struct MyMediaView: View {
             .navigationDestination(for: CatalogTitle.self) { CatalogDetailView(title: $0) }
             .navigationDestination(for: LibraryRoute.self) { LibraryItemsView(library: $0.library, initialSort: $0.initialSort, mixedContentView: app.libraryPreferences.mixedContentView) }
             .detailDestinations()
-            .refreshable { await load() }
+            .refreshableLoad { await load() }
             .task(id: app.servers.activeServer?.baseURL) { await load() }
         }
     }

@@ -389,9 +389,7 @@ struct PagedItemGrid<Header: View>: View {
                                        systemImage: "square.stack")
             }
         }
-        // 刷新会先清空条目，网格随之重绘，SwiftUI 会取消 refreshable 自带的任务，请求以「已取消」失败；
-        // 放进非结构化 Task 不继承这次取消，下拉指示器仍等到加载结束才收起。
-        .refreshable { await Task { await reload() }.value }
+        .refreshableLoad { await reload() }
         .task(id: queryKey) {
             guard loadedKey != queryKey || error != nil else { return }
             await reload()
@@ -690,7 +688,7 @@ private struct LibraryRecommendationsView: View {
             .padding(.vertical, VelaTheme.Spacing.s)
         }
         .overlay { if !hasLoaded { ProgressView() } }
-        .refreshable { await load() }
+        .refreshableLoad { await load() }
         .task { if !hasLoaded { await load() } }
     }
 

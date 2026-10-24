@@ -61,7 +61,7 @@ struct HomeView: View {
             .navigationDestination(for: LibraryRoute.self) { LibraryItemsView(library: $0.library, initialSort: $0.initialSort, mixedContentView: app.libraryPreferences.mixedContentView) }
             .navigationDestination(for: GenreRoute.self) { GenreItemsView(route: $0) }
             .detailDestinations()
-            .refreshable { await load() }
+            .refreshableLoad { await load() }
             .task(id: app.servers.activeServer?.baseURL) { await load() }
             .task(id: TaskKey(category: category, server: app.servers.activeServer?.baseURL)) {
                 guard let client = app.activeClient else { return }

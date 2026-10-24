@@ -61,7 +61,7 @@ struct DiscoverPage: View {
             }
             .padding(.vertical, VelaTheme.Spacing.l)
         }
-        .refreshable { await load(force: true) }
+        .refreshableLoad { await load(force: true) }
         .task(id: category) { await load(force: false) }
         .task(id: app.servers.servers.map(\.id)) {
             model.resume = await CatalogService.federatedResume(in: app.searchableSources)

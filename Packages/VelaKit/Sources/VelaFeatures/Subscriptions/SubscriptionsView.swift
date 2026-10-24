@@ -85,7 +85,7 @@ private struct CalendarListView: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .refreshable { await load() }
+        .refreshableLoad { await load() }
         .task(id: app.subscriptions.isConnected) { await load() }
     }
 
@@ -184,7 +184,7 @@ private struct MySubscriptionsView: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .refreshable { await load() }
+        .refreshableLoad { await load() }
         .task { await load() }
         .confirmationDialog(
             "取消订阅「\(pendingRemoval?.name ?? "")」？",

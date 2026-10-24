@@ -121,7 +121,7 @@ struct SeerrRequestsView: View {
         }
         .navigationTitle("我的请求")
         .navigationDestination(for: CatalogTitle.self) { CatalogDetailView(title: $0) }
-        .refreshable { await load() }
+        .refreshableLoad { await load() }
         .task { await load() }
     }
 

@@ -167,7 +167,7 @@ struct FeedShelves: View {
                 }
                 .padding(.vertical, VelaTheme.Spacing.l)
             }
-            .refreshable { await reload() }
+            .refreshableLoad { await reload() }
         case .failed(let message):
             LoadFailureView(message: message) { Task { await reload() } }
         case .idle, .loading:
