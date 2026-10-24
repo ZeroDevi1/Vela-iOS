@@ -389,7 +389,9 @@ struct PagedItemGrid<Header: View>: View {
                                        systemImage: "square.stack")
             }
         }
-        .refreshable { await reload() }
+        // 刷新会先清空条目，网格随之重绘，SwiftUI 会取消 refreshable 自带的任务，请求以「已取消」失败；
+        // 放进非结构化 Task 不继承这次取消，下拉指示器仍等到加载结束才收起。
+        .refreshable { await Task { await reload() }.value }
         .task(id: queryKey) {
             guard loadedKey != queryKey || error != nil else { return }
             await reload()
@@ -456,6 +458,11 @@ struct PagedItemGrid<Header: View>: View {
             if style == .poster {
                 ImagePipeline.shared.prefetch(page.items.compactMap { app.imageURL(for: $0, kind: .primary, maxWidth: 400) })
             }
+        } catch is CancellationError {
+            // 离开页面或查询切换导致的取消不是加载失败；清掉 loadedKey，下次出现时重新加载。
+            loadedKey = nil
+        } catch APIError.transport(let urlError) where urlError.code == .cancelled {
+            loadedKey = nil
         } catch {
             self.error = error.localizedDescription
         }
