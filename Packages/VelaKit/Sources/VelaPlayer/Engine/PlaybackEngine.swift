@@ -178,7 +178,7 @@ public struct PlaybackSource: Sendable, Hashable {
     public var httpHeaders: [String: String]
     /// 识别出的 VR 排布；非 nil 时播放器提供「VR 转平面」。
     public var vrLayout: VRLayout?
-    /// 前向缓冲时长（秒）；0 表示交给内核按网络情况决定。
+    /// 前向缓冲时长（秒）；0 表示使用内核默认值（本地文件播放时）。
     public var forwardBufferDuration: TimeInterval
 
     public init(

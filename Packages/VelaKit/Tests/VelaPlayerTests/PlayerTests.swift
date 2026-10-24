@@ -356,3 +356,37 @@ struct VRCapabilityTests {
         controller.shutdown()
     }
 }
+
+struct ForwardBufferDurationTests {
+    private let gib: UInt64 = 1 << 30
+
+    @Test func automaticCapsByTimeForLowBitrate() {
+        // 10 Mbps 时 1 GB 约 859 秒，Wi-Fi 下受 10 分钟上限约束；蜂窝下受 256 MB 约束（约 215 秒）。
+        #expect(PlayerPreferences.forwardBufferDuration(seconds: 0, bitrate: 10_000_000, isMetered: false, physicalMemory: 8 * gib) == 600)
+        let metered = PlayerPreferences.forwardBufferDuration(seconds: 0, bitrate: 10_000_000, isMetered: true, physicalMemory: 8 * gib)
+        #expect(abs(metered - 214.7) < 0.1)
+        #expect(PlayerPreferences.forwardBufferDuration(seconds: 0, bitrate: 2_000_000, isMetered: true, physicalMemory: 8 * gib) == 300)
+    }
+
+    @Test func automaticCapsBySizeForHighBitrate() {
+        // 80 Mbps、4 GB 内存：预算 512 MB，约 54 秒。
+        let duration = PlayerPreferences.forwardBufferDuration(seconds: 0, bitrate: 80_000_000, isMetered: false, physicalMemory: 4 * gib)
+        #expect(abs(duration - 53.7) < 0.1)
+    }
+
+    @Test func neverBelowThirtySeconds() {
+        #expect(PlayerPreferences.forwardBufferDuration(seconds: 0, bitrate: 400_000_000, isMetered: true, physicalMemory: 4 * gib) == 30)
+    }
+
+    @Test func manualChoiceOnlyLimitedByMemory() {
+        #expect(PlayerPreferences.forwardBufferDuration(seconds: 120, bitrate: 10_000_000, isMetered: true, physicalMemory: 8 * gib) == 120)
+        let capped = PlayerPreferences.forwardBufferDuration(seconds: 600, bitrate: 80_000_000, isMetered: false, physicalMemory: 8 * gib)
+        #expect(abs(capped - 107.4) < 0.1)
+    }
+
+    @Test func unknownBitrateUsesEstimate() {
+        // 按 40 Mbps 估算：1 GB 约 215 秒。
+        let duration = PlayerPreferences.forwardBufferDuration(seconds: 0, bitrate: nil, isMetered: false, physicalMemory: 8 * gib)
+        #expect(abs(duration - 214.7) < 0.1)
+    }
+}

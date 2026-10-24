@@ -124,13 +124,13 @@ struct PlayerSettingsView: View {
             Section {
                 Picker("预缓冲时长", selection: $prefs.forwardBufferSeconds) {
                     ForEach(PlayerPreferences.forwardBufferOptions, id: \.self) { seconds in
-                        Text(seconds == 0 ? "自动" : "\(seconds) 秒").tag(seconds)
+                        Text(seconds == 0 ? "自动" : seconds >= 60 && seconds % 60 == 0 ? "\(seconds / 60) 分钟" : "\(seconds) 秒").tag(seconds)
                     }
                 }
             } header: {
                 Text("播放缓存")
             } footer: {
-                Text("自动：由播放内核按网络情况决定。8K VR 等高码率片源频繁卡顿时可调大。下次起播生效。")
+                Text("自动：Wi-Fi 下最多预读 10 分钟，蜂窝网络或低数据模式下最多 5 分钟，并按片源码率限制预读体积。8K VR 等高码率片源频繁卡顿时可调大。下次起播生效。")
             }
 
             Section {

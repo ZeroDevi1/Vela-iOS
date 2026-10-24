@@ -20,7 +20,7 @@ public final class PlayerPreferences {
     /// macOS「数字键切换倍速」：0 为 0.5×，1–4 为对应倍速。
     public static let digitKeySpeeds: [Character: Float] = ["0": 0.5, "1": 1, "2": 2, "3": 3, "4": 4]
     /// 可选的前向缓冲时长（秒）；0 为自动。
-    public static let forwardBufferOptions: [Int] = [0, 15, 30, 60, 120]
+    public static let forwardBufferOptions: [Int] = [0, 15, 30, 60, 120, 300, 600]
     /// 软件解码线程数；0 为自动（按 CPU 核心数）。
     public static let decodeThreadOptions: [Int] = [0, 1, 2, 4, 6, 8]
     /// 控制栏自动隐藏秒数；0 为不自动隐藏。
@@ -37,7 +37,8 @@ public final class PlayerPreferences {
 
     /// 播放内核：自动（系统优先）/ 系统 / KSPlayer。
     public var engineMode: PlaybackEngineMode { didSet { save(engineMode.rawValue, "player.engineMode") } }
-    /// 前向缓冲（秒），0 为自动。系统内核用作 `preferredForwardBufferDuration`，KSPlayer 用作最大缓冲时长。
+    /// 前向缓冲（秒），0 为自动（见 `forwardBufferDuration(bitrate:isMetered:)`）。
+    /// 系统内核用作 `preferredForwardBufferDuration`，KSPlayer 用作最大缓冲时长。
     public var forwardBufferSeconds: Int { didSet { save(forwardBufferSeconds, "player.forwardBufferSeconds") } }
     /// KSPlayer 首选解码：硬解（VideoToolbox）/ 软解（FFmpeg CPU）。系统内核始终硬解。
     public var decodeMode: DecodeMode { didSet { save(decodeMode.rawValue, "player.decodeMode") } }
@@ -239,6 +240,38 @@ public final class PlayerPreferences {
         autoSkipIntro = value("player.autoSkipIntro", false)
         autoPlayNext = value("player.autoPlayNext", true)
     }
+
+    /// 本次起播交给内核的前向缓冲时长（秒），始终大于 0。
+    /// - Parameters:
+    ///   - bitrate: 片源总码率（bps），用于把体积上限换算成时长；nil 时按 `assumedBitrate` 估算。
+    ///   - isMetered: 当前是否为蜂窝 / 热点 / 低数据模式等计费网络。
+    public func forwardBufferDuration(bitrate: Int?, isMetered: Bool) -> TimeInterval {
+        Self.forwardBufferDuration(seconds: forwardBufferSeconds, bitrate: bitrate, isMetered: isMetered,
+                                   physicalMemory: ProcessInfo.processInfo.physicalMemory)
+    }
+
+    /// 预读同时受时长与体积限制：自动时计费网络最多 5 分钟、256 MB（预读的流量在退出播放时会浪费），
+    /// Wi-Fi 等不计费网络最多 10 分钟、物理内存的 1/8（不超过 1 GB）。KSPlayer 把预读的数据包放在内存里，
+    /// 体积上限防止高码率片源被系统因内存过高回收；手动选择的时长只受内存上限约束。
+    /// 换算后不少于 30 秒（KSPlayer 默认值），避免 8K 等超高码率片源预读过短反而频繁卡顿。
+    nonisolated static func forwardBufferDuration(seconds: Int, bitrate: Int?, isMetered: Bool,
+                                                  physicalMemory: UInt64) -> TimeInterval {
+        let memoryBudget = min(Double(physicalMemory) / 8, 1_073_741_824)
+        let duration: TimeInterval
+        let byteBudget: Double
+        if seconds > 0 {
+            duration = TimeInterval(seconds)
+            byteBudget = memoryBudget
+        } else {
+            duration = isMetered ? 300 : 600
+            byteBudget = isMetered ? min(memoryBudget, 268_435_456) : memoryBudget
+        }
+        let bytesPerSecond = Double(bitrate.flatMap { $0 > 0 ? $0 : nil } ?? assumedBitrate) / 8
+        return min(duration, max(30, byteBudget / bytesPerSecond))
+    }
+
+    /// 服务器未给出码率时的估算值（bps）：按 4K 片源偏高估计，宁可预读短一些也不占用过多内存。
+    nonisolated static let assumedBitrate = 40_000_000
 
     private func save(_ value: Any, _ key: String) {
         defaults.set(value, forKey: key)

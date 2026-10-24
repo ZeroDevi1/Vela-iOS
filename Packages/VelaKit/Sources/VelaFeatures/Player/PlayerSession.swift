@@ -426,7 +426,9 @@ final class PlayerSession {
                 subtitle: item.episodeLabel.map { "\($0) · \(item.name)" },
                 startTime: startTime,
                 vrLayout: vrLayout,
-                forwardBufferDuration: TimeInterval(app?.playerPreferences.forwardBufferSeconds ?? 0)
+                forwardBufferDuration: app?.playerPreferences.forwardBufferDuration(
+                    bitrate: stream.mediaSource.bitrate, isMetered: app?.network.isMetered ?? true
+                ) ?? 0
             ),
             resetMetadata: resetMetadata
         )
