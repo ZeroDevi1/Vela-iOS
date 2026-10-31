@@ -1,0 +1,23 @@
+Vela：保留 PGS 画布尺寸，按字幕原始坐标映射到视频画面，避免 1080p 字幕在 4K 影片上缩小或错位。
+
+--- a/Sources/KSPlayer/Subtitle/KSSubtitle.swift
++++ b/Sources/KSPlayer/Subtitle/KSSubtitle.swift
+@@ -17,6 +17,8 @@
+     public var origin: CGPoint = .zero
+     public let text: NSAttributedString?
+     public var image: UIImage?
++    /// Vela: PGS composition canvas, independent of the video resolution.
++    public var imageCanvasSize: CGSize = .zero
+     public var textPosition: TextPosition?
+     public var description: String {
+         "Subtile Group ==========\nstart: \(start)\nend:\(end)\ntext:\(String(describing: text))"
+--- a/Sources/KSPlayer/MEPlayer/SubtitleDecode.swift
++++ b/Sources/KSPlayer/MEPlayer/SubtitleDecode.swift
+@@ -126,6 +126,7 @@
+             }
+             part.image = image
+             part.origin = origin
++            part.imageCanvasSize = CGSize(width: Int(codecContext?.pointee.width ?? 0), height: Int(codecContext?.pointee.height ?? 0))
+             parts.append(part)
+         }
+         if let attributedString {

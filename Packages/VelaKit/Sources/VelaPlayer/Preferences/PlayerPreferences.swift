@@ -273,6 +273,12 @@ public final class PlayerPreferences {
     /// 服务器未给出码率时的估算值（bps）：按 4K 片源偏高估计，宁可预读短一些也不占用过多内存。
     nonisolated static let assumedBitrate = 40_000_000
 
+    /// 只提高高码率流的恢复门槛，不扩大内存预算。低码率 / 本地文件沿用 KSPlayer 的 3 秒。
+    nonisolated static func rebufferDuration(bitrate: Int?, maximumDuration: TimeInterval) -> TimeInterval {
+        let seconds: TimeInterval = (bitrate ?? 0) >= 40_000_000 ? 8 : 3
+        return maximumDuration > 0 ? min(seconds, maximumDuration) : seconds
+    }
+
     private func save(_ value: Any, _ key: String) {
         defaults.set(value, forKey: key)
     }

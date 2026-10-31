@@ -15,7 +15,7 @@ FFMPEGKIT_TAG="6.1.4"
 fetch_commit() {
   local url=$1 dest=$2 commit=$3
   if [[ -d "$dest/.git" ]] && [[ "$(git -C "$dest" rev-parse HEAD)" == "$commit" ]]; then
-    echo "✓ $dest（已是 ${commit:0:7}）"
+    echo "✓ ${dest}（已是 ${commit:0:7}）"
     return
   fi
   rm -rf "$dest"
@@ -23,19 +23,19 @@ fetch_commit() {
   git -C "$dest" remote add origin "$url"
   git -C "$dest" fetch -q --depth 1 origin "$commit"
   git -C "$dest" checkout -q FETCH_HEAD
-  echo "↓ $dest（${commit:0:7}）"
+  echo "↓ ${dest}（${commit:0:7}）"
 }
 
 fetch_tag() {
   local url=$1 dest=$2 tag=$3
   if [[ -d "$dest/.git" ]] && git -C "$dest" describe --tags --exact-match >/dev/null 2>&1 \
     && [[ "$(git -C "$dest" describe --tags --exact-match)" == "$tag" ]]; then
-    echo "✓ $dest（已是 $tag）"
+    echo "✓ ${dest}（已是 ${tag}）"
     return
   fi
   rm -rf "$dest"
   git clone -q --depth 1 --branch "$tag" "$url" "$dest"
-  echo "↓ $dest（$tag）"
+  echo "↓ ${dest}（${tag}）"
 }
 
 fetch_tag https://github.com/kingslay/FFmpegKit.git Packages/FFmpegKit "$FFMPEGKIT_TAG"

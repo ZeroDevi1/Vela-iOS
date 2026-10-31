@@ -9,7 +9,7 @@ import VelaCore
 /// 空间音频与杜比全景声在 AirPods / 支持的扬声器上由系统处理。
 @MainActor
 @Observable
-public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, MultichannelSpatializationConfigurable, ManifestSubtitleSelecting {
+public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, MultichannelSpatializationConfigurable, ManifestSubtitleSelecting, PlaybackMediaInfoProviding {
     public let kind: PlaybackEngineKind = .avFoundation
     public private(set) var status: PlaybackStatus = .idle
     public private(set) var currentTime: TimeInterval = 0
@@ -24,6 +24,7 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
     /// 访问日志读取有开销：每 4 次进度回调（约 1 秒）读一次。
     @ObservationIgnored private var throughputTick = 0
     public private(set) var videoSize: CGSize = .zero
+    public private(set) var mediaInfo: PlaybackMediaInfo?
     /// 有视频轨、已播放数秒却始终没有画面（只有声音）：系统解码器打不开该视频，常见于超过本机硬解上限的分辨率
     /// （如 8192 宽的 8K VR）或 MP4 中 `hev1` 标签的 HEVC。界面据此提示并提供改用 KSPlayer / 服务器缩放转码。
     public private(set) var videoDecodeIssue: String?
@@ -58,6 +59,7 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
 
     public func load(_ source: PlaybackSource) {
         status = .loading
+        mediaInfo = nil
         videoDecodeIssue = nil
         loadedAt = source.startTime
         // 时间回调要等开始播放才更新；起播即失败时换内核 / 重试要从这里取位置，不能沿用上一条目的时间或 0。
@@ -187,6 +189,7 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         endObserver = nil
         player.replaceCurrentItem(with: nil)
+        mediaInfo = nil
         status = .idle
     }
 
@@ -211,6 +214,9 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
                     self.networkThroughput = observed
                 }
                 if self.throughputTick % 8 == 0 { self.checkVideoDecoding() }
+                if self.throughputTick % 20 == 0 {
+                    Log.player.info("AVPlayer 供流：time=\(self.currentTime)s ahead=\(max(0, self.bufferedTime - self.currentTime))s inputMbps=\((self.networkThroughput ?? 0) / 1_000_000) status=\(String(describing: self.status), privacy: .public)")
+                }
             }
         }
         playerObservations.append(player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
@@ -234,6 +240,7 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
                 case .readyToPlay:
                     self.duration = seconds.isFinite ? seconds : 0
                     self.logTracks(of: item)
+                    self.readMediaInfo(of: item)
                     self.deselectAutomaticSubtitles(of: item)
                 case .failed:
                     self.status = .failed(message ?? "无法播放")
@@ -278,13 +285,46 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         Log.player.info("readyToPlay size=\(Int(size.width))x\(Int(size.height)) tracks=\(tracks.joined(separator: ","), privacy: .public)")
     }
 
+    private func readMediaInfo(of item: AVPlayerItem) {
+        Task { [weak self] in
+            var info = PlaybackMediaInfo()
+            for track in item.tracks {
+                guard let assetTrack = track.assetTrack,
+                      let format = try? await assetTrack.load(.formatDescriptions).first else { continue }
+                let bitrate = try? await assetTrack.load(.estimatedDataRate)
+                if assetTrack.mediaType == .video {
+                    info.video = PlaybackMediaInfo.codecName(format)
+                    let fps = try? await assetTrack.load(.nominalFrameRate)
+                    info.videoParameters = [
+                        fps.flatMap { $0 > 0 ? String(format: "%.3f fps", $0) : nil },
+                        bitrate.flatMap { $0 > 0 ? String(format: "%.1f Mbps", $0 / 1_000_000) : nil }
+                    ].compactMap { $0 }.joined(separator: " · ")
+                    info.dynamicRange = PlaybackMediaInfo.dynamicRange(format)
+                } else if assetTrack.mediaType == .audio {
+                    let audio = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee
+                    info.audio = [
+                        PlaybackMediaInfo.codecName(format),
+                        audio.map { "\(Int($0.mSampleRate)) Hz · \($0.mChannelsPerFrame) 声道" }
+                    ].compactMap { $0 }.joined(separator: " · ")
+                }
+            }
+            guard let self, self.player.currentItem === item else { return }
+            self.mediaInfo = info
+            Log.player.info("实际码流：\(info.video ?? "-", privacy: .public) \(info.dynamicRange ?? "-", privacy: .public) 音频 \(info.audio ?? "-", privacy: .public)")
+        }
+    }
+
     private func apply(timeControlStatus: AVPlayer.TimeControlStatus) {
         if case .failed = status { return }
+        let previous = status
         switch timeControlStatus {
         case .playing: status = .playing
         case .waitingToPlayAtSpecifiedRate: status = .buffering
         case .paused: if status != .ended && status != .loading { status = .paused }
         @unknown default: break
+        }
+        if status != previous {
+            Log.player.info("AVPlayer 状态：\(String(describing: previous), privacy: .public) -> \(String(describing: self.status), privacy: .public) time=\(self.currentTime)s reason=\(self.player.reasonForWaitingToPlay?.rawValue ?? "-", privacy: .public)")
         }
     }
 }

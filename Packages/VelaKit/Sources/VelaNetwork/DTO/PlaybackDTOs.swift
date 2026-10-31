@@ -237,6 +237,11 @@ public struct MediaStreamInfo: Decodable, Sendable, Hashable {
         if let isTextSubtitleStream { return isTextSubtitleStream }
         return !Self.imageSubtitleCodecs.contains(codec?.lowercased() ?? "")
     }
+
+    /// PGS 位图随原文件读取；外挂 PGS 仍需服务器处理。
+    public var isEmbeddedPGS: Bool {
+        isExternal != true && ["pgs", "pgssub", "hdmv_pgs_subtitle"].contains(codec?.lowercased() ?? "")
+    }
 }
 
 /// 一次播放上报所需的状态快照。

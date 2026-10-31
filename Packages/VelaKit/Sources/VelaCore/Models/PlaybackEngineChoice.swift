@@ -2,8 +2,8 @@ import Foundation
 
 /// 播放内核偏好（设置项）。
 public enum PlaybackEngineMode: String, CaseIterable, Sendable {
-    /// 始终优先系统内核：硬件解码、系统级功耗优化，能效最高。系统内核不能直接打开的格式（MKV 等）
-    /// 由服务器用 FFmpeg 转封装 / 转码为 HLS；系统内核播放失败时自动改用 KSPlayer（见 `PlaybackEngineChoice.fallsBackToKSPlayer`）。
+    /// 优先系统内核；高码率 MKV 在无系统专属画质 / 音效需求时优先原文件直放。
+    /// 系统内核播放失败时自动改用 KSPlayer（见 `PlaybackEngineChoice.fallsBackToKSPlayer`）。
     case auto
     /// 始终使用系统内核（AVPlayer）。MKV 内嵌字幕也交给服务器提取，不自动切换。
     case system
@@ -22,7 +22,7 @@ public enum PlaybackEngineMode: String, CaseIterable, Sendable {
 
 /// 内核选择规则（纯函数，单测覆盖）。起播流程：
 /// 1. `requestedEngine` 决定按哪个内核的能力向服务器请求播放信息；
-/// 2. 自动模式下若需要播放器读取内嵌字幕，`switchesToKSPlayerForSubtitle` 改按 KSPlayer 重新请求；
+/// 2. 自动模式下若需要读取内嵌字幕或避免高码率 MKV 转封装，改按 KSPlayer 重新请求；
 /// 3. 拿到服务器结果后由 `playbackEngine` 定出实际内核（服务器仍要求转码时 HLS 交给能效更高的系统内核）。
 public enum PlaybackEngineChoice {
     public enum Engine: Sendable, Equatable {
@@ -50,6 +50,20 @@ public enum PlaybackEngineChoice {
     ) -> Bool {
         requested == .system && mode == .auto && !serverDownscaled && subtitleNeedsPlayer
             && limitation?.prefersSystem != true
+    }
+
+    /// 网盘大文件转封装需要服务器另开读取链路；能保留画质 / 音效时直接协商原文件，避免先等待 HLS 超时。
+    public static func switchesToKSPlayerForHighBitrateRemux(
+        mode: PlaybackEngineMode, serverDownscaled: Bool, bitrate: Int?, container: String?, width: Int?, audioCodec: String?,
+        transcodeReasons: [String], limitation: KSPlayerLimitation?
+    ) -> Bool {
+        // Emby 的 EAC3 元数据可能漏报 Atmos（实流仍有对象音频）；不能仅凭标题未注明就提前放弃系统渲染。
+        guard let audioCodec, audioCodec.lowercased() != "eac3",
+              mode == .auto, !serverDownscaled, limitation?.prefersSystem != true,
+              let bitrate, bitrate >= 40_000_000, let width, width > 0, width <= noVideoFallbackMaxWidth,
+              transcodeReasons.contains(where: { $0.caseInsensitiveCompare("ContainerNotSupported") == .orderedSame }),
+              !reencodesVideo(reasons: transcodeReasons) else { return false }
+        return (container ?? "").lowercased().split(separator: ",").contains("mkv")
     }
 
     /// 片源中与内核选择有关的特性（来自服务器媒体信息）。
@@ -100,6 +114,8 @@ public enum PlaybackEngineChoice {
         case error
         /// 有声音但解不出画面；`width` 为片源视频宽度，未知为 nil。
         case noVideoOutput(width: Int?)
+        /// 系统内核的转封装 HLS 长时间缓冲且没有推进播放。
+        case bufferingTimeout(width: Int?)
     }
 
     /// 无画面时只对不超过该宽度的片源改用 KSPlayer：4K 以内多为编码标签（如 `hev1`）不被系统接受，KSPlayer 可绕过；
@@ -114,6 +130,9 @@ public enum PlaybackEngineChoice {
     ) -> Bool {
         guard mode == .auto, !serverDownscaled, !isDiscImage, !alreadyFellBack else { return false }
         if case .noVideoOutput(let width?) = failure, width > noVideoFallbackMaxWidth { return false }
+        if case .bufferingTimeout(let width) = failure {
+            guard let width, width > 0, width <= noVideoFallbackMaxWidth else { return false }
+        }
         return true
     }
 

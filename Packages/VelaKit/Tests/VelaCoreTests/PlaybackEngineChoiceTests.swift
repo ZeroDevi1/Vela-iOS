@@ -32,6 +32,33 @@ struct PlaybackEngineChoiceTests {
         #expect(switches(nil))
     }
 
+    @Test func highBitrateRemuxPrefersDirectFileWithoutLosingSystemOnlyFeatures() {
+        func switches(mode: PlaybackEngineMode = .auto, downscaled: Bool = false,
+                      bitrate: Int? = 80_000_000, container: String = "mkv", width: Int? = 3840, audioCodec: String? = "pcm_s16le",
+                      reasons: [String] = ["ContainerNotSupported"], limitation: KSPlayerLimitation? = nil) -> Bool {
+            PlaybackEngineChoice.switchesToKSPlayerForHighBitrateRemux(
+                mode: mode, serverDownscaled: downscaled, bitrate: bitrate, container: container, width: width, audioCodec: audioCodec,
+                transcodeReasons: reasons, limitation: limitation)
+        }
+        #expect(switches())
+        #expect(switches(limitation: .dolbyVisionProfile7))
+        #expect(!switches(audioCodec: "eac3"))
+        #expect(!switches(audioCodec: nil))
+        #expect(!switches(limitation: .atmosObjects))
+        #expect(!switches(limitation: .dolbyVisionDecoded(profile: 5)))
+        #expect(!switches(limitation: .discImage))
+        #expect(!switches(mode: .system))
+        #expect(!switches(mode: .ksPlayer))
+        #expect(!switches(downscaled: true))
+        #expect(!switches(bitrate: 8_000_000))
+        #expect(!switches(bitrate: nil))
+        #expect(!switches(width: nil))
+        #expect(!switches(width: 7680))
+        #expect(!switches(container: "mp4"))
+        #expect(!switches(reasons: []))
+        #expect(!switches(reasons: ["ContainerNotSupported", "VideoCodecNotSupported"]))
+    }
+
     /// 系统内核失败后只在自动模式、同一条目首次时回退 KSPlayer；超过 4K 宽的无画面留给服务器缩放。
     @Test func fallsBackToKSPlayerAfterSystemFailure() {
         func fallsBack(_ failure: PlaybackEngineChoice.SystemEngineFailure = .error, mode: PlaybackEngineMode = .auto,
@@ -48,6 +75,11 @@ struct PlaybackEngineChoiceTests {
         #expect(fallsBack(.noVideoOutput(width: 3840)))
         #expect(fallsBack(.noVideoOutput(width: nil)))
         #expect(!fallsBack(.noVideoOutput(width: 7680)))
+        #expect(fallsBack(.bufferingTimeout(width: 3840)))
+        #expect(!fallsBack(.bufferingTimeout(width: 7680)))
+        #expect(!fallsBack(.bufferingTimeout(width: nil)))
+        #expect(!fallsBack(.bufferingTimeout(width: 3840), alreadyFellBack: true))
+        #expect(!fallsBack(.bufferingTimeout(width: 3840), mode: .system))
     }
 
     @Test func ksPlayerLimitationsBySource() {

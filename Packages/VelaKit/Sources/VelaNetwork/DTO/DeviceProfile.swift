@@ -109,7 +109,7 @@ public struct DeviceProfile: Encodable, Sendable {
 
     /// KSPlayer 能力，容器与编码列表与 Android 版（MPV / ExoPlayer）一致：常见容器都直放原文件，
     /// 文本字幕声明 Embed（播放器边播边从视频流读取，不让服务器读完整个文件去提取）与 External（外挂字幕文件）。
-    /// 图形字幕暂只声明 Encode（由服务器烧录）：Vela 的字幕层还不绘制 KSPlayer 解出的图形字幕。
+    /// 内嵌 PGS 由本地位图层渲染，其余图形字幕保留服务器烧录。
     public static func ksPlayer(_ caps: PlaybackCapabilities) -> DeviceProfile {
         var profile = avFoundation(caps)
         profile.name = "Vela KSPlayer"
@@ -118,13 +118,15 @@ public struct DeviceProfile: Encodable, Sendable {
                 container: "mp4,m4v,mov,mkv,webm,ts,m2ts,avi",
                 type: "Video",
                 videoCodec: "h264,hevc,vp9,av1,mpeg4,mpeg2video,vp8",
-                audioCodec: "aac,mp3,ac3,eac3,dts,flac,opus,vorbis,truehd,pcm,alac"
+                // Emby 按具体 PCM 编码匹配；只写 pcm 会把 pcm_s16le 音轨误判为需要转码。
+                audioCodec: "aac,mp3,ac3,eac3,dts,flac,opus,vorbis,truehd,pcm,pcm_s16le,alac"
             )
         ]
         let textFormats = ["srt", "subrip", "ass", "ssa", "vtt", "webvtt", "mov_text", "ttml", "sub", "smi", "microdvd"]
         profile.subtitleProfiles = textFormats.flatMap {
             [SubtitleProfile(format: $0, method: "Embed"), SubtitleProfile(format: $0, method: "External")]
-        } + ["pgs", "pgssub", "dvdsub", "vobsub"].map { SubtitleProfile(format: $0, method: "Encode") }
+        } + ["pgs", "pgssub", "hdmv_pgs_subtitle"].map { SubtitleProfile(format: $0, method: "Embed") }
+            + ["pgs", "pgssub", "hdmv_pgs_subtitle", "dvdsub", "vobsub"].map { SubtitleProfile(format: $0, method: "Encode") }
         return profile
     }
 

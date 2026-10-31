@@ -42,14 +42,18 @@ struct SubtitleOverlay: View {
                 let pausedTime = isPlaying ? nil : controller.engine.currentTime
                 TimelineView(.animation(minimumInterval: 0.05, paused: !isPlaying)) { _ in
                     let time = pausedTime ?? controller.engine.preciseCurrentTime
-                    if let text = track?.text(at: time) ?? embedded?.embeddedSubtitleText(at: time) {
-                        subtitleText(text, scale: scale)
+                    let images = track == nil ? embedded?.embeddedSubtitleImages(at: time) ?? [] : []
+                    if !images.isEmpty {
+                        pictureSubtitles(images, in: proxy.size)
+                    } else {
+                        if let text = track?.text(at: time) ?? embedded?.embeddedSubtitleText(at: time) {
+                            subtitleText(text, scale: scale)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: anchor == nil ? .bottom : .top)
+                                .padding(.top, anchor ?? 0)
+                                .padding(.bottom, anchor == nil ? bottomPadding(in: proxy, scale: scale) : 0)
+                        }
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: anchor == nil ? .bottom : .top)
-                .padding(.top, anchor ?? 0)
-                // 控制层出现时上移，避免与进度条重叠。
-                .padding(.bottom, anchor == nil ? bottomPadding(in: proxy, scale: scale) : 0)
             }
             .animation(.easeInOut(duration: 0.25), value: controller.controlsVisible)
             .allowsHitTesting(false)
@@ -65,6 +69,33 @@ struct SubtitleOverlay: View {
             .shadow(color: .black.opacity(0.9), radius: 2, x: 0, y: 1)
             .shadow(color: .black.opacity(0.6), radius: 6)
             .padding(.horizontal, 32 * scale)
+    }
+
+    /// PGS 保留排版及特效位置，使用字幕画布映射到视频显示矩形，不按文本字号缩放或抬高。
+    private func pictureSubtitles(_ images: [EmbeddedSubtitleImage], in size: CGSize) -> some View {
+        let rotated = controller.quarterTurns % 2 != 0
+        let bounds = rotated ? CGSize(width: size.height, height: size.width) : size
+        let video = controller.engine.videoSize
+        let factor = video.width > 0 && video.height > 0
+            ? (controller.videoGravity == .fill ? max(bounds.width / video.width, bounds.height / video.height)
+               : min(bounds.width / video.width, bounds.height / video.height)) : 1
+        let display = controller.videoGravity == .stretch ? bounds : CGSize(width: video.width * factor, height: video.height * factor)
+        return ZStack(alignment: .topLeading) {
+            ForEach(images.indices, id: \.self) { index in
+                let part = images[index]
+                let sx = display.width / part.canvasSize.width
+                let sy = display.height / part.canvasSize.height
+                Image(decorative: part.image, scale: 1)
+                    .resizable()
+                    .frame(width: CGFloat(part.image.width) * sx, height: CGFloat(part.image.height) * sy)
+                    .offset(x: (bounds.width - display.width) / 2 + part.origin.x * sx,
+                            y: (bounds.height - display.height) / 2 + part.origin.y * sy)
+            }
+        }
+        .frame(width: bounds.width, height: bounds.height, alignment: .topLeading)
+        .rotationEffect(.degrees(Double(controller.quarterTurns) * 90))
+        .frame(width: size.width, height: size.height)
+        .clipped()
     }
 
     private func bottomPadding(in proxy: GeometryProxy, scale: CGFloat) -> CGFloat {

@@ -81,8 +81,12 @@ final class PlayerSession {
     @ObservationIgnored private var traktPaused: Bool?
     /// 用户手动切换内核（失败后「用 KSPlayer 重试」或「更多 → 切换内核」）时强制使用的内核；nil 表示按设置自动选择。
     @ObservationIgnored private var engineOverride: PlaybackEngineMode?
+    /// 临时烧录可改用 AVPlayer；关闭烧录后仍按原先选定的内核能力恢复码流。
+    @ObservationIgnored private var preferredStreamEngine: PlaybackEngineChoice.Engine = .system
     /// 自动模式下系统内核失败、已自动改用 KSPlayer 的条目：该条目之后（含重试）按 KSPlayer 起播，其它条目仍按设置先用系统内核。
     @ObservationIgnored private var ksPlayerFallbackItemID: String?
+    @ObservationIgnored private var systemBufferingSince: TimeInterval?
+    @ObservationIgnored private var systemBufferingPosition: TimeInterval?
     /// 睡眠定时的到期时刻；到期暂停播放并清除。nil 表示未开启。与 Android 版一致，切集后继续计时。
     private(set) var sleepDeadline: Date?
     /// 睡眠定时预设（分钟），与 Android 版相同。
@@ -251,6 +255,20 @@ final class PlayerSession {
             discardPreloaded()
             stream = try await resolve(profile)
         }
+        preferredStreamEngine = requested
+        let sourceAudioIndex = options.audioStreamIndex ?? stream.audioStreamIndex ?? stream.mediaSource.defaultAudioStreamIndex
+        let sourceAudio = stream.mediaSource.audioStreams.first { $0.index == sourceAudioIndex } ?? stream.mediaSource.audioStreams.first
+        if requested == .system, stream.method == .transcode, PlaybackEngineChoice.switchesToKSPlayerForHighBitrateRemux(
+            mode: mode, serverDownscaled: downscaled, bitrate: stream.mediaSource.bitrate,
+            container: stream.mediaSource.container, width: stream.mediaSource.videoStream?.width, audioCodec: sourceAudio?.codec,
+            transcodeReasons: stream.transcodeReasons,
+            limitation: ksPlayerLimitation(for: stream, audioStreamIndex: options.audioStreamIndex)
+        ) {
+            Log.player.info("高码率 MKV 避免服务器转封装，按 KSPlayer 能力协商原文件")
+            requested = .ksPlayer
+            stream = try await resolve(.ksPlayer)
+            preferredStreamEngine = requested
+        }
         configureTracks(for: stream)
         var initialSubtitle = initialSubtitleChoice(for: stream, preferredSubtitle: options.subtitleStreamIndex)
         let limitation = ksPlayerLimitation(for: stream, audioStreamIndex: options.audioStreamIndex)
@@ -264,6 +282,7 @@ final class PlayerSession {
             Log.player.info("内嵌字幕 #\(subtitle) 需要播放器读取，改用 KSPlayer 直放")
             requested = .ksPlayer
             stream = try await resolve(.ksPlayer)
+            preferredStreamEngine = requested
             configureTracks(for: stream)
             initialSubtitle = initialSubtitleChoice(for: stream, preferredSubtitle: options.subtitleStreamIndex ?? subtitle)
         }
@@ -354,6 +373,10 @@ final class PlayerSession {
 
     /// 标题旁的动态范围标记；SDR 或未知时为 nil。
     var dynamicRangeLabel: String? {
+        if let actual = (controller.engine as? any PlaybackMediaInfoProviding)?.mediaInfo {
+            return actual.dynamicRange == "SDR" ? nil : actual.dynamicRange
+        }
+        guard stream?.method == .directPlay else { return nil }
         guard let video = stream?.mediaSource.videoStream else { return nil }
         return Self.dynamicRangeLabel(for: video)
     }
@@ -401,6 +424,8 @@ final class PlayerSession {
     }
 
     private func apply(stream: ResolvedStream, item: MediaItem, startTime: TimeInterval, resetMetadata: Bool) {
+        systemBufferingSince = nil
+        systemBufferingPosition = nil
         self.stream = stream
         (controller.engine as? any MultichannelSpatializationConfigurable)?.allowsMultichannelSpatialization = app?.playerPreferences.nativeAudio ?? true
         Log.player.info("播放方式：\(stream.method.rawValue, privacy: .public) \(Self.redacted(stream.url), privacy: .public)")
@@ -428,7 +453,8 @@ final class PlayerSession {
                 vrLayout: vrLayout,
                 forwardBufferDuration: app?.playerPreferences.forwardBufferDuration(
                     bitrate: stream.mediaSource.bitrate, isMetered: app?.network.isMetered ?? true
-                ) ?? 0
+                ) ?? 0,
+                bitrate: stream.mediaSource.bitrate
             ),
             resetMetadata: resetMetadata
         )
@@ -479,8 +505,7 @@ final class PlayerSession {
             TrackOption(index: $0.index, label: Self.label(for: $0), requiresBurnIn: false)
         }
         subtitleOptions = source.subtitleStreams.map {
-            // 文本字幕由客户端渲染（WebVTT 或随 HLS 下发）；图形字幕只能由服务器烧录。
-            TrackOption(index: $0.index, label: Self.label(for: $0), requiresBurnIn: !$0.isTextSubtitle)
+            TrackOption(index: $0.index, label: Self.label(for: $0), requiresBurnIn: !$0.isTextSubtitle && !canRenderPGSLocally($0, in: stream))
         }
         selectedAudioIndex = stream.audioStreamIndex ?? source.defaultAudioStreamIndex ?? audioOptions.first?.index
     }
@@ -488,10 +513,10 @@ final class PlayerSession {
     /// 起播时开启哪条字幕；nil 为关闭。须在 `configureTracks` 之后调用。
     /// - Parameter preferredSubtitle: 详情页选择的字幕；-1 关闭，nil 按规则选择。
     private func initialSubtitleChoice(for stream: ResolvedStream, preferredSubtitle: Int?) -> Int? {
-        // 用户显式选择：图形字幕也照办（会触发烧录转码）。
+        // 用户显式选择：可本地读取的 PGS 不触发烧录。
         if let preferredSubtitle { return preferredSubtitle >= 0 ? preferredSubtitle : nil }
         // 优先级：本作品记住的字幕语言 > 首选字幕语言 > 服务器按用户语言偏好给出的默认。
-        // 图形字幕不自动开启，避免一起播就触发转码。
+        // 需要服务器烧录的图形字幕不自动开启。
         let source = stream.mediaSource
         let preferences = app?.playerPreferences
         let textual = source.subtitleStreams.filter { stream in
@@ -555,7 +580,7 @@ final class PlayerSession {
     /// - Parameter index: nil 关闭字幕。
     /// - Parameter remember: 用户手动选择时为 true，按设置记住该作品的字幕语言（含「关闭」）。
     func selectSubtitle(_ index: Int?, remember: Bool = true) {
-        guard let stream, let client, let item else { return }
+        guard let stream, let client, let item, !isSwitchingStream else { return }
         if remember, app?.playerPreferences.rememberSubtitle == true {
             let language = index.flatMap { i in stream.mediaSource.subtitleStreams.first { $0.index == i }?.language }
             TrackMemory.rememberSubtitle(index == nil ? TrackMemory.subtitleOff : language, for: item)
@@ -570,13 +595,19 @@ final class PlayerSession {
         if let option, option.requiresBurnIn {
             controller.subtitleTrack = nil
             guard stream.burnedSubtitleIndex != option.index else { return }
-            Task { await reloadStream(audioStreamIndex: selectedAudioIndex, burnSubtitleIndex: option.index) }
+            (controller.engine as? any EmbeddedSubtitleProviding)?.selectEmbeddedSubtitle(ordinal: nil)
+            subtitleTask = Task { await reloadStream(audioStreamIndex: selectedAudioIndex, burnSubtitleIndex: option.index) }
             return
         }
 
         // 从烧录字幕切走时需要恢复无字幕的码流（通常重新回到直放）。
         if stream.burnedSubtitleIndex != nil {
-            Task { await reloadStream(audioStreamIndex: selectedAudioIndex, burnSubtitleIndex: nil) }
+            subtitleTask = Task {
+                await reloadStream(audioStreamIndex: selectedAudioIndex, burnSubtitleIndex: nil)
+                guard !Task.isCancelled, trackError == nil, selectedSubtitleIndex == index else { return }
+                selectSubtitle(index, remember: false)
+            }
+            return
         }
         let embeddedEngine = controller.engine as? any EmbeddedSubtitleProviding
         guard let index else {
@@ -586,20 +617,25 @@ final class PlayerSession {
             return
         }
         // 系统内核在转封装播放 MKV 等容器时选了内嵌文本字幕：除非设置为只用系统内核，否则换到 KSPlayer 直放读取字幕。
+        let info = stream.mediaSource.subtitleStreams.first { $0.index == index }
+        let localPGS = info.map { canRenderPGSLocally($0, in: stream) } ?? false
         if controller.engine.kind == .avFoundation, (engineOverride ?? app?.playerPreferences.engineMode) != .system,
-           maxVideoWidthOverride?.itemID != item.id, needsPlayerSideSubtitle(index, in: stream),
-           ksPlayerLimitation(for: stream, audioStreamIndex: selectedAudioIndex)?.prefersSystem != true {
+           maxVideoWidthOverride?.itemID != item.id,
+           localPGS || (needsPlayerSideSubtitle(index, in: stream) && ksPlayerLimitation(for: stream, audioStreamIndex: selectedAudioIndex)?.prefersSystem != true) {
             controller.showMessage("切换到 KSPlayer，直接读取内嵌字幕", symbol: "captions.bubble", duration: .seconds(3))
             restart(with: .ksPlayer, subtitle: index)
             return
         }
-        // KSPlayer 直放原文件：内嵌文本字幕由播放器从视频流读取（与 Android / SenPlayer 相同），不请求服务器提取。
+        // 只有原文件包含全部内嵌轨；转码 HLS 中不能用原文件序号选轨。
         let embedded = stream.mediaSource.subtitleStreams.filter { $0.isExternal != true }
-        if let embeddedEngine, let ordinal = embedded.firstIndex(where: { $0.index == index }), embedded[ordinal].isTextSubtitle {
+        if stream.method == .directPlay, let embeddedEngine, let ordinal = embedded.firstIndex(where: { $0.index == index }),
+           embedded[ordinal].isTextSubtitle || embedded[ordinal].isEmbeddedPGS {
             controller.subtitleTrack = nil
             embeddedEngine.selectEmbeddedSubtitle(ordinal: ordinal)
             reporter?.flush(position: controller.engine.currentTime, audioStreamIndex: selectedAudioIndex, subtitleStreamIndex: index)
-            preloadFullSubtitle(index: index, stream: stream, item: item, client: client, replacing: embeddedEngine)
+            if embedded[ordinal].isTextSubtitle {
+                preloadFullSubtitle(index: index, stream: stream, item: item, client: client, replacing: embeddedEngine)
+            }
             return
         }
         embeddedEngine?.selectEmbeddedSubtitle(ordinal: nil)
@@ -699,7 +735,7 @@ final class PlayerSession {
             updated.mediaSource = source
             stream = updated
             subtitleOptions = source.subtitleStreams.map {
-                TrackOption(index: $0.index, label: Self.label(for: $0), requiresBurnIn: !$0.isTextSubtitle)
+                TrackOption(index: $0.index, label: Self.label(for: $0), requiresBurnIn: !$0.isTextSubtitle && !canRenderPGSLocally($0, in: updated))
             }
             selectSubtitle(added.index)
             return
@@ -822,8 +858,18 @@ final class PlayerSession {
         return PlaybackEngineChoice.needsPlayerSideSubtitle(
             isTranscode: stream.method == .transcode,
             container: stream.mediaSource.container,
-            isEmbeddedText: info.isExternal != true && info.isTextSubtitle
+            isEmbeddedText: info.isExternal != true && (info.isTextSubtitle || canRenderPGSLocally(info, in: stream))
         )
+    }
+
+    private func canRenderPGSLocally(_ info: MediaStreamInfo, in stream: ResolvedStream) -> Bool {
+        guard info.isEmbeddedPGS, !stream.mediaSource.isDiscImage,
+              maxVideoWidthOverride?.itemID != item?.id,
+              (engineOverride ?? app?.playerPreferences.engineMode) != .system else { return false }
+        // 已按 KSPlayer 能力请求仍不能直放时，HLS 中没有原文件的 PGS 轨，保留烧录路径而不反复重启。
+        if preferredStreamEngine == .ksPlayer, stream.method != .directPlay, stream.burnedSubtitleIndex == nil { return false }
+        let limitation = ksPlayerLimitation(for: stream, audioStreamIndex: selectedAudioIndex)
+        return limitation != .dolbyVisionDecoded(profile: 5) && limitation != .dolbyVisionDecoded(profile: 8)
     }
 
     /// KSPlayer 播放当前片源时不如系统内核之处（阶段 4c 规则见 `PlaybackEngineChoice.ksPlayerLimitation`）。
@@ -1062,9 +1108,13 @@ final class PlayerSession {
                 mediaSourceID: stream.mediaSource.id,
                 startTime: position,
                 audioStreamIndex: audioStreamIndex,
-                burnSubtitleIndex: burnSubtitleIndex
+                burnSubtitleIndex: burnSubtitleIndex,
+                profile: burnSubtitleIndex == nil && preferredStreamEngine == .ksPlayer ? .ksPlayer : .avFoundation
             )
+            guard !Task.isCancelled else { return }
             reporter?.stop(position: position)
+            useEngine(PlaybackEngineChoice.playbackEngine(requested: preferredStreamEngine, isDirectPlay: newStream.method == .directPlay))
+            configureTracks(for: newStream)
             apply(stream: newStream, item: item, startTime: position, resetMetadata: false)
         } catch {
             trackError = "切换失败：\(error.localizedDescription)"
@@ -1251,6 +1301,23 @@ final class PlayerSession {
         guard phase == .ready, engine.status != .loading else { return }
         let position = engine.currentTime
         let isPaused = !controller.isPlaying
+
+        // 仅容器转封装可尝试读原文件；烧录 / 缩放 / 视频重编码仍依赖服务器 HLS。
+        if engine.kind == .avFoundation, engine.status == .buffering, !isSwitchingStream,
+           let stream, stream.method == .transcode, stream.burnedSubtitleIndex == nil,
+           !PlaybackEngineChoice.reencodesVideo(reasons: stream.transcodeReasons) {
+            let now = ProcessInfo.processInfo.systemUptime
+            if systemBufferingSince == nil || abs(position - (systemBufferingPosition ?? position)) >= 0.5 {
+                systemBufferingSince = now
+                systemBufferingPosition = position
+            }
+            if now - (systemBufferingSince ?? now) >= 30,
+               fallBackToKSPlayerIfNeeded(after: .bufferingTimeout(width: stream.mediaSource.videoStream?.width),
+                                         detail: "转封装 HLS 连续缓冲 30 秒且播放位置没有推进") { return }
+        } else {
+            systemBufferingSince = nil
+            systemBufferingPosition = nil
+        }
 
         // 转码流偶发起播失败（服务器在新位置的转码尚未就绪，分片请求出错，如 CoreMedia -16046）：
         // 自动从当前位置重新请求一次；再失败才按系统内核失败处理。

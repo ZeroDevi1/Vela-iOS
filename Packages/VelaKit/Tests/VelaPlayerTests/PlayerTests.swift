@@ -358,6 +358,12 @@ struct VRCapabilityTests {
 }
 
 struct ForwardBufferDurationTests {
+    @Test func highBitrateResumeThresholdFitsForwardBudget() {
+        #expect(PlayerPreferences.rebufferDuration(bitrate: 80_000_000, maximumDuration: 100) == 8)
+        #expect(PlayerPreferences.rebufferDuration(bitrate: 80_000_000, maximumDuration: 4) == 4)
+        #expect(PlayerPreferences.rebufferDuration(bitrate: 8_000_000, maximumDuration: 100) == 3)
+        #expect(PlayerPreferences.rebufferDuration(bitrate: nil, maximumDuration: 0) == 3)
+    }
     private let gib: UInt64 = 1 << 30
 
     @Test func automaticCapsByTimeForLowBitrate() {

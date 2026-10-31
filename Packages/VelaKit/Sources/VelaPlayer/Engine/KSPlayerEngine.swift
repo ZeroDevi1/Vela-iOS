@@ -15,7 +15,7 @@ import VelaCore
 @MainActor
 @Observable
 public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitleProviding, EnginePictureInPictureProviding,
-    PictureInPictureSubtitleBurning, VideoGravityAdjustable, DecodedFrameProviding, HDRMetadataReporting {
+    PictureInPictureSubtitleBurning, VideoGravityAdjustable, DecodedFrameProviding, HDRMetadataReporting, PlaybackMediaInfoProviding {
     public let kind: PlaybackEngineKind = .ksPlayer
     public private(set) var status: PlaybackStatus = .idle
     public private(set) var currentTime: TimeInterval = 0
@@ -25,6 +25,7 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
     public private(set) var isMuted = false
     public private(set) var networkThroughput: Double?
     public private(set) var videoSize: CGSize = .zero
+    public private(set) var mediaInfo: PlaybackMediaInfo?
     @ObservationIgnored public var preciseSeeking = false {
         didSet { options?.isAccurateSeek = preciseSeeking }
     }
@@ -58,13 +59,15 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
     /// 本次播放是否已记录过 HDR 元数据（首帧送显后记录一次，排查色调映射用）。
     @ObservationIgnored private var hasLoggedHDRMetadata = false
     @ObservationIgnored private var contentMode: UIViewContentMode = .scaleAspectFit
-    /// 选中的内嵌文本字幕轨（KSPlayer 边播边从视频流解码，不需要服务器提取）；nil 为未开启。
+    /// 选中的内嵌字幕轨（文本或 PGS），不需要服务器提取。
     public private(set) var hasEmbeddedSubtitle = false
     @ObservationIgnored private var embeddedSubtitle: (any SubtitleInfo)?
     /// 本次播放已读到的内嵌字幕条目（按开始时间排序）。KSPlayer 的 `search(for:)` 会把命中的条目从解码队列中取走
     /// （它自带的字幕界面也是取出后自行保留），所以这里必须保留：否则每条字幕只在第一次查询时出现一帧。
     /// 全部保留而不只是当前条目：往回拖动时已播放过的字幕可以立即显示，不必等解码器重新读到。
     @ObservationIgnored private var activeSubtitleParts: [SubtitlePart] = []
+    @ObservationIgnored private var isImageSubtitle = false
+    @ObservationIgnored private var subtitleImageCache: [ObjectIdentifier: CGImage] = [:]
     /// 起播前选择的字幕序号：轨道在 `readyToPlay` 后才可用，届时再应用。
     @ObservationIgnored private var pendingSubtitleOrdinal: Int?
     /// 用户选择的内嵌字幕序号；重新加载（切换码流）后自动重新选中。
@@ -101,12 +104,14 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
         duration = 0
         bufferedTime = 0
         videoSize = .zero
+        mediaInfo = nil
         networkThroughput = nil
         lastBytesRead = nil
         hasLoggedHDRMetadata = false
         wantsPlay = true
         embeddedSubtitle = nil
         activeSubtitleParts = []
+        subtitleImageCache = [:]
         pendingSubtitleOrdinal = selectedSubtitleOrdinal
         activateAudioSession()
 
@@ -116,10 +121,11 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
         options.decoderOptions["threads"] = configuration.decodeThreads > 0 ? String(configuration.decodeThreads) : "auto"
         options.isAccurateSeek = preciseSeeking
         options.startPlayTime = source.startTime
-        // 尽快出首帧：首次打开只需少量缓冲即可起播。
-        options.isSecondOpen = true
-        // 字幕由 Vela 统一渲染（服务器 WebVTT），不让内核解码内嵌字幕。
+        // 高码率网络文件先攒够恢复门槛，避免出首帧后立即耗尽；本地 / 普通码率保留快速起播。
+        options.isSecondOpen = source.forwardBufferDuration <= 0 || (source.bitrate ?? 0) < 40_000_000
+        // 由 Vela 显式选轨后统一渲染文字 / PGS，不让内核按默认轨自动开启。
         options.autoSelectEmbedSubtitle = false
+        options.isSeekImageSubtitle = true
         options.registerRemoteControll = false
         options.displayFrameTransform = Self.frameTransform(pictureInPictureBurner)
         var dolbyPassthrough = configuration.dolbyPassthrough
@@ -148,7 +154,11 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
         }
         if source.forwardBufferDuration > 0 {
             options.maxBufferDuration = max(source.forwardBufferDuration, options.preferredForwardBufferDuration)
+            options.preferredForwardBufferDuration = PlayerPreferences.rebufferDuration(
+                bitrate: source.bitrate, maximumDuration: options.maxBufferDuration
+            )
         }
+        Log.player.info("KSPlayer 缓冲策略：resume=\(options.preferredForwardBufferDuration)s max=\(options.maxBufferDuration)s fastOpen=\(options.isSecondOpen) bitrate=\(source.bitrate ?? 0)")
         if !source.httpHeaders.isEmpty { options.appendHeader(source.httpHeaders) }
         self.options = options
 
@@ -195,6 +205,10 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
     public func seek(to seconds: TimeInterval) async {
         let target = duration > 0 ? min(max(0, seconds), duration) : max(0, seconds)
         currentTime = target
+        if isImageSubtitle {
+            activeSubtitleParts = []
+            subtitleImageCache = [:]
+        }
         if status == .ended { status = .paused }
         guard let player, player.isReadyToPlay else {
             options?.startPlayTime = target
@@ -228,10 +242,12 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
         let tracks = player.tracks(mediaType: .audio)
         guard tracks.count > 1, tracks.indices.contains(ordinal) else { return false }
         player.select(track: tracks[ordinal])
+        mediaInfo?.audio = tracks[ordinal].description
+        mediaInfo?.audioStreamIndex = Int(tracks[ordinal].trackID)
         return true
     }
 
-    /// 选择文件内嵌的文本字幕（按内嵌字幕轨出现顺序，从 0 开始，不含视频流里的闭路字幕）；nil 关闭。
+    /// 选择文件内嵌的文本 / PGS 字幕（按字幕轨出现顺序，从 0 开始，不含闭路字幕）；nil 关闭。
     /// 与 Android / SenPlayer 一样由播放器自己从视频流读取字幕：服务器单独提取内嵌字幕需要读完整个文件，
     /// 文件在网盘挂载盘上时可能要数分钟。
     public func selectEmbeddedSubtitle(ordinal: Int?) {
@@ -246,28 +262,63 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
         tracks.forEach { $0.isEnabled = false }
         embeddedSubtitle = nil
         activeSubtitleParts = []
+        subtitleImageCache = [:]
+        isImageSubtitle = false
         guard let ordinal, tracks.indices.contains(ordinal) else {
             if ordinal != nil { Log.player.error("KSPlayer 内嵌字幕：找不到第 \(ordinal ?? -1) 条（共 \(tracks.count) 条）") }
             return
         }
         player.select(track: tracks[ordinal])
         embeddedSubtitle = tracks[ordinal] as? (any SubtitleInfo)
+        isImageSubtitle = tracks[ordinal].isImageSubtitle
         Log.player.info("KSPlayer 内嵌字幕：选中第 \(ordinal) 条 \(tracks[ordinal].name, privacy: .public)")
     }
 
-    /// 当前时间应显示的内嵌字幕文字；没有字幕或此刻无字幕时为 nil。图形字幕（PGS）不在此显示。
-    public func embeddedSubtitleText(at time: TimeInterval) -> String? {
-        guard let embeddedSubtitle else { return nil }
-        let found = embeddedSubtitle.search(for: time).filter { part in !activeSubtitleParts.contains { $0 == part } }
+    private func subtitleParts(at time: TimeInterval) -> [SubtitlePart] {
+        guard let embeddedSubtitle else { return [] }
+        let found = embeddedSubtitle.search(for: time).filter { part in !activeSubtitleParts.contains { $0 === part } }
         if !found.isEmpty {
             activeSubtitleParts.append(contentsOf: found)
             activeSubtitleParts.sort { $0.start < $1.start }
+            // PGS 通过新的显示集（包括空白清除包）结束上一幅图，end 常为 infinity。
+            // 只保留最新显示集，避免字幕叠影以及整部电影的位图常驻内存。
+            if isImageSubtitle, let latest = activeSubtitleParts.last?.start {
+                activeSubtitleParts.removeAll { $0.start < latest }
+                let ids = Set(activeSubtitleParts.map(ObjectIdentifier.init))
+                subtitleImageCache = subtitleImageCache.filter { ids.contains($0.key) }
+            }
         }
-        let text = activeSubtitleParts.filter { $0 == time }
+        return activeSubtitleParts.filter { $0 == time }
+    }
+
+    public func embeddedSubtitleText(at time: TimeInterval) -> String? {
+        let text = subtitleParts(at: time)
             .compactMap { $0.text?.string }
             .joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? nil : text
+    }
+
+    public func embeddedSubtitleImages(at time: TimeInterval) -> [EmbeddedSubtitleImage] {
+        guard isImageSubtitle else { return [] }
+        return subtitleParts(at: time).compactMap { part in
+            guard let bitmap = part.image else { return nil }
+            let id = ObjectIdentifier(part)
+            let image: CGImage?
+            if let cached = subtitleImageCache[id] { image = cached } else {
+                #if os(macOS)
+                image = bitmap.cgImage(forProposedRect: nil, context: nil, hints: nil)
+                #else
+                image = bitmap.cgImage
+                #endif
+                subtitleImageCache[id] = image
+                if image != nil {
+                    Log.player.debug("PGS 显示集：\(part.start)s canvas=\(Int(part.imageCanvasSize.width))x\(Int(part.imageCanvasSize.height)) origin=\(Int(part.origin.x)),\(Int(part.origin.y))")
+                }
+            }
+            guard let image, part.imageCanvasSize.width > 0, part.imageCanvasSize.height > 0 else { return nil }
+            return EmbeddedSubtitleImage(image: image, origin: part.origin, canvasSize: part.imageCanvasSize)
+        }
     }
 
     private func embeddedSubtitleTracks(_ player: KSMEPlayer) -> [any MediaPlayerTrack] {
@@ -333,6 +384,9 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
         player?.delegate = nil
         embeddedSubtitle = nil
         activeSubtitleParts = []
+        subtitleImageCache = [:]
+        hasEmbeddedSubtitle = false
+        mediaInfo = nil
         player?.shutdown()
         player?.view?.removeFromSuperview()
         player = nil
@@ -406,11 +460,15 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
             lastBytesRead = (bytes, now)
         }
         updateStatus()
+        if pollTick % 20 == 0 {
+            Log.player.info("KSPlayer 供流：time=\(self.currentTime)s ahead=\(max(0, self.bufferedTime - self.currentTime))s inputMbps=\((self.networkThroughput ?? 0) / 1_000_000) status=\(String(describing: self.status), privacy: .public) dropped=\(player.dynamicInfo?.droppedVideoFrameCount ?? 0)")
+        }
     }
 
     private func updateStatus() {
         guard let player else { return }
         if case .failed = status { return }
+        let previous = status
         switch player.playbackState {
         case .finished:
             status = .ended
@@ -420,6 +478,9 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
             if status != .ended { status = player.isReadyToPlay ? .paused : .loading }
         case .idle:
             status = player.isReadyToPlay ? (wantsPlay ? .buffering : .paused) : .loading
+        }
+        if status != previous {
+            Log.player.info("KSPlayer 状态：\(String(describing: previous), privacy: .public) -> \(String(describing: self.status), privacy: .public) time=\(self.currentTime)s ahead=\(max(0, self.bufferedTime - self.currentTime))s")
         }
     }
 
@@ -443,6 +504,18 @@ extension KSPlayerEngine: MediaPlayerDelegate {
         videoSize = player.naturalSize
         attachVideoView()
         let video = player.tracks(mediaType: .video).first { $0.isEnabled }
+        let range: String?
+        if video?.dovi?.dv_profile == 7 { range = "HDR10（Dolby Vision P7 基础层）" } else {
+            range = video?.formatDescription.map(PlaybackMediaInfo.dynamicRange)
+            // P5 / P8 直通时系统收到 Dolby Vision；P7 始终只解基础层。
+        }
+        mediaInfo = PlaybackMediaInfo(
+            video: (video as? FFmpegAssetTrack)?.codecName ?? video?.formatDescription.map(PlaybackMediaInfo.codecName),
+            videoParameters: video?.description,
+            dynamicRange: video?.dovi?.dv_profile == 5 || video?.dovi?.dv_profile == 8 ? "Dolby Vision" : range,
+            audio: player.tracks(mediaType: .audio).first { $0.isEnabled }?.description
+        )
+        mediaInfo?.audioStreamIndex = player.tracks(mediaType: .audio).first { $0.isEnabled }.map { Int($0.trackID) }
         Log.player.info("KSPlayer readyToPlay size=\(Int(self.videoSize.width))x\(Int(self.videoSize.height)) codec=\(video?.description ?? "-", privacy: .public)")
         if wantsPlay { player.play() }
         if let pendingSubtitleOrdinal { selectEmbeddedSubtitle(ordinal: pendingSubtitleOrdinal) }

@@ -6,6 +6,55 @@ import Testing
 /// 夹具：10 秒 MKV，内嵌 SRT（0.5–4 秒「第一句字幕」，4.5–9 秒「第二句字幕」）。
 @MainActor
 struct KSPlayerSubtitleTests {
+    /// PGS 画布为 1920×1080，位图在 (960,900)，0.5–2 和 4.5–7 秒显示。
+    /// 清除包没有文字 / 位图，必须结束上一幅无限时长字幕。
+    @Test func rendersAndClearsEmbeddedPGS() async throws {
+        let url = try #require(Bundle.module.url(forResource: "embedded-pgs", withExtension: "mkv", subdirectory: "Resources"))
+        let engine = KSPlayerEngine()
+        engine.setMuted(true)
+        engine.load(PlaybackSource(url: url, title: "PGS fixture"))
+        engine.selectEmbeddedSubtitle(ordinal: 0)
+        defer { engine.stop() }
+
+        var sawImage = false
+        var sawClear = false
+        for _ in 0..<65 {
+            try await Task.sleep(for: .milliseconds(80))
+            let time = engine.preciseCurrentTime
+            let images = engine.embeddedSubtitleImages(at: time)
+            if let image = images.first {
+                sawImage = true
+                #expect(image.canvasSize == CGSize(width: 1920, height: 1080))
+                #expect(image.origin == CGPoint(x: 960, y: 900))
+                #expect(image.image.width == 64 && image.image.height == 16)
+            }
+            if time > 2.2, time < 4.4, sawImage {
+                #expect(images.isEmpty, "PGS 清除包之后仍显示旧图")
+                sawClear = images.isEmpty
+                break
+            }
+        }
+        #expect(sawImage)
+        #expect(sawClear)
+        #expect(engine.mediaInfo?.video?.localizedCaseInsensitiveContains("h264") == true)
+        #expect(engine.mediaInfo?.dynamicRange == "SDR")
+
+        // 跳到第二句之前；没有字幕包回溯时，落在一句中间只能等下一个显示集。
+        await engine.seek(to: 3)
+        var sawSecond = false
+        for _ in 0..<85 {
+            try await Task.sleep(for: .milliseconds(80))
+            if !engine.embeddedSubtitleImages(at: engine.preciseCurrentTime).isEmpty {
+                sawSecond = true
+                break
+            }
+        }
+        #expect(sawSecond, "跳转后没有恢复 PGS，time=\(engine.preciseCurrentTime) status=\(engine.status)")
+        engine.selectEmbeddedSubtitle(ordinal: nil)
+        #expect(!engine.hasEmbeddedSubtitle)
+        #expect(engine.embeddedSubtitleImages(at: engine.preciseCurrentTime).isEmpty)
+    }
+
     @Test func readsEmbeddedSRTFromStream() async throws {
         let url = try #require(Bundle.module.url(forResource: "embedded-subtitle", withExtension: "mkv", subdirectory: "Resources"))
         let engine = KSPlayerEngine()

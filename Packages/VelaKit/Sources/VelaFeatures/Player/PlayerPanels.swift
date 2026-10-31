@@ -645,10 +645,10 @@ private struct PlaybackInfoPanel: View {
             if let stream = session.stream {
                 let source = stream.mediaSource
                 let engine = session.controller.engine
+                let actual = (engine as? any PlaybackMediaInfoProviding)?.mediaInfo
                 VStack(alignment: .leading, spacing: VelaTheme.Spacing.m) {
                     section("串流") {
-                        row("容器", [source.container?.uppercased(), MediaFormat.bitrate(source.bitrate).map { "（\($0)）" }]
-                            .compactMap { $0 }.joined())
+                        row("容器", stream.method == .transcode ? "HLS" : source.container?.uppercased())
                         row("播放方式", Self.methodTitle(stream))
                         if !stream.transcodeReasons.isEmpty {
                             row("转码原因", stream.transcodeReasons.map(Self.reasonTitle).joined(separator: "、"))
@@ -657,18 +657,30 @@ private struct PlaybackInfoPanel: View {
                         row("网速", engine.networkThroughput.flatMap { MediaFormat.bitrate(Int($0)) })
                         row("已缓冲", Self.bufferAhead(engine))
                     }
-                    if let video = source.videoStream {
-                        section("视频") {
-                            row("格式", Self.videoFormat(video))
-                            row("参数", Self.videoParameters(video))
+                    section("当前码流") {
+                        if let actual {
+                            row("视频", actual.video)
+                            row("参数", actual.videoParameters)
                             row("解码器", engine.kind == .avFoundation ? "VideoToolbox" : "FFmpeg + VideoToolbox")
-                            row("分辨率", video.width.flatMap { w in video.height.map { "\(w)×\($0)" } })
-                            row("动态范围", PlayerSession.dynamicRangeLabel(for: video) ?? video.videoRangeType)
+                            row("分辨率", engine.videoSize.width > 0 ? "\(Int(engine.videoSize.width))×\(Int(engine.videoSize.height))" : nil)
+                            row("动态范围", actual.dynamicRange)
                             row("HDR 元数据", (engine as? any HDRMetadataReporting)?.hdrStaticMetadata?.summary)
+                            row("音频", actual.audio)
+                        } else {
+                            row("状态", "正在读取实际码流…")
                         }
                     }
-                    if let audio = source.audioStreams.first(where: { $0.index == session.selectedAudioIndex }) {
-                        section("音频") {
+                    if let video = source.videoStream {
+                        section("原文件视频") {
+                            row("格式", Self.videoFormat(video))
+                            row("参数", Self.videoParameters(video))
+                            row("动态范围", PlayerSession.dynamicRangeLabel(for: video) ?? video.videoRangeType)
+                        }
+                    }
+                    if let audio = source.audioStreams.first(where: {
+                        $0.index == (stream.method == .directPlay ? actual?.audioStreamIndex ?? session.selectedAudioIndex : session.selectedAudioIndex)
+                    }) {
+                        section("原文件音轨") {
                             row("音轨", audio.displayTitle ?? audio.codec?.uppercased())
                             row("采样率", audio.sampleRate.map { "\($0) Hz" })
                             row("码率", MediaFormat.bitrate(audio.bitRate))

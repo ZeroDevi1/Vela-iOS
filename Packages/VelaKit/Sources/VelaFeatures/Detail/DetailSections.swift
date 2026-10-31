@@ -168,7 +168,7 @@ struct TrackSelectionMenu: View {
         let label = stream.trackLabel ?? TrackLabel(title: "轨道 \(stream.index)")
         var secondary = [label.title] + label.details + label.flags.map(\.rawValue)
         if label.languageName == nil { secondary.removeFirst() }
-        if stream.type == "Subtitle", !stream.isTextSubtitle { secondary.append("需转码") }
+        if stream.type == "Subtitle", !stream.isTextSubtitle { secondary.append(stream.isEmbeddedPGS ? "图形字幕" : "需转码") }
         return (label.languageName ?? label.title, secondary.joined(separator: " · "))
     }
 }

@@ -125,6 +125,29 @@ struct LoginBodyTests {
 }
 
 struct PlaybackBodyTests {
+    @Test func ksPlayerDirectPlaysTheConcretePCMCodecReportedByEmby() {
+        let caps = PlaybackCapabilities(supportsAV1: false, supportsDolbyVision: true, supportsHDR10: true)
+        let codecs = DeviceProfile.ksPlayer(caps).directPlayProfiles.first?.audioCodec?.split(separator: ",")
+        #expect(codecs?.contains("pcm_s16le") == true)
+    }
+    @Test func ksPlayerAdvertisesEmbeddedPGSAndKeepsServerBurnInFallback() {
+        let caps = PlaybackCapabilities(supportsAV1: false, supportsDolbyVision: true, supportsHDR10: true)
+        let local = DeviceProfile.ksPlayer(caps).subtitleProfiles
+        let system = DeviceProfile.avFoundation(caps).subtitleProfiles
+        #expect(local.contains { $0.format == "pgssub" && $0.method == "Embed" })
+        #expect(local.contains { $0.format == "pgssub" && $0.method == "Encode" })
+        #expect(!system.contains { $0.format == "pgssub" && $0.method == "Embed" })
+    }
+
+    @Test func onlyEmbeddedPGSUsesLocalBitmapRendering() throws {
+        let decoder = JSONDecoder()
+        let embedded = try decoder.decode(MediaStreamInfo.self, from: Data(#"{"Index":5,"Type":"Subtitle","Codec":"PGSSUB","IsExternal":false}"#.utf8))
+        let external = try decoder.decode(MediaStreamInfo.self, from: Data(#"{"Index":6,"Type":"Subtitle","Codec":"pgssub","IsExternal":true}"#.utf8))
+        #expect(embedded.isEmbeddedPGS)
+        #expect(!embedded.isTextSubtitle)
+        #expect(!external.isEmbeddedPGS)
+    }
+
     @Test func playbackInfoDefaultsSubtitleToDisabled() throws {
         let body = PlaybackInfoBody(
             userID: "u", maxStreamingBitrate: 1, startTimeTicks: 0, mediaSourceID: nil,

@@ -53,7 +53,7 @@ public protocol PlaybackEngine: AnyObject {
 // 内核特有的能力拆成可选协议，功能层按「能不能」判断（`engine as? any EmbeddedSubtitleProviding`），
 // 不依赖具体内核类型。曾接入的 mpv / VLC 已移除（画中画、切换内核等问题多），只保留系统内核与 KSPlayer。
 
-/// 能直接从视频流读取内嵌文本字幕的内核（KSPlayer）。系统内核做不到，需服务器提取字幕。
+/// 能直接从视频流读取内嵌文本 / 图片字幕的内核（KSPlayer）。
 @MainActor
 public protocol EmbeddedSubtitleProviding: PlaybackEngine {
     /// 当前是否选中了内嵌字幕轨（选中后才由内核解码字幕包）。
@@ -61,6 +61,54 @@ public protocol EmbeddedSubtitleProviding: PlaybackEngine {
     /// 按内嵌字幕轨出现顺序（从 0 开始）选择；nil 关闭。
     func selectEmbeddedSubtitle(ordinal: Int?)
     func embeddedSubtitleText(at time: TimeInterval) -> String?
+    func embeddedSubtitleImages(at time: TimeInterval) -> [EmbeddedSubtitleImage]
+}
+
+/// 位图与左上角坐标；坐标系是字幕自己的画布，4K 视频的 PGS 常使用 1920×1080 画布。
+public struct EmbeddedSubtitleImage {
+    public let image: CGImage
+    public let origin: CGPoint
+    public let canvasSize: CGSize
+}
+
+/// 实际打开的码流信息；不能以服务器返回的原文件元数据替代转码后的格式。
+public struct PlaybackMediaInfo: Sendable {
+    public var video: String?
+    public var videoParameters: String?
+    public var dynamicRange: String?
+    public var audio: String?
+    /// 原文件直放时的实际音轨 stream index；HLS 的轨序号不能用来匹配原文件。
+    public var audioStreamIndex: Int?
+
+    public init(video: String? = nil, videoParameters: String? = nil, dynamicRange: String? = nil, audio: String? = nil) {
+        self.video = video
+        self.videoParameters = videoParameters
+        self.dynamicRange = dynamicRange
+        self.audio = audio
+    }
+
+    static func codecName(_ format: CMFormatDescription) -> String {
+        let code = CMFormatDescriptionGetMediaSubType(format)
+        switch code {
+        case kCMVideoCodecType_H264: return "H.264"
+        case kCMVideoCodecType_HEVC: return "HEVC"
+        default: return String(decoding: [24, 16, 8, 0].map { UInt8((code >> $0) & 0xFF) }, as: UTF8.self)
+        }
+    }
+
+    static func dynamicRange(_ format: CMFormatDescription) -> String {
+        let codec = codecName(format)
+        if ["dvh1", "dvhe"].contains(codec) { return "Dolby Vision" }
+        let transfer = CMFormatDescriptionGetExtension(format, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String
+        if transfer == kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String { return "HDR10" }
+        if transfer == kCVImageBufferTransferFunction_ITU_R_2100_HLG as String { return "HLG" }
+        return "SDR"
+    }
+}
+
+@MainActor
+public protocol PlaybackMediaInfoProviding: PlaybackEngine {
+    var mediaInfo: PlaybackMediaInfo? { get }
 }
 
 /// 由内核自己提供画中画控制器的内核（自带画面视图、不使用 `AVPlayerLayer`，例如 KSPlayer）。
@@ -180,6 +228,8 @@ public struct PlaybackSource: Sendable, Hashable {
     public var vrLayout: VRLayout?
     /// 前向缓冲时长（秒）；0 表示使用内核默认值（本地文件播放时）。
     public var forwardBufferDuration: TimeInterval
+    /// 原文件总码率（bps），供高码率流选择缓冲恢复门槛；未知时沿用内核默认值。
+    public var bitrate: Int?
 
     public init(
         url: URL,
@@ -188,7 +238,8 @@ public struct PlaybackSource: Sendable, Hashable {
         startTime: TimeInterval = 0,
         httpHeaders: [String: String] = [:],
         vrLayout: VRLayout? = nil,
-        forwardBufferDuration: TimeInterval = 0
+        forwardBufferDuration: TimeInterval = 0,
+        bitrate: Int? = nil
     ) {
         self.url = url
         self.title = title
@@ -197,5 +248,6 @@ public struct PlaybackSource: Sendable, Hashable {
         self.httpHeaders = httpHeaders
         self.vrLayout = vrLayout
         self.forwardBufferDuration = forwardBufferDuration
+        self.bitrate = bitrate
     }
 }
