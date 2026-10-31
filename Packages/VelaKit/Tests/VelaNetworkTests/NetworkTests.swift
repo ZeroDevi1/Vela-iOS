@@ -74,6 +74,29 @@ struct HTTPClientTests {
         let existing = try client.absoluteURL(forServerRelative: "/videos/1/master.m3u8?api_key=old")
         #expect(existing.absoluteString == "https://host/emby/videos/1/master.m3u8?api_key=old")
     }
+
+    @Test func embyBurnedSubtitlesUseMediaPlaylistAndKeepSessionParameters() throws {
+        let client = MediaServerClient(
+            serverID: "s", baseURL: URL(string: "https://host/emby")!, kind: .emby,
+            userID: "u", accessToken: "tok", identity: ClientIdentity(deviceName: "d", deviceID: "id", version: "1")
+        )
+        let relative = "/videos/1/master.m3u8?MediaSourceId=m&PlaySessionId=p&SubtitleStreamIndex=18&SubtitleMethod=Encode"
+        let url = try client.transcodingURL(forServerRelative: relative, burningSubtitles: true)
+        #expect(url.path == "/emby/videos/1/main.m3u8")
+        #expect(url.query == "MediaSourceId=m&PlaySessionId=p&SubtitleStreamIndex=18&SubtitleMethod=Encode&api_key=tok")
+        #expect(try client.transcodingURL(forServerRelative: relative, burningSubtitles: false).lastPathComponent == "master.m3u8")
+        #expect(try client.transcodingURL(forServerRelative: "/videos/1/main.m3u8?api_key=old", burningSubtitles: true)
+            .absoluteString == "https://host/emby/videos/1/main.m3u8?api_key=old")
+    }
+
+    @Test func jellyfinBurnedSubtitlesKeepMasterPlaylist() throws {
+        let client = MediaServerClient(
+            serverID: "s", baseURL: URL(string: "https://host/jellyfin")!, kind: .jellyfin,
+            userID: "u", accessToken: "tok", identity: ClientIdentity(deviceName: "d", deviceID: "id", version: "1")
+        )
+        let url = try client.transcodingURL(forServerRelative: "/videos/1/master.m3u8", burningSubtitles: true)
+        #expect(url.path == "/jellyfin/videos/1/master.m3u8")
+    }
 }
 
 struct MappingTests {

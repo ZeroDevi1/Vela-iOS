@@ -226,6 +226,15 @@ public struct MediaServerClient: Sendable {
         return try HTTPClient.makeURL(baseURL: baseURL, path: path, query: components.queryItems ?? [])
     }
 
+    /// Emby 烧录字幕时直接使用媒体播放列表。其 master 可能把实际 Main / Level 5.1 的 4K H.264
+    /// 声明为 High / Level 4.1，导致 AVPlayer 在读取视频分片前报 -12927；main 由分片本身确定解码格式。
+    /// 保留原查询中的字幕、转码会话与鉴权参数；不烧录时仍用 master，保留字幕组等信息。
+    public func transcodingURL(forServerRelative relative: String, burningSubtitles: Bool) throws -> URL {
+        let url = try absoluteURL(forServerRelative: relative)
+        guard kind == .emby, burningSubtitles, url.lastPathComponent == "master.m3u8" else { return url }
+        return url.deletingLastPathComponent().appendingPathComponent("main.m3u8")
+    }
+
     // MARK: - 播放上报
 
     public enum ReportEvent: Sendable {

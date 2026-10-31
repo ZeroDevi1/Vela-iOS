@@ -101,7 +101,7 @@ public struct PlaybackResolver: Sendable {
 
         if source.isDiscImage {
             guard let relative = source.transcodingURL else { throw PlaybackResolveError.discNeedsServer }
-            let url = try client.absoluteURL(forServerRelative: relative)
+            let url = try client.transcodingURL(forServerRelative: relative, burningSubtitles: burnSubtitleIndex != nil)
             return ResolvedStream(url: url, method: .transcode, mediaSource: source, playSessionID: info.playSessionID,
                                   audioStreamIndex: audioStreamIndex, burnedSubtitleIndex: burnSubtitleIndex)
         }
@@ -129,7 +129,7 @@ public struct PlaybackResolver: Sendable {
         }
 
         if let relative = source.transcodingURL {
-            let url = try client.absoluteURL(forServerRelative: relative)
+            let url = try client.transcodingURL(forServerRelative: relative, burningSubtitles: burnSubtitleIndex != nil)
             return ResolvedStream(url: url, method: .transcode, mediaSource: source, playSessionID: info.playSessionID,
                                   audioStreamIndex: audioStreamIndex, burnedSubtitleIndex: burnSubtitleIndex)
         }
