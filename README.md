@@ -80,6 +80,28 @@ cd Packages/VelaKit && swift test
 
 若 `xcode-select` 指向 CommandLineTools，可在命令前加 `DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer`。
 
+### GitHub Actions 构建产物
+
+[Build Apple Apps](.github/workflows/build.yml) 在每次 push 时构建，也可从 Actions 页面手动运行。使用 GitHub 的 [`xcode-27` runner](https://github.blog/changelog/2026-10-15-xcode-27-runner-image-generally-available/) 和 Xcode 27.0，复用 `scripts/fetch-ksplayer.sh` 准备并缓存播放器依赖。
+
+构建完成后，打开仓库 **Actions → Build Apple Apps → 对应运行 → Artifacts** 下载，保留 14 天：
+
+| 产物 | 支持平台 | 签名与安装 |
+|---|---|---|
+| `Vela-iOS-iPadOS-unsigned.ipa` | iPhone / iPad（同一份通用 IPA） | 未签名，需用自己的证书或侧载工具签名后安装，不能直接安装 |
+| `Vela-macOS-universal.zip` | macOS，arm64 / x86_64 通用二进制 | ad-hoc 签名，未公证；下载后可能需要在「系统设置 → 隐私与安全性」允许打开 |
+
+无需配置签名 Secrets，不创建 GitHub Release，不上传 App Store / TestFlight。某个平台构建失败时，另一个平台继续构建，并上传失败平台的日志与 `.xcresult`（保留 7 天）。
+
+本地可使用同一入口验证打包（先准备播放器依赖）：
+
+```bash
+bash scripts/ci-build.sh ios
+bash scripts/ci-build.sh macos
+```
+
+默认输出到 `build/ci/<平台>/`；再次构建前需移走该目录的 `Build.xcresult`，或通过 `VELA_CI_BUILD_ROOT` 指定新的构建目录。
+
 ### 部署 Release 版到真机
 
 前提：设备系统为 iOS / iPadOS / macOS 27 或更高（部署目标 27.0）；已执行 `scripts/fetch-ksplayer.sh` 拉取 KSPlayer 与 FFmpegKit。
