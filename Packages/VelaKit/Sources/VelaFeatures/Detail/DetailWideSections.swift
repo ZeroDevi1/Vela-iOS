@@ -709,13 +709,13 @@ private extension String {
 
 // MARK: - 剧照
 
-/// 剧照：条目的全部背景图，16:9 大图横滑（一屏约 2.5 张）。只有一张时与头图重复，不显示。
+/// 剧照：条目的全部静态背景图。窄屏与宽屏均展示，单张图片也不因存在视频花絮而隐藏。
 struct StillsShelf: View {
     let urls: [URL]
     @Environment(\.velaLayout) private var layout
 
     var body: some View {
-        if urls.count > 1 {
+        if !urls.isEmpty {
             VStack(alignment: .leading, spacing: VelaTheme.Spacing.m) {
                 Text("剧照").font(.title2.weight(.bold)).velaPageMargin()
                 ScrollView(.horizontal) {
@@ -737,3 +737,4 @@ struct StillsShelf: View {
         }
     }
 }
+

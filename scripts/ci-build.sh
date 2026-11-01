@@ -9,6 +9,8 @@ case "$PLATFORM" in
   *) echo "用法：bash scripts/ci-build.sh <ios|macos>" >&2; exit 2 ;;
 esac
 
+python3 "$ROOT/scripts/test-detail-stills.py"
+
 BUILD_DIR="${VELA_CI_BUILD_ROOT:-$ROOT/build/ci}/$PLATFORM"
 mkdir -p "$BUILD_DIR"
 COMMON=(
@@ -61,3 +63,4 @@ PY
     ditto -c -k --sequesterRsrc --keepParent "$APP" "$BUILD_DIR/Vela-macOS-universal.zip"
     ;;
 esac
+
