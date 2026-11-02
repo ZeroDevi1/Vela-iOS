@@ -23,6 +23,8 @@ struct HomeListView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.isCompactLayout) private var isCompact
     @Environment(\.velaLayout) private var layout
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var availableWidth: CGFloat = 393
     @State private var items: [MediaItem] = []
     @State private var total = 0
     @State private var isLoading = false
@@ -45,7 +47,8 @@ struct HomeListView: View {
                         }
                 }
             }
-            .padding(VelaTheme.Spacing.l)
+            .padding(.horizontal, gridMargin)
+            .padding(.vertical, VelaTheme.Spacing.l)
 
             if isLoading { ProgressView().padding() }
             if let error {
@@ -58,17 +61,26 @@ struct HomeListView: View {
                 )
             }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { availableWidth = $0 }
         .navigationTitle(route.title)
         .refreshableLoad { await reload() }
         .task(id: app.servers.activeServer?.baseURL) { await reload() }
     }
 
-    /// 横版卡宽度：iPhone 竖屏一行两张。
-    private var landscapeWidth: CGFloat { isCompact ? 170 : 260 }
+    // 只调整「查看全部」网格；首页的横向继续观看分区保持横滑。
+    private var threeColumns: Bool { isCompact && !dynamicTypeSize.isAccessibilitySize && (320..<700).contains(availableWidth) }
+    private var gridMargin: CGFloat { isCompact ? VelaTheme.Spacing.m : layout.pageMargin }
+    private var gridSpacing: CGFloat { isCompact ? 10 : VelaTheme.Spacing.m }
+    private var landscapeWidth: CGFloat {
+        threeColumns ? (availableWidth - 2 * gridMargin - 2 * gridSpacing) / 3 : (isCompact ? 170 : 260)
+    }
 
     private var columns: [GridItem] {
+        if threeColumns {
+            return Array(repeating: GridItem(.flexible(), spacing: gridSpacing, alignment: .top), count: 3)
+        }
         let minimum = usesLandscape ? landscapeWidth : layout.posterWidth
-        return [GridItem(.adaptive(minimum: minimum), spacing: VelaTheme.Spacing.m, alignment: .top)]
+        return [GridItem(.adaptive(minimum: minimum), spacing: gridSpacing, alignment: .top)]
     }
 
     @ViewBuilder
@@ -90,7 +102,7 @@ struct HomeListView: View {
                 title: item.kind == .episode ? (item.seriesName ?? item.name) : item.name,
                 subtitle: item.kind == .episode ? HomeView.episodeSubtitle(item) : item.productionYear.map(String.init),
                 imageURL: app.imageURL(for: item, kind: .primary, maxWidth: 400),
-                width: layout.posterWidth,
+                width: threeColumns ? landscapeWidth : layout.posterWidth,
                 badges: PosterBadges(item)
             )
         }
