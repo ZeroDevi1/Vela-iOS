@@ -707,34 +707,3 @@ private extension String {
     var nonEmpty: String? { isEmpty ? nil : self }
 }
 
-// MARK: - 剧照
-
-/// 剧照：条目的全部静态背景图。窄屏与宽屏均展示，单张图片也不因存在视频花絮而隐藏。
-struct StillsShelf: View {
-    let urls: [URL]
-    @Environment(\.velaLayout) private var layout
-
-    var body: some View {
-        if !urls.isEmpty {
-            VStack(alignment: .leading, spacing: VelaTheme.Spacing.m) {
-                Text("剧照").font(.title2.weight(.bold)).velaPageMargin()
-                ScrollView(.horizontal) {
-                    LazyHStack(spacing: VelaTheme.Spacing.l) {
-                        ForEach(urls, id: \.self) { url in
-                            RemoteArtwork(url: url, placeholderSymbol: "photo")
-                                .aspectRatio(16 / 9, contentMode: .fit)
-                                .clipShape(.rect(cornerRadius: VelaTheme.Radius.card))
-                                .containerRelativeFrame(.horizontal, count: layout == .expanded ? 5 : 4, span: 2, spacing: VelaTheme.Spacing.l)
-                        }
-                    }
-                    .scrollTargetLayout()
-                }
-                .contentMargins(.horizontal, layout.pageMargin, for: .scrollContent)
-                .scrollIndicators(.hidden)
-                .scrollTargetBehavior(.viewAligned)
-                .velaHorizontalPaging()
-            }
-        }
-    }
-}
-

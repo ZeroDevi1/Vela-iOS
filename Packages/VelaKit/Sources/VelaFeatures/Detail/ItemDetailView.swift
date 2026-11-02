@@ -431,7 +431,7 @@ struct ItemDetailView: View {
 
         // 静态剧照与视频花絮独立展示；iPhone 也保留单张 fanart。
         if let client {
-            StillsShelf(urls: client.backdropImageURLs(for: item, maxWidth: 1280))
+            StillsShelf(images: client.stillImages(for: item, screenshotTags: model.details?.screenshotImageTags ?? []))
         }
 
         ExtrasShelf(trailers: model.trailers, remoteTrailers: model.details?.remoteTrailers ?? [], features: model.specialFeatures)

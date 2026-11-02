@@ -32,6 +32,7 @@ let package = Package(
             name: "VelaFeatures",
             dependencies: ["VelaCore", "VelaNetwork", "VelaData", "VelaPlayer", "VelaDesignSystem"]
         ),
+        .testTarget(name: "VelaFeaturesTests", dependencies: ["VelaFeatures"]),
         .testTarget(name: "VelaCoreTests", dependencies: ["VelaCore"]),
         .testTarget(name: "VelaNetworkTests", dependencies: ["VelaNetwork"]),
         .testTarget(

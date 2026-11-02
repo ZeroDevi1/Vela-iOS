@@ -19,6 +19,7 @@ public struct ItemDetails: Sendable {
         public var name: String
     }
 
+    public var screenshotImageTags: [String] = []
     public var item: MediaItem
     public var people: [Person]
     public var studios: [String]
@@ -49,6 +50,7 @@ public struct ItemDetails: Sendable {
 extension BaseItemDTO {
     func toDetails(serverID: String) -> ItemDetails {
         ItemDetails(
+            screenshotImageTags: screenshotImageTags ?? [],
             item: toMediaItem(serverID: serverID),
             people: (people ?? []).map {
                 .init(id: $0.id, name: $0.name, role: $0.role, type: $0.type, primaryImageTag: $0.primaryImageTag)
@@ -265,10 +267,16 @@ extension MediaServerClient {
         return imageURL(itemID: person.id, path: "Primary", tag: tag, maxWidth: maxWidth)
     }
 
-    /// 条目自己的全部背景图（剧照），按服务器顺序；不回退到父级。用于详情页「剧照」分区。
-    public func backdropImageURLs(for item: MediaItem, maxWidth: Int) -> [URL] {
-        item.backdropImageTags.enumerated().compactMap { index, tag in
-            imageURL(itemID: item.id, path: "Backdrop/\(index)", tag: tag, maxWidth: maxWidth)
+    /// Backdrop 在前、Screenshot 在后；过滤空 tag 但保留服务器索引，不回退父级图片。
+    public func stillImages(for item: MediaItem, screenshotTags: [String] = []) -> [DetailStill] {
+        [("Backdrop", item.backdropImageTags), ("Screenshot", screenshotTags)].flatMap { kind, tags in
+            tags.enumerated().compactMap { index, tag -> DetailStill? in
+                guard !tag.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+                let path = "\(kind)/\(index)"
+                guard let thumbnail = imageURL(itemID: item.id, path: path, tag: tag, maxWidth: 560, fillHeight: 315, quality: 80),
+                      let preview = imageURL(itemID: item.id, path: path, tag: tag, maxWidth: 1920, quality: 95) else { return nil }
+                return DetailStill(id: "\(item.id)/\(path)", thumbnailURL: thumbnail, previewURL: preview)
+            }
         }
     }
 
@@ -297,15 +305,15 @@ extension MediaServerClient {
         return nil
     }
 
-    private func imageURL(itemID: String, path: String, tag: String, maxWidth: Int) -> URL? {
+    private func imageURL(itemID: String, path: String, tag: String, maxWidth: Int, fillHeight: Int? = nil, quality: Int = 90) -> URL? {
         try? HTTPClient.makeURL(
             baseURL: baseURL,
             path: "/Items/\(itemID)/Images/\(path)",
             query: [
                 .init(name: "tag", value: tag),
-                .init(name: "maxWidth", value: String(maxWidth)),
-                .init(name: "quality", value: "90")
-            ]
+                .init(name: fillHeight == nil ? "maxWidth" : "fillWidth", value: String(maxWidth)),
+                .init(name: "quality", value: String(quality))
+            ] + (fillHeight.map { [.init(name: "fillHeight", value: String($0))] } ?? [])
         )
     }
 }
@@ -315,4 +323,11 @@ public struct ItemWithMediaSource: Sendable, Identifiable {
     public var item: MediaItem
     public var source: MediaSourceInfo?
     public var id: String { item.id }
+}
+
+/// Two stable cache keys: small shelf artwork and an on-demand, aspect-fit preview.
+public struct DetailStill: Identifiable, Sendable {
+    public let id: String
+    public let thumbnailURL: URL
+    public let previewURL: URL
 }

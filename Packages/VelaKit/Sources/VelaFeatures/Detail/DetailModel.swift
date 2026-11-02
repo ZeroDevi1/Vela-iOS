@@ -81,9 +81,6 @@ final class DetailModel {
             let details = try await client.itemDetails(id: seed.id)
             self.details = details
             loadError = nil
-            if !seed.mergedItemIDs.isEmpty {
-                alternates = await loadAlternates(client: client)
-            }
             resetSelections()
         } catch {
             loadError = error.localizedDescription
@@ -95,6 +92,10 @@ final class DetailModel {
         // 页面重新出现时 `.task` 会再次加载：按追加方式填充的分区先清空，避免重复。
         directorWorks = []
         await withTaskGroup(of: Section.self) { group in
+            // 合并版本不阻塞默认播放源或其他分区；慢服务器上的一个版本不会拖住全部内容。
+            if !seed.mergedItemIDs.isEmpty {
+                group.addTask { .alternates(await self.loadAlternates(client: client)) }
+            }
             switch item.kind {
             case .series:
                 group.addTask { .seasons((try? await client.seasons(seriesID: item.id)) ?? []) }
@@ -136,10 +137,18 @@ final class DetailModel {
         case seasons([MediaItem]), nextUp(MediaItem?), siblings([MediaItem])
         case trailers([MediaItem]), features([MediaItem]), similar([MediaItem])
         case directorWorks(DirectorWorks)
+        case alternates([ItemDetails])
     }
 
     private func apply(_ section: Section) {
         switch section {
+        case .alternates(let value):
+            alternates = value
+            // 保留仍有效的用户选择；刷新后版本消失/加载失败时，回退到当前可用源。
+            if !sourceOptions.contains(where: { $0.id == selectedSourceID }) {
+                selectedSourceID = nil
+                resetSelections()
+            }
         case .seasons(let value): seasons = value
         case .nextUp(let value): nextUp = value
         case .siblings(let value): siblingEpisodes = value

@@ -98,6 +98,7 @@ struct BaseItemDTO: Decodable, Sendable {
     var genres: [String]?
     var imageTags: [String: String]?
     var backdropImageTags: [String]?
+    var screenshotImageTags: [String]?
     var parentBackdropItemID: String?
     var parentBackdropImageTags: [String]?
     var providerIDs: [String: String]?
@@ -196,6 +197,7 @@ struct BaseItemDTO: Decodable, Sendable {
         case genres = "Genres"
         case imageTags = "ImageTags"
         case backdropImageTags = "BackdropImageTags"
+        case screenshotImageTags = "ScreenshotImageTags"
         case parentBackdropItemID = "ParentBackdropItemId"
         case parentBackdropImageTags = "ParentBackdropImageTags"
         case providerIDs = "ProviderIds"
