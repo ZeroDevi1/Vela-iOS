@@ -1,6 +1,15 @@
 import SwiftUI
 
 public extension View {
+    /// macOS 的「显示滚动条」偏好可以覆盖 `.hidden`，横向列表用 `.never` 强制隐藏。
+    func velaHideHorizontalScrollIndicators() -> some View {
+        #if os(macOS)
+        scrollIndicators(.never, axes: .horizontal)
+        #else
+        scrollIndicators(.hidden)
+        #endif
+    }
+
     /// 横向滚动列表的翻页按钮（仅 macOS）：鼠标悬停在列表上时，两侧显示「上一页 / 下一页」，点按滚动约一屏。
     /// Mac 没有触屏，鼠标滚轮只能纵向滚动，触控板横扫也容易误触页面滚动，横滑列表需要可点的入口。
     /// iOS 不做任何改变（触屏横滑即可，iPad 指针也支持横向滚动）。

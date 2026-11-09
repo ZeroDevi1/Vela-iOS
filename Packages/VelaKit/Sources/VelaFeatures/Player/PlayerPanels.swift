@@ -941,7 +941,7 @@ private struct EpisodeInfoPanel: View {
                     }
                 }
             }
-            .scrollIndicators(.hidden)
+            .velaHideHorizontalScrollIndicators()
             .onAppear { proxy.scrollTo(current.id, anchor: .leading) }
         }
     }
@@ -962,7 +962,7 @@ private struct EpisodeInfoPanel: View {
                 }
             }
         }
-        .scrollIndicators(.hidden)
+        .velaHideHorizontalScrollIndicators()
     }
 
     /// 当前集按播放位置算剩余；有进度的集按服务器进度算剩余；其余显示总时长。

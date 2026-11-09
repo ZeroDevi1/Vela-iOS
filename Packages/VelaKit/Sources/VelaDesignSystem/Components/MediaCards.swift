@@ -308,7 +308,7 @@ public struct MediaShelf<Item: Identifiable, Card: View, Accessory: View>: View 
                 .scrollTargetLayout()
                 .padding(.horizontal, layout.pageMargin)
             }
-            .scrollIndicators(.hidden)
+            .velaHideHorizontalScrollIndicators()
             .scrollTargetBehavior(.viewAligned)
             .velaHorizontalPaging()
         }

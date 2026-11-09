@@ -213,7 +213,7 @@ struct TabPills<Value: Hashable>: View {
                 }
             }
         }
-        .scrollIndicators(.hidden)
+        .velaHideHorizontalScrollIndicators()
     }
 }
 

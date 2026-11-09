@@ -43,7 +43,7 @@ struct DiscoverFeedEntries: View {
                 }
             }
         }
-        .scrollIndicators(.hidden)
+        .velaHideHorizontalScrollIndicators()
         .velaHorizontalPaging()
     }
 }

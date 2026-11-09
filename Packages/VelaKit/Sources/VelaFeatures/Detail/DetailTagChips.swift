@@ -62,7 +62,7 @@ struct DetailTagChips: View {
                     }
                 }
             }
-            .scrollIndicators(.hidden)
+            .velaHideHorizontalScrollIndicators()
             .scrollClipDisabled()
         }
     }

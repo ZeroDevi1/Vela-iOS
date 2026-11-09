@@ -227,7 +227,7 @@ struct EpisodeShelf: View {
                     }
                     .velaPageMargin()
                 }
-                .scrollIndicators(.hidden)
+                .velaHideHorizontalScrollIndicators()
                 .onAppear { proxy.scrollTo(currentID, anchor: .center) }
                 .velaHorizontalPaging()
                 // 换区间后回到该段开头（当前集所在的一段回到当前集）。
@@ -316,7 +316,7 @@ struct EpisodeRangeBar<Trailing: View>: View {
                     }
                 }
             }
-            .scrollIndicators(.hidden)
+            .velaHideHorizontalScrollIndicators()
             .onAppear { proxy.scrollTo(selected, anchor: .center) }
             .onChange(of: selected) { withAnimation { proxy.scrollTo(selected, anchor: .center) } }
         }
@@ -448,7 +448,7 @@ struct SeasonDetailView: View {
                                 }
                             }
                         }
-                        .scrollIndicators(.hidden)
+                        .velaHideHorizontalScrollIndicators()
                         .velaHorizontalPaging()
                         .listRowBackground(Color.clear)
                     }
@@ -621,7 +621,7 @@ struct ExtrasShelf: View {
                     }
                     .velaPageMargin()
                 }
-                .scrollIndicators(.hidden)
+                .velaHideHorizontalScrollIndicators()
                 .velaHorizontalPaging()
             }
         }
@@ -692,7 +692,7 @@ struct ChapterShelf: View {
                     }
                     .velaPageMargin()
                 }
-                .scrollIndicators(.hidden)
+                .velaHideHorizontalScrollIndicators()
                 .velaHorizontalPaging()
             }
         }
@@ -758,7 +758,7 @@ struct CastShelf: View {
                     }
                     .velaPageMargin()
                 }
-                .scrollIndicators(.hidden)
+                .velaHideHorizontalScrollIndicators()
                 .velaHorizontalPaging()
             }
         }
@@ -817,7 +817,7 @@ struct MediaInfoSection: View {
                 }
                 .velaPageMargin()
             }
-            .scrollIndicators(.hidden)
+            .velaHideHorizontalScrollIndicators()
             .velaHorizontalPaging()
         }
     }

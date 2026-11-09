@@ -46,7 +46,7 @@ struct StillsShelf: View {
                     .scrollTargetLayout()
                 }
                 .contentMargins(.horizontal, layout.pageMargin, for: .scrollContent)
-                .scrollIndicators(.hidden)
+                .velaHideHorizontalScrollIndicators()
                 .scrollTargetBehavior(.viewAligned)
                 .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.5) { ids in
                     let visibleIDs = Set(ids)
@@ -112,7 +112,7 @@ private struct StillPreview: View {
             }
             .scrollPosition(id: $page)
             .scrollTargetBehavior(.paging)
-            .scrollIndicators(.hidden)
+            .velaHideHorizontalScrollIndicators()
             .offset(y: pullDistance)
             .simultaneousGesture(pullToDismiss)
             .overlay(alignment: .topTrailing) {

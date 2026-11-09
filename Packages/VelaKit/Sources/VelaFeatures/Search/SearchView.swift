@@ -415,7 +415,7 @@ private struct SearchSuggestionsView: View {
             }
             .contentMargins(.horizontal, max((proxy.size.width - cardWidth) / 2, 0), for: .scrollContent)
             .scrollTargetBehavior(.viewAligned)
-            .scrollIndicators(.hidden)
+            .velaHideHorizontalScrollIndicators()
             .scrollPosition(id: $page, anchor: .center)
         }
         .frame(height: height)

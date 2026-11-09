@@ -288,7 +288,7 @@ struct SeasonEpisodesSection: View {
             .scrollTargetLayout()
         }
         .contentMargins(.horizontal, layout.pageMargin, for: .scrollContent)
-        .scrollIndicators(.hidden)
+        .velaHideHorizontalScrollIndicators()
         .scrollTargetBehavior(.viewAligned)
         .scrollPosition(id: $scrollTarget, anchor: .leading)
         // 不用 `ScrollPosition` 版的翻页：`scrollTo(id:)` 在卡片布局前调用会被丢弃，进入页面时定位不到下一集。
@@ -410,7 +410,7 @@ struct WideCastShelf: View {
                     }
                     .velaPageMargin()
                 }
-                .scrollIndicators(.hidden)
+                .velaHideHorizontalScrollIndicators()
                 .velaHorizontalPaging()
             }
         }
@@ -592,7 +592,7 @@ struct WideSourceSection: View {
                 .padding(.vertical, 2)
                 .velaPageMargin()
             }
-            .scrollIndicators(.hidden)
+            .velaHideHorizontalScrollIndicators()
 
             if let source = model.selectedSource {
                 HStack(spacing: VelaTheme.Spacing.xl) {

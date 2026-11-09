@@ -333,7 +333,7 @@ struct ItemDetailView: View {
                         }
                     }
                 }
-                .scrollIndicators(.hidden)
+                .velaHideHorizontalScrollIndicators()
             }
         }
     }
@@ -417,7 +417,7 @@ struct ItemDetailView: View {
                     }
                     .velaPageMargin()
                 }
-                .scrollIndicators(.hidden)
+                .velaHideHorizontalScrollIndicators()
             }
         }
 

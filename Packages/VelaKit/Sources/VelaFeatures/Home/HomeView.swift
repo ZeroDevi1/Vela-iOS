@@ -431,7 +431,7 @@ private struct HomeCarousel: View {
             }
             .contentMargins(.horizontal, (proxy.size.width - cardWidth) / 2, for: .scrollContent)
             .scrollTargetBehavior(.viewAligned)
-            .scrollIndicators(.hidden)
+            .velaHideHorizontalScrollIndicators()
             .scrollPosition($position, anchor: .center)
             // 居中的卡片完全可见，两侧只露出一部分。
             .onScrollTargetVisibilityChange(idType: Slot.self, threshold: 0.95) { ids in
