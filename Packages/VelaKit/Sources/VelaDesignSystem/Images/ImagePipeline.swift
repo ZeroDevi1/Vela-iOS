@@ -28,21 +28,22 @@ public final class ImagePipeline: Sendable {
         set { UserDefaults.standard.set(Int(newValue), forKey: diskLimitKey) }
     }
 
-    private let memory = MemoryCache()
+    private let memory: MemoryCache
     private let loader: Loader
     let directory: URL
 
     init(directory: URL = URL.cachesDirectory.appending(path: "Vela/Images", directoryHint: .isDirectory)) {
         self.directory = directory
+        let memory = MemoryCache()
+        self.memory = memory
         // 不用 URLCache：磁盘缓存由本类统一管理，避免同一张图存两份。
         let configuration = URLSessionConfiguration.default
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpMaximumConnectionsPerHost = 6
-        self.loader = Loader(session: URLSession(configuration: configuration), directory: directory)
+        self.loader = Loader(session: URLSession(configuration: configuration), directory: directory, memory: memory)
         #if canImport(UIKit)
         // NSCache 在内存压力下也会自行淘汰，但收到警告时立即清空能更快释放已解码的位图。
-        let memory = memory
         NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: nil) { _ in
             memory.removeAll()
         }
@@ -60,11 +61,9 @@ public final class ImagePipeline: Sendable {
     }
 
     /// 加载图片；失败（404、网络错误、无法解码）返回 nil，由调用方显示占位。
-    public func image(for url: URL) async -> CGImage? {
+    public func image(for url: URL, priority: TaskPriority = .userInitiated) async -> CGImage? {
         if let image = memory.image(for: url) { return image }
-        guard let image = await loader.load(url) else { return nil }
-        memory.store(image, for: url)
-        return image
+        return await loader.load(url, priority: priority)
     }
 
     /// 低优先级预取（进入内存缓存）；网格加载下一页后调用，滚动到时图片通常已就绪。
@@ -73,7 +72,7 @@ public final class ImagePipeline: Sendable {
         guard !pending.isEmpty else { return }
         Task.detached(priority: .utility) { [self] in
             for url in pending.prefix(Self.prefetchLimit) {
-                _ = await self.image(for: url)
+                _ = await self.image(for: url, priority: .utility)
             }
         }
     }
@@ -117,6 +116,7 @@ public final class ImagePipeline: Sendable {
     private actor Loader {
         private let session: URLSession
         private let directory: URL
+        private let memory: MemoryCache
         private var inFlight: [URL: Task<Fetch, Never>] = [:]
         /// 磁盘缓存累计大小；首次需要时扫描一次目录，之后随写入 / 淘汰维护，不再每次枚举。
         private var diskSize: Int64?
@@ -134,12 +134,14 @@ public final class ImagePipeline: Sendable {
             case failed
         }
 
-        init(session: URLSession, directory: URL) {
+        init(session: URLSession, directory: URL, memory: MemoryCache) {
             self.session = session
             self.directory = directory
+            self.memory = memory
         }
 
-        func load(_ url: URL) async -> CGImage? {
+        func load(_ url: URL, priority: TaskPriority) async -> CGImage? {
+            if let image = memory.image(for: url) { return image }
             if let failedAt = failures[url] {
                 if Date.now.timeIntervalSince(failedAt) < Self.failureTTL { return nil }
                 failures[url] = nil
@@ -148,22 +150,26 @@ public final class ImagePipeline: Sendable {
             if let task = inFlight[url] {
                 fetch = await task.value
             } else {
-                let task = makeFetch(url)
+                let task = makeFetch(url, priority: priority)
                 inFlight[url] = task
                 fetch = await task.value
+                // 先填内存再清除进行中的请求，预取和界面同时查找时不会重复解码。
+                if case .image(let image, let written) = fetch {
+                    memory.store(image, for: url)
+                    if written > 0 { didWrite(written) }
+                }
                 inFlight[url] = nil
-                if case .image(_, let written) = fetch, written > 0 { didWrite(written) }
                 if case .missing = fetch { failures[url] = .now }
             }
             if case .image(let image, _) = fetch { return image }
             return nil
         }
 
-        private func makeFetch(_ url: URL) -> Task<Fetch, Never> {
+        private func makeFetch(_ url: URL, priority: TaskPriority) -> Task<Fetch, Never> {
             let file = fileURL(for: url)
             let session = session
-            return Task.detached(priority: .userInitiated) { () -> Fetch in
-                if let data = try? Data(contentsOf: file), let image = Self.decode(data) {
+            return Task.detached(priority: priority) { () -> Fetch in
+                if let data = try? Data(contentsOf: file, options: .mappedIfSafe), let image = Self.decode(data) {
                     Self.touch(file)
                     return .image(image, writtenBytes: 0)
                 }

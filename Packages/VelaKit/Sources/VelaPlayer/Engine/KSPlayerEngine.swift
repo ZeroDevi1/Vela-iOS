@@ -11,7 +11,7 @@ import VelaCore
 ///
 /// 用于系统内核无法直放的片源（MKV 等）：直接播放原文件、不经服务器转码。与系统内核一样支持画中画，
 /// 并能逐帧取出解码后的 `CVPixelBuffer`，因此 VR 转平面在两种内核下都可用。
-/// 线程：KSMEPlayer 的回调都在主线程；进度由 4 Hz 定时器轮询（KSMEPlayer 没有时间观察接口）。
+/// KSMEPlayer 在主线程回报状态变化；进度由定时器采样，播放时 4 Hz，暂停时 1 Hz。
 @MainActor
 @Observable
 public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitleProviding, EnginePictureInPictureProviding,
@@ -100,6 +100,7 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
 
     public func load(_ source: PlaybackSource) {
         status = .loading
+        updatePolling()
         currentTime = source.startTime
         duration = 0
         bufferedTime = 0
@@ -172,7 +173,10 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
             self.player = nil
         }
         if let player {
+            // replace 会停止旧片源，忽略它在替换时同步发出的状态变化。
+            player.delegate = nil
             player.replace(url: source.url, options: options)
+            player.delegate = self
         } else {
             KSOptions.audioPlayerType = audioOutputType
             let player = KSMEPlayer(url: source.url, options: options)
@@ -183,7 +187,6 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
         player?.playbackRate = rate
         attachVideoView()
         player?.prepareToPlay()
-        startPolling()
     }
 
     public func play() {
@@ -428,39 +431,49 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
         player?.contentMode = contentMode
     }
 
-    /// 4 Hz 刷新进度、缓冲与状态，与系统内核的周期观察频率一致；网速每秒计算一次。
-    private func startPolling() {
-        pollTimer?.invalidate()
-        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.poll() }
+    private func updatePolling() {
+        let interval: TimeInterval?
+        switch status {
+        case .playing, .buffering: interval = 0.25
+        case .paused: interval = 1
+        default: interval = nil
         }
-        timer.tolerance = 0.05
+        guard pollTimer?.timeInterval != interval else { return }
+        pollTimer?.invalidate()
+        pollTimer = nil
+        pollTick = 0
+        guard let interval else { return }
+        let ticksPerSecond = Int(1 / interval)
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.poll(ticksPerSecond: ticksPerSecond) }
+        }
+        timer.tolerance = interval * 0.2
         RunLoop.main.add(timer, forMode: .common)
         pollTimer = timer
     }
 
-    private func poll() {
+    private func poll(ticksPerSecond: Int) {
         guard let player, player.isReadyToPlay else { return }
         let time = player.currentPlaybackTime
-        if time.isFinite, player.playbackState != .seeking { currentTime = time }
+        if time.isFinite, player.playbackState != .seeking, currentTime != time { currentTime = time }
         let playable = player.playableTime
-        if playable.isFinite { bufferedTime = playable }
+        if playable.isFinite, bufferedTime != playable { bufferedTime = playable }
         // 部分片源打开时还不知道画面尺寸，首帧解码后才有。
         if videoSize == .zero, player.naturalSize != .zero { videoSize = player.naturalSize }
         pollTick += 1
-        if !hasLoggedHDRMetadata, pollTick % 4 == 0, let metadata = hdrStaticMetadata {
+        if !hasLoggedHDRMetadata, pollTick % ticksPerSecond == 0, let metadata = hdrStaticMetadata {
             hasLoggedHDRMetadata = true
             Log.player.info("KSPlayer HDR 元数据：\(metadata.summary, privacy: .public)")
         }
-        if pollTick % 4 == 0, let bytes = player.dynamicInfo?.bytesRead {
+        if pollTick % ticksPerSecond == 0, let bytes = player.dynamicInfo?.bytesRead {
             let now = CACurrentMediaTime()
             if let last = lastBytesRead, now > last.at, bytes >= last.bytes {
-                networkThroughput = Double(bytes - last.bytes) * 8 / (now - last.at)
+                let throughput = Double(bytes - last.bytes) * 8 / (now - last.at)
+                if networkThroughput != throughput { networkThroughput = throughput }
             }
             lastBytesRead = (bytes, now)
         }
-        updateStatus()
-        if pollTick % 20 == 0 {
+        if pollTick % (5 * ticksPerSecond) == 0 {
             Log.player.info("KSPlayer 供流：time=\(self.currentTime)s ahead=\(max(0, self.bufferedTime - self.currentTime))s inputMbps=\((self.networkThroughput ?? 0) / 1_000_000) status=\(String(describing: self.status), privacy: .public) dropped=\(player.dynamicInfo?.droppedVideoFrameCount ?? 0)")
         }
     }
@@ -468,20 +481,23 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
     private func updateStatus() {
         guard let player else { return }
         if case .failed = status { return }
-        let previous = status
-        switch player.playbackState {
+        let playbackState = player.playbackState
+        let next: PlaybackStatus
+        switch playbackState {
         case .finished:
-            status = .ended
+            next = .ended
         case .playing, .seeking:
-            status = player.loadState == .playable ? (player.playbackState == .seeking ? .buffering : .playing) : .buffering
+            next = player.loadState == .playable && playbackState == .playing ? .playing : .buffering
         case .paused, .stopped:
-            if status != .ended { status = player.isReadyToPlay ? .paused : .loading }
+            next = status == .ended ? .ended : (player.isReadyToPlay ? .paused : .loading)
         case .idle:
-            status = player.isReadyToPlay ? (wantsPlay ? .buffering : .paused) : .loading
+            next = player.isReadyToPlay ? (wantsPlay ? .buffering : .paused) : .loading
         }
-        if status != previous {
-            Log.player.info("KSPlayer 状态：\(String(describing: previous), privacy: .public) -> \(String(describing: self.status), privacy: .public) time=\(self.currentTime)s ahead=\(max(0, self.bufferedTime - self.currentTime))s")
-        }
+        guard status != next else { return }
+        let previous = status
+        status = next
+        updatePolling()
+        Log.player.info("KSPlayer 状态：\(String(describing: previous), privacy: .public) -> \(String(describing: self.status), privacy: .public) time=\(self.currentTime)s ahead=\(max(0, self.bufferedTime - self.currentTime))s")
     }
 
     /// 与系统内核相同的音频会话：静音开关下仍出声、后台继续播放、画中画可用。
@@ -500,10 +516,15 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
 
 extension KSPlayerEngine: MediaPlayerDelegate {
     public func readyToPlay(player: some MediaPlayerProtocol) {
+        guard player === self.player else { return }
         duration = player.duration.isFinite ? player.duration : 0
         videoSize = player.naturalSize
         attachVideoView()
+        if wantsPlay { player.play() }
+        if let pendingSubtitleOrdinal { selectEmbeddedSubtitle(ordinal: pendingSubtitleOrdinal) }
+        updateStatus()
         let video = player.tracks(mediaType: .video).first { $0.isEnabled }
+        let audio = player.tracks(mediaType: .audio).first { $0.isEnabled }
         let range: String?
         if video?.dovi?.dv_profile == 7 { range = "HDR10（Dolby Vision P7 基础层）" } else {
             range = video?.formatDescription.map(PlaybackMediaInfo.dynamicRange)
@@ -513,16 +534,14 @@ extension KSPlayerEngine: MediaPlayerDelegate {
             video: (video as? FFmpegAssetTrack)?.codecName ?? video?.formatDescription.map(PlaybackMediaInfo.codecName),
             videoParameters: video?.description,
             dynamicRange: video?.dovi?.dv_profile == 5 || video?.dovi?.dv_profile == 8 ? "Dolby Vision" : range,
-            audio: player.tracks(mediaType: .audio).first { $0.isEnabled }?.description
+            audio: audio?.description,
+            audioStreamIndex: audio.map { Int($0.trackID) }
         )
-        mediaInfo?.audioStreamIndex = player.tracks(mediaType: .audio).first { $0.isEnabled }.map { Int($0.trackID) }
         Log.player.info("KSPlayer readyToPlay size=\(Int(self.videoSize.width))x\(Int(self.videoSize.height)) codec=\(video?.description ?? "-", privacy: .public)")
-        if wantsPlay { player.play() }
-        if let pendingSubtitleOrdinal { selectEmbeddedSubtitle(ordinal: pendingSubtitleOrdinal) }
-        updateStatus()
     }
 
     public func changeLoadState(player: some MediaPlayerProtocol) {
+        guard player === self.player else { return }
         updateStatus()
     }
 
@@ -531,11 +550,15 @@ extension KSPlayerEngine: MediaPlayerDelegate {
     public func playBack(player: some MediaPlayerProtocol, loopCount: Int) {}
 
     public func finish(player: some MediaPlayerProtocol, error: Error?) {
+        guard player === self.player else { return }
         if let error {
             Log.player.error("KSPlayer 播放失败：\(error.localizedDescription, privacy: .public)")
             status = .failed(error.localizedDescription)
         } else {
+            let time = player.currentPlaybackTime
+            if time.isFinite, currentTime != time { currentTime = time }
             status = .ended
         }
+        updatePolling()
     }
 }

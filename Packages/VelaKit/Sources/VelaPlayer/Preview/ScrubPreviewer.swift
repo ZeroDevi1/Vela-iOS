@@ -13,7 +13,7 @@ import VelaCore
 /// 1. 用户请求按「最新优先」处理，拖动过程中只解码最后一次请求的位置；
 ///    没有精确缓存时先显示最近的已缓存帧（见 `ScrubSweep.nearDistance`），解出后再替换。
 /// 2. 直放文件在首次拖动后于后台由粗到细预生成整片网格（`ScrubSweep.positions`），
-///    之后拖到任意位置都能立即显示一张邻近帧；用户请求随时插队，主播放缓冲或倍速时暂停。
+///    之后拖到任意位置都能立即显示一张邻近帧；用户请求随时插队，后台生成由控制器决定何时让位。
 /// 3. 全屏模式（`refinesAtRest`）在手指停住后补一张高分辨率、更贴近目标时间的帧，避免放大缩略图发糊。
 /// 帧按实际帧时间去重缓存，见 `ScrubFrameCache`。
 @MainActor
@@ -61,6 +61,7 @@ public final class ScrubPreviewer {
     /// 拖动进行中；结束后迟到的解码结果只进缓存，不再显示。
     @ObservationIgnored private var active = false
     @ObservationIgnored private var worker: Task<Void, Never>?
+    @ObservationIgnored private var sweepRetry: Task<Void, Never>?
     @ObservationIgnored private var cache = ScrubFrameCache<CGImage>(costLimit: ScrubPreviewer.cacheCostLimit)
 
     /// 现场抽帧的最大宽度（像素）：小窗最宽 240pt，按 2 倍像素。
@@ -137,6 +138,8 @@ public final class ScrubPreviewer {
     public func reset() {
         worker?.cancel()
         worker = nil
+        sweepRetry?.cancel()
+        sweepRetry = nil
         providerTask?.cancel()
         providerTask = nil
         for generator in [generator, gridGenerator, refineGenerator] { generator?.cancelAllCGImageGeneration() }
@@ -159,8 +162,11 @@ public final class ScrubPreviewer {
 
     private func startWorker() {
         guard worker == nil else { return }
+        sweepRetry?.cancel()
+        sweepRetry = nil
         worker = Task { [weak self] in
             await self?.drain()
+            guard !Task.isCancelled else { return }
             self?.worker = nil
         }
     }
@@ -171,10 +177,24 @@ public final class ScrubPreviewer {
             if let time = pendingTime {
                 pendingTime = nil
                 await serve(time)
+                guard !Task.isCancelled else { return }
                 startSweepIfNeeded()
             } else if let time = restTime {
                 await refine(at: time)
             } else if !sweepQueue.isEmpty {
+                if shouldYield?() == true {
+                    // 让位时退出 worker，用户拖动可立即重启，不用等后台重试的间隔。
+                    sweepRetry = Task { [weak self] in
+                        repeat {
+                            try? await Task.sleep(for: Self.yieldPoll)
+                            guard !Task.isCancelled else { return }
+                        } while self?.shouldYield?() == true
+                        guard let self else { return }
+                        self.sweepRetry = nil
+                        self.startWorker()
+                    }
+                    return
+                }
                 await sweepStep()
             } else {
                 return
@@ -187,7 +207,7 @@ public final class ScrubPreviewer {
             publish(cached, time: time)
             return
         }
-        guard let frame = await decode(at: time) else { return }
+        guard let frame = await decode(at: time), !Task.isCancelled else { return }
         let stored = cache.insert(frame.image, time: time, frameTime: frame.time, cost: frame.image.cost, grid: false)
         // 解码期间用户可能已拖到别处：仍然展示这帧（比空白好），随后继续处理最新位置。
         publish(stored, time: time)
@@ -202,7 +222,7 @@ public final class ScrubPreviewer {
         guard case .file = source, let asset else { return }
         let generator = refineGenerator ?? Self.makeGenerator(asset: asset, width: Self.refinePixelWidth, tolerance: Self.refineTolerance)
         refineGenerator = generator
-        guard let frame = await Self.generate(generator, at: time), pendingTime == nil, restTime == nil else { return }
+        guard let frame = await Self.generate(generator, at: time), !Task.isCancelled, pendingTime == nil, restTime == nil else { return }
         publish(frame.image, time: time)
     }
 
@@ -214,15 +234,13 @@ public final class ScrubPreviewer {
     }
 
     private func sweepStep() async {
-        if shouldYield?() == true {
-            try? await Task.sleep(for: Self.yieldPoll)
-            return
-        }
         let time = sweepQueue.removeFirst()
         guard !cache.hasExact(time), let asset else { return }
         let generator = gridGenerator ?? Self.makeGenerator(asset: asset, width: Self.gridPixelWidth, tolerance: Self.fileTolerance)
         gridGenerator = generator
-        guard let frame = await Self.generate(generator, at: time) else {
+        let result = await Self.generate(generator, at: time)
+        guard !Task.isCancelled else { return }
+        guard let frame = result else {
             if pendingTime != nil {
                 // 被用户请求取消：放回队首，稍后重试。
                 sweepQueue.insert(time, at: 0)
@@ -246,7 +264,7 @@ public final class ScrubPreviewer {
     }
 
     private func decode(at time: TimeInterval) async -> Frame? {
-        guard let source = await resolvedSource() else { return nil }
+        guard let source = await resolvedSource(), !Task.isCancelled else { return nil }
         switch source {
         case .file(let url):
             let asset = asset ?? AVURLAsset(url: url)
@@ -265,6 +283,7 @@ public final class ScrubPreviewer {
         let task = providerTask ?? Task { await sourceProvider() }
         providerTask = task
         let resolved = await task.value
+        guard !Task.isCancelled else { return nil }
         // 提供方失败时不再重试，避免拖动过程中反复请求服务器。
         self.sourceProvider = nil
         source = resolved

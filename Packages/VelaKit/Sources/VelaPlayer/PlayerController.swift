@@ -118,10 +118,14 @@ public final class PlayerController {
 
     public init(engine: any PlaybackEngine = AVPlayerEngine()) {
         self.engine = engine
-        // 主播放缓冲或倍速时，预览的后台预生成让出网络与解码器。
+        // 主播放缓冲或倍速时让出解码器；网络片源还需要留出足够的连续缓冲。
         scrubPreview.shouldYield = { [weak self] in
             guard let self else { return true }
-            return self.engine.status == .buffering || self.engine.status == .loading || self.engine.rate > 1
+            let engine = self.engine
+            if engine.status == .buffering || engine.status == .loading || engine.rate > 1 { return true }
+            guard engine.status == .playing, self.source?.url.isFileURL == false, engine.duration > 0,
+                  engine.bufferedTime < engine.duration - 0.5 else { return false }
+            return engine.bufferedTime - engine.currentTime < 6
         }
     }
 

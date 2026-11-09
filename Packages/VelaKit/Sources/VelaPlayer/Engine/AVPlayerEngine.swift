@@ -59,6 +59,10 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
 
     public func load(_ source: PlaybackSource) {
         status = .loading
+        duration = 0
+        bufferedTime = 0
+        networkThroughput = nil
+        throughputTick = 0
         mediaInfo = nil
         videoDecodeIssue = nil
         loadedAt = source.startTime
@@ -77,7 +81,9 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         observeItem(item)
         player.replaceCurrentItem(with: item)
         if source.startTime > 0 {
-            player.seek(to: CMTime(seconds: source.startTime, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+            // 普通续播允许小幅靠近关键帧，减少起播时的额外解码；精准定位仍从记录的位置继续。
+            let tolerance = preciseSeeking ? CMTime.zero : CMTime(value: 1, timescale: 2)
+            player.seek(to: CMTime(seconds: source.startTime, preferredTimescale: 600), toleranceBefore: tolerance, toleranceAfter: tolerance)
         }
         play()
     }
@@ -202,15 +208,19 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
             queue: .main
         ) { [weak self] time in
             MainActor.assumeIsolated {
-                guard let self else { return }
-                self.currentTime = time.seconds.isFinite ? time.seconds : 0
-                if let range = self.player.currentItem?.loadedTimeRanges.last?.timeRangeValue {
-                    self.bufferedTime = range.end.seconds.isFinite ? range.end.seconds : 0
-                }
+                guard let self, let item = self.player.currentItem, item.status == .readyToPlay else { return }
+                let seconds = time.seconds
+                guard seconds.isFinite else { return }
+                if self.currentTime != seconds { self.currentTime = seconds }
+                // 拖动或 HLS 切换后可能存在不连续的缓冲，只有包含当前位置的区间可供连续播放。
+                let end = item.loadedTimeRanges.lazy.map(\.timeRangeValue)
+                    .first { $0.containsTime(time) }?.end.seconds
+                let buffered = end.flatMap { $0.isFinite ? $0 : nil } ?? seconds
+                if self.bufferedTime != buffered { self.bufferedTime = buffered }
                 self.throughputTick += 1
                 if self.throughputTick % 4 == 0,
-                   let observed = self.player.currentItem?.accessLog()?.events.last?.observedBitrate,
-                   observed > 0 {
+                   let observed = item.accessLog()?.events.last?.observedBitrate,
+                   observed > 0, self.networkThroughput != observed {
                     self.networkThroughput = observed
                 }
                 if self.throughputTick % 8 == 0 { self.checkVideoDecoding() }
@@ -219,9 +229,11 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
                 }
             }
         }
-        playerObservations.append(player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
-            let value = player.timeControlStatus
-            Task { @MainActor in self?.apply(timeControlStatus: value) }
+        playerObservations.append(player.observe(\.timeControlStatus, options: [.new]) { [weak self] _, _ in
+            Task { @MainActor in
+                guard let self, self.player.currentItem != nil else { return }
+                self.apply(timeControlStatus: self.player.timeControlStatus)
+            }
         })
     }
 
@@ -229,13 +241,16 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         videoSize = .zero
         itemObservations = [item.observe(\.presentationSize, options: [.new]) { [weak self] item, _ in
             let size = item.presentationSize
-            Task { @MainActor in self?.videoSize = size }
+            Task { @MainActor in
+                guard let self, self.player.currentItem === item, self.videoSize != size else { return }
+                self.videoSize = size
+            }
         }, item.observe(\.status, options: [.new]) { [weak self] item, _ in
             let status = item.status
             let message = item.error?.localizedDescription
             let seconds = item.duration.seconds
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.player.currentItem === item else { return }
                 switch status {
                 case .readyToPlay:
                     self.duration = seconds.isFinite ? seconds : 0
@@ -255,8 +270,11 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
             forName: AVPlayerItem.didPlayToEndTimeNotification,
             object: item,
             queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.status = .ended }
+        ) { [weak self, weak item] _ in
+            MainActor.assumeIsolated {
+                guard let self, let item, self.player.currentItem === item else { return }
+                self.status = .ended
+            }
         }
     }
 
@@ -273,7 +291,7 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
             let fourCC = String(decoding: [24, 16, 8, 0].map { UInt8((format.mediaSubType.rawValue >> $0) & 0xFF) }, as: UTF8.self)
             let detail = "\(fourCC) \(dimensions.width)×\(dimensions.height)"
             Log.player.error("视频无画面：\(detail, privacy: .public)")
-            guard let self, self.videoDecodeIssue != nil else { return }
+            guard let self, self.player.currentItem === item, self.videoDecodeIssue != nil else { return }
             self.videoDecodeIssue = "AVPlayer 内核无法解码该视频画面（\(detail)）：可能超过本机硬件解码上限（如 8K）或编码标签不受支持"
         }
     }
@@ -289,10 +307,12 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         Task { [weak self] in
             var info = PlaybackMediaInfo()
             for track in item.tracks {
+                guard self?.player.currentItem === item else { return }
                 guard let assetTrack = track.assetTrack,
+                      assetTrack.mediaType == .video || assetTrack.mediaType == .audio,
                       let format = try? await assetTrack.load(.formatDescriptions).first else { continue }
-                let bitrate = try? await assetTrack.load(.estimatedDataRate)
                 if assetTrack.mediaType == .video {
+                    let bitrate = try? await assetTrack.load(.estimatedDataRate)
                     info.video = PlaybackMediaInfo.codecName(format)
                     let fps = try? await assetTrack.load(.nominalFrameRate)
                     info.videoParameters = [
