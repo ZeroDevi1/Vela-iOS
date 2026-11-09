@@ -37,13 +37,27 @@ public final class AppModel {
     public var presentedPlayback: PlaybackRequest?
     /// 画中画中的播放会话：播放页收起后由这里持有，使播放继续；从小窗恢复时交还给重新呈现的播放页。
     @ObservationIgnored var pictureInPictureSession: PlayerSession?
+    @ObservationIgnored private(set) var pendingPictureInPicturePlayback: PlaybackRequest?
 
-    /// 发起新的播放：若画中画正在播放其他条目，先结束它（小窗关闭回调会结束会话并上报进度）。
+    /// 从浏览页点播其它条目时，等画中画关闭并释放旧播放器后再呈现新播放器。
     public func present(_ request: PlaybackRequest) {
-        if let session = pictureInPictureSession, session.request.id != request.id {
-            session.controller.stopPictureInPicture()
+        if let session = pictureInPictureSession,
+           pendingPictureInPicturePlayback != nil || session.request.id != request.id {
+            let needsStop = pendingPictureInPicturePlayback == nil
+            pendingPictureInPicturePlayback = request
+            if needsStop { session.controller.stopPictureInPicture() }
+            return
         }
         presentedPlayback = request
+    }
+
+    func finishPictureInPictureHandoff(from session: PlayerSession) -> Bool {
+        guard pictureInPictureSession === session, let request = pendingPictureInPicturePlayback else { return false }
+        pictureInPictureSession = nil
+        pendingPictureInPicturePlayback = nil
+        session.close()
+        presentedPlayback = request
+        return true
     }
 
     /// 服务器 id → (线路地址, client)。线路切换后地址变化，缓存随之失效。

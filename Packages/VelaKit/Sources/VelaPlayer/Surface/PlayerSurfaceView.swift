@@ -339,8 +339,11 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
     /// 播放会话结束时释放画中画资源。
     func invalidate() {
         stopSubtitleUpdates()
+        for pip in allControllers { pip.delegate = nil }
         subtitleSource?.invalidate()
         subtitleSource = nil
+        nativePictureInPicture = nil
+        controller = nil
     }
 }
 

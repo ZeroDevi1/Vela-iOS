@@ -133,6 +133,7 @@ final class PlayerSession {
     }
 
     func prepare(app: AppModel) async {
+        guard !closed else { return }
         didPrepare = true
         self.app = app
         let preferences = app.playerPreferences
@@ -181,11 +182,13 @@ final class PlayerSession {
                 let item = try await client.item(id: itemID)
                 try await start(item: item, options: request.options)
             }
+            guard !closed else { return }
             phase = .ready
             nowPlaying.activate(controller: controller)
             startLoop()
             scheduleOrientation(preferences.orientationOnEnter)
         } catch {
+            guard !closed else { return }
             Log.player.error("播放准备失败：\(error.localizedDescription, privacy: .public)")
             phase = .failed(error.localizedDescription)
         }
@@ -212,7 +215,7 @@ final class PlayerSession {
     /// - Parameter options: 只对用户从详情页发起的第一集生效；自动连播的下一集使用默认选择。
     /// - Parameter startTime: 指定起播位置（失败重试时沿用当前位置）；nil 按续播规则计算。
     private func start(item: MediaItem, options: PlaybackRequest.Options = .init(), startTime explicitStart: TimeInterval? = nil) async throws {
-        guard let app, let server, let client else { return }
+        guard !closed, let app, let server, let client else { return }
         self.item = item
         localSubtitleName = nil
         nextEpisode = nil
@@ -236,7 +239,7 @@ final class PlayerSession {
         var requested = PlaybackEngineChoice.requestedEngine(mode: mode, serverDownscaled: downscaled)
         var profile: DeviceProfile.Kind { requested.directPlaysOriginal ? .ksPlayer : .avFoundation }
         func resolve(_ profile: DeviceProfile.Kind) async throws -> ResolvedStream {
-            try await app.playbackResolver.resolve(
+            let stream = try await app.playbackResolver.resolve(
                 item: item, server: server, client: client,
                 capabilities: capabilities(for: item),
                 mediaSourceID: mediaSourceID,
@@ -245,6 +248,13 @@ final class PlayerSession {
                 audioStreamIndex: options.audioStreamIndex,
                 profile: profile
             )
+            guard !closed else {
+                if stream.method == .transcode, let session = stream.playSessionID {
+                    try? await client.stopActiveEncodings(playSessionID: session)
+                }
+                throw CancellationError()
+            }
+            return stream
         }
         var stream: ResolvedStream
         // 预加载过的下一集：服务器已开始准备，直接使用（仅系统内核、默认选项、从续播点起播时）。
@@ -1111,7 +1121,12 @@ final class PlayerSession {
                 burnSubtitleIndex: burnSubtitleIndex,
                 profile: burnSubtitleIndex == nil && preferredStreamEngine == .ksPlayer ? .ksPlayer : .avFoundation
             )
-            guard !Task.isCancelled else { return }
+            guard !closed, !Task.isCancelled else {
+                if newStream.method == .transcode, let session = newStream.playSessionID {
+                    try? await client.stopActiveEncodings(playSessionID: session)
+                }
+                return
+            }
             reporter?.stop(position: position)
             useEngine(PlaybackEngineChoice.playbackEngine(requested: preferredStreamEngine, isDirectPlay: newStream.method == .directPlay))
             configureTracks(for: newStream)

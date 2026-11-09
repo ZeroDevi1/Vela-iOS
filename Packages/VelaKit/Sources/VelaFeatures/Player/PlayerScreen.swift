@@ -268,7 +268,7 @@ public struct PlayerScreen: View {
     private func adoptSession() {
         let controller = session.controller
         PlayerBrightness.enter(app.playerPreferences)
-        if app.pictureInPictureSession === session {
+        if app.pictureInPictureSession === session, app.pendingPictureInPicturePlayback == nil {
             app.pictureInPictureSession = nil
             // 不是经由小窗「恢复」按钮回来（例如在详情页再次点播同一条目）：结束画中画，回到页内播放。
             if controller.isPictureInPictureActive, !controller.isRestoringPictureInPicture {
@@ -285,7 +285,7 @@ public struct PlayerScreen: View {
             withTransaction(instant) { app.presentedPlayback = nil }
         }
         controller.onPictureInPictureRestore = { [weak session] completion in
-            guard let session else { return completion(false) }
+            guard let session, app.pendingPictureInPicturePlayback == nil else { return completion(false) }
             withTransaction(instant) { app.presentedPlayback = session.request }
             // 等播放页挂上画面视图（下一帧布局完成）再通知系统，小窗会动画回到画面位置。
             Task {
@@ -294,7 +294,9 @@ public struct PlayerScreen: View {
             }
         }
         controller.onPictureInPictureStop = { [weak session] restored in
-            guard let session, !restored else { return }
+            guard let session else { return }
+            if app.finishPictureInPictureHandoff(from: session) { return }
+            guard !restored else { return }
             // 播放页正在显示这个会话（例如再次点播同一条目）时由播放页继续；否则是用户关闭了小窗。
             if app.presentedPlayback?.id == session.request.id, app.pictureInPictureSession !== session { return }
             if app.pictureInPictureSession === session { app.pictureInPictureSession = nil }
