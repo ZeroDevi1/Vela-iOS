@@ -114,8 +114,10 @@ public enum PlaybackEngineChoice {
         case error
         /// 有声音但解不出画面；`width` 为片源视频宽度，未知为 nil。
         case noVideoOutput(width: Int?)
-        /// 系统内核的转封装 HLS 长时间缓冲且没有推进播放。
+        /// 转封装 HLS 长时间缓冲且没有推进播放。
         case bufferingTimeout(width: Int?)
+        /// 已有连续缓冲的视频仍停滞；本地文件等片源的宽度可能未知。
+        case bufferedVideoStall(width: Int?)
     }
 
     /// 无画面时只对不超过该宽度的片源改用 KSPlayer：4K 以内多为编码标签（如 `hev1`）不被系统接受，KSPlayer 可绕过；
@@ -129,7 +131,11 @@ public enum PlaybackEngineChoice {
         after failure: SystemEngineFailure, mode: PlaybackEngineMode, serverDownscaled: Bool, isDiscImage: Bool, alreadyFellBack: Bool
     ) -> Bool {
         guard mode == .auto, !serverDownscaled, !isDiscImage, !alreadyFellBack else { return false }
-        if case .noVideoOutput(let width?) = failure, width > noVideoFallbackMaxWidth { return false }
+        switch failure {
+        case .noVideoOutput(let width?), .bufferedVideoStall(let width?):
+            if width > noVideoFallbackMaxWidth { return false }
+        default: break
+        }
         if case .bufferingTimeout(let width) = failure {
             guard let width, width > 0, width <= noVideoFallbackMaxWidth else { return false }
         }

@@ -87,6 +87,7 @@ final class PlayerSession {
     @ObservationIgnored private var ksPlayerFallbackItemID: String?
     @ObservationIgnored private var systemBufferingSince: TimeInterval?
     @ObservationIgnored private var systemBufferingPosition: TimeInterval?
+    @ObservationIgnored private var systemBufferedStallSince: TimeInterval?
     /// 睡眠定时的到期时刻；到期暂停播放并清除。nil 表示未开启。与 Android 版一致，切集后继续计时。
     private(set) var sleepDeadline: Date?
     /// 睡眠定时预设（分钟），与 Android 版相同。
@@ -436,6 +437,7 @@ final class PlayerSession {
     private func apply(stream: ResolvedStream, item: MediaItem, startTime: TimeInterval, resetMetadata: Bool) {
         systemBufferingSince = nil
         systemBufferingPosition = nil
+        systemBufferedStallSince = nil
         self.stream = stream
         (controller.engine as? any MultichannelSpatializationConfigurable)?.allowsMultichannelSpatialization = app?.playerPreferences.nativeAudio ?? true
         Log.player.info("播放方式：\(stream.method.rawValue, privacy: .public) \(Self.redacted(stream.url), privacy: .public)")
@@ -1318,21 +1320,34 @@ final class PlayerSession {
         let position = engine.currentTime
         let isPaused = !controller.isPlaying
 
-        // 仅容器转封装可尝试读原文件；烧录 / 缩放 / 视频重编码仍依赖服务器 HLS。
-        if engine.kind == .avFoundation, engine.status == .buffering, !isSwitchingStream,
-           let stream, stream.method == .transcode, stream.burnedSubtitleIndex == nil,
-           !PlaybackEngineChoice.reencodesVideo(reasons: stream.transcodeReasons) {
+        // 烧录、缩放与视频重编码仍依赖服务器 HLS。直放只有确认存在连续缓冲时才尝试换内核。
+        let isRemux = stream?.method == .transcode && stream?.burnedSubtitleIndex == nil
+            && !PlaybackEngineChoice.reencodesVideo(reasons: stream?.transcodeReasons ?? [])
+        if let avPlayer = engine as? AVPlayerEngine, engine.status == .buffering, !isSwitchingStream,
+           stream?.method != .transcode || isRemux {
             let now = ProcessInfo.processInfo.systemUptime
-            if systemBufferingSince == nil || abs(position - (systemBufferingPosition ?? position)) >= 0.5 {
+            let buffered = avPlayer.isWaitingWithBufferedVideo
+            if systemBufferingSince == nil || abs(position - (systemBufferingPosition ?? position)) >= 0.25 {
                 systemBufferingSince = now
                 systemBufferingPosition = position
+                systemBufferedStallSince = nil
             }
-            if now - (systemBufferingSince ?? now) >= 30,
-               fallBackToKSPlayerIfNeeded(after: .bufferingTimeout(width: stream.mediaSource.videoStream?.width),
+            let width = stream?.mediaSource.videoStream?.width
+            if buffered {
+                if systemBufferedStallSince == nil { systemBufferedStallSince = now }
+                if now - (systemBufferedStallSince ?? now) >= 8,
+                   fallBackToKSPlayerIfNeeded(after: .bufferedVideoStall(width: width),
+                                             detail: "已有连续视频缓冲，播放位置仍停滞 8 秒") { return }
+            } else {
+                systemBufferedStallSince = nil
+            }
+            if isRemux, now - (systemBufferingSince ?? now) >= 30,
+               fallBackToKSPlayerIfNeeded(after: .bufferingTimeout(width: width),
                                          detail: "转封装 HLS 连续缓冲 30 秒且播放位置没有推进") { return }
         } else {
             systemBufferingSince = nil
             systemBufferingPosition = nil
+            systemBufferedStallSince = nil
         }
 
         // 转码流偶发起播失败（服务器在新位置的转码尚未就绪，分片请求出错，如 CoreMedia -16046）：

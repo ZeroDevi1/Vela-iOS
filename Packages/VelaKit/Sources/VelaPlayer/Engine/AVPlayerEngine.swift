@@ -68,6 +68,17 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         return seconds.isFinite ? seconds : currentTime
     }
 
+    /// 等待中的连续缓冲从当前条目实时读取，暂停推进时的进度回调不会更新 bufferedTime。
+    public var isWaitingWithBufferedVideo: Bool {
+        guard player.timeControlStatus == .waitingToPlayAtSpecifiedRate, deferredSeek == nil,
+              !player.isExternalPlaybackActive,
+              let item = player.currentItem, item.status == .readyToPlay, !item.isPlaybackBufferEmpty,
+              item.tracks.contains(where: { $0.isEnabled && $0.assetTrack?.mediaType == .video }) else { return false }
+        let time = player.currentTime()
+        guard let end = Self.bufferEnd(in: item, at: time) else { return false }
+        return end - time.seconds >= max(3, Double(rate) * 3)
+    }
+
     public init() {
         // 由系统预估缓冲是否跟得上再起播 / 恢复，避免高码率片源在带宽不足时播一下卡一下。
         player.automaticallyWaitsToMinimizeStalling = true

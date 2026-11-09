@@ -1,0 +1,221 @@
+FFmpeg 解码遇到短暂的坏包时继续读取，持续失败则结束缓冲并上报。
+送包遇到 EAGAIN 时先取出待输出帧再重送。VideoToolbox 重建失败或遇到缺失 PTS 和 DTS
+的包时交给已有的 FFmpeg 回退；缺少帧时长时按标称帧率推进缺失时间戳的估计值。
+
+--- a/Sources/KSPlayer/MEPlayer/FFmpegDecode.swift
++++ b/Sources/KSPlayer/MEPlayer/FFmpegDecode.swift
+@@ -13,6 +13,8 @@
+     private let options: KSOptions
+     private var coreFrame: UnsafeMutablePointer<AVFrame>? = av_frame_alloc()
+     private var codecContext: UnsafeMutablePointer<AVCodecContext>?
++    private var contextError: Error?
++    private var invalidDataCount = 0
+     private var bestEffortTimestamp = Int64(0)
+     private let frameChange: FrameChange
+     private let filter: MEFilter
+@@ -27,6 +29,7 @@
+         do {
+             codecContext = try assetTrack.createContext(options: options)
+         } catch {
++            contextError = error
+             KSLog(error as CustomStringConvertible)
+         }
+         codecContext?.pointee.time_base = assetTrack.timebase.rational
+@@ -39,7 +42,21 @@
+     }
+ 
+     func decodeFrame(from packet: Packet, completionHandler: @escaping (Result<MEFrame, Error>) -> Void) {
+-        guard let codecContext, avcodec_send_packet(codecContext, packet.corePacket) == 0 else {
++        guard let codecContext, let coreFrame else {
++            completionHandler(.failure(contextError ?? NSError(errorCode: .codecContextCreate)))
++            return
++        }
++
++        var sendResult = avcodec_send_packet(codecContext, packet.corePacket)
++        if sendResult == AVError.tryAgain.code {
++            // Drain any pending output before resending a packet the decoder did not consume.
++            let receiveResult = receiveFrames(from: packet, codecContext: codecContext, coreFrame: coreFrame, completionHandler: completionHandler)
++            guard receiveResult == AVError.tryAgain.code else { return }
++            sendResult = avcodec_send_packet(codecContext, packet.corePacket)
++        }
++        guard sendResult == 0 else {
++            handleCodecError(sendResult, errorCode: packet.assetTrack.mediaType == .video ? .codecVideoSendPacket : .codecAudioSendPacket,
++                             completionHandler: completionHandler)
+             return
+         }
+ 
+@@ -61,9 +78,18 @@
+             }
+         }
+ 
++        _ = receiveFrames(from: packet, codecContext: codecContext, coreFrame: coreFrame, completionHandler: completionHandler)
++    }
++
++    private func receiveFrames(from packet: Packet, codecContext: UnsafeMutablePointer<AVCodecContext>,
++                               coreFrame: UnsafeMutablePointer<AVFrame>,
++                               completionHandler: @escaping (Result<MEFrame, Error>) -> Void) -> Int32
++    {
+         while true {
+             let result = avcodec_receive_frame(codecContext, coreFrame)
+-            if result == 0, let inputFrame = coreFrame {
++            if result == 0 {
++                invalidDataCount = 0
++                let inputFrame = coreFrame
+                 var displayData: MasteringDisplayMetadata?
+                 var contentData: ContentLightMetadata?
+                 var ambientViewingEnvironment: AmbientViewingEnvironment?
+@@ -166,7 +192,15 @@
+                             timestamp = bestEffortTimestamp
+                         }
+                         frame.timestamp = timestamp
+-                        bestEffortTimestamp = timestamp &+ frame.duration
++                        var duration = frame.duration
++                        let fps = Double(packet.assetTrack.nominalFrameRate)
++                        if duration <= 0, packet.assetTrack.mediaType == .video, (1.0 ... 240.0).contains(fps),
++                           frame.timebase.num > 0, frame.timebase.den > 0
++                        {
++                            // Advance the estimate without rewriting valid timestamps or durations.
++                            duration = max(1, frame.timebase.getPosition(from: 1 / fps))
++                        }
++                        bestEffortTimestamp = timestamp &+ duration
+                         completionHandler(.success(frame))
+                     } catch {
+                         completionHandler(.failure(error))
+@@ -175,22 +209,35 @@
+             } else {
+                 if result == AVError.eof.code {
+                     avcodec_flush_buffers(codecContext)
+-                    break
+-                } else if result == AVError.tryAgain.code {
+-                    break
+-                } else {
+-                    let error = NSError(errorCode: packet.assetTrack.mediaType == .audio ? .codecAudioReceiveFrame : .codecVideoReceiveFrame, avErrorCode: result)
+-                    KSLog(error)
+-                    completionHandler(.failure(error))
+-                }
++                } else if result != AVError.tryAgain.code {
++                    handleCodecError(result, errorCode: packet.assetTrack.mediaType == .audio ? .codecAudioReceiveFrame : .codecVideoReceiveFrame,
++                                     completionHandler: completionHandler)
++                }
++                return result
+             }
+         }
+     }
+ 
++    private func handleCodecError(_ result: Int32, errorCode: KSPlayerErrorCode,
++                                  completionHandler: (Result<MEFrame, Error>) -> Void)
++    {
++        // A damaged packet can be followed by decodable frames. A sustained error must still fail the track.
++        if result == AVError.invalidData.code {
++            invalidDataCount += 1
++            if invalidDataCount < 120 { return }
++        }
++        let error = NSError(errorCode: errorCode, avErrorCode: result)
++        KSLog(error)
++        completionHandler(.failure(error))
++    }
++
+     func doFlushCodec() {
++        invalidDataCount = 0
+         bestEffortTimestamp = Int64(0)
+         // seek之后要清空下，不然解码可能还会有缓存，导致返回的数据是之前seek的。
+-        avcodec_flush_buffers(codecContext)
++        if let codecContext {
++            avcodec_flush_buffers(codecContext)
++        }
+     }
+ 
+     func shutdown() {
+@@ -200,9 +247,6 @@
+     }
+ 
+     func decode() {
+-        bestEffortTimestamp = Int64(0)
+-        if codecContext != nil {
+-            avcodec_flush_buffers(codecContext)
+-        }
++        doFlushCodec()
+     }
+ }
+--- a/Sources/KSPlayer/MEPlayer/MEPlayerItemTrack.swift
++++ b/Sources/KSPlayer/MEPlayer/MEPlayerItemTrack.swift
+@@ -161,14 +161,17 @@
+                     self.outputRenderQueue.fps = packet.assetTrack.nominalFrameRate
+                 }
+             } catch {
++                guard self.state == .decoding,
++                      self.decoderMap[packet.assetTrack.trackID] === decoder else { return }
+                 KSLog("Decoder did Failed : \(error)")
+                 if decoder is VideoToolboxDecode {
++                    self.decoderMap[packet.assetTrack.trackID] = FFmpegDecode(assetTrack: packet.assetTrack, options: self.options)
+                     decoder.shutdown()
+-                    self.decoderMap[packet.assetTrack.trackID] = FFmpegDecode(assetTrack: packet.assetTrack, options: self.options)
+-                    KSLog("VideoCodec switch to software decompression")
++                    KSLog("VideoCodec switch to FFmpeg decompression")
+                     self.doDecode(packet: packet)
+                 } else {
+                     self.state = .failed
++                    self.delegate?.codecDidFail(error: error)
+                 }
+             }
+         }
+@@ -295,7 +298,7 @@
+     }
+ }
+ 
+-protocol DecodeProtocol {
++protocol DecodeProtocol: AnyObject {
+     func decode()
+     func decodeFrame(from packet: Packet, completionHandler: @escaping (Result<MEFrame, Error>) -> Void)
+     func doFlushCodec()
+--- a/Sources/KSPlayer/MEPlayer/Model.swift
++++ b/Sources/KSPlayer/MEPlayer/Model.swift
+@@ -44,6 +44,7 @@
+ 
+ protocol CodecCapacityDelegate: AnyObject {
+     func codecDidFinished(track: some CapacityProtocol)
++    func codecDidFail(error: Error)
+ }
+ 
+ protocol MEPlayerDelegate: AnyObject {
+--- a/Sources/KSPlayer/MEPlayer/MEPlayerItem.swift
++++ b/Sources/KSPlayer/MEPlayer/MEPlayerItem.swift
+@@ -750,6 +750,14 @@
+         }
+     }
+ 
++    func codecDidFail(error: Error) {
++        runOnMainThread { [weak self] in
++            guard let self, state != .closed, state != .failed else { return }
++            self.error = error as NSError
++            condition.signal()
++        }
++    }
++
+     func codecDidFinished(track: some CapacityProtocol) {
+         if track.mediaType == .audio {
+             isAudioStalled = true
+--- a/Sources/KSPlayer/MEPlayer/VideoToolboxDecode.swift
++++ b/Sources/KSPlayer/MEPlayer/VideoToolboxDecode.swift
+@@ -38,11 +38,20 @@
+     func decodeFrame(from packet: Packet, completionHandler: @escaping (Result<MEFrame, Error>) -> Void) {
+         if needReconfig {
+             // 解决从后台切换到前台，解码失败的问题
+-            session = DecompressionSession(assetTrack: session.assetTrack, options: options)!
++            guard let replacement = DecompressionSession(assetTrack: session.assetTrack, options: options) else {
++                completionHandler(.failure(NSError(errorCode: .codecContextCreate)))
++                return
++            }
++            session = replacement
+             doFlushCodec()
+             needReconfig = false
+         }
+         guard let corePacket = packet.corePacket?.pointee, let data = corePacket.data else {
++            return
++        }
++        guard corePacket.pts != Int64.min || corePacket.dts != Int64.min else {
++            KSLog("[VideoToolbox] packet has neither PTS nor DTS, switch to FFmpeg")
++            completionHandler(.failure(NSError(errorCode: .codecVideoReceiveFrame, avErrorCode: 0)))
+             return
+         }
+         // Vela: VideoToolbox emits frames in decode order and the display queue sorts them by pts, so decode-order
