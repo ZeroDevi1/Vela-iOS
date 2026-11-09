@@ -80,11 +80,18 @@ public struct PlaybackMediaInfo: Sendable {
     /// 原文件直放时的实际音轨 stream index；HLS 的轨序号不能用来匹配原文件。
     public var audioStreamIndex: Int?
 
-    public init(video: String? = nil, videoParameters: String? = nil, dynamicRange: String? = nil, audio: String? = nil) {
+    public init(
+        video: String? = nil,
+        videoParameters: String? = nil,
+        dynamicRange: String? = nil,
+        audio: String? = nil,
+        audioStreamIndex: Int? = nil
+    ) {
         self.video = video
         self.videoParameters = videoParameters
         self.dynamicRange = dynamicRange
         self.audio = audio
+        self.audioStreamIndex = audioStreamIndex
     }
 
     static func codecName(_ format: CMFormatDescription) -> String {
