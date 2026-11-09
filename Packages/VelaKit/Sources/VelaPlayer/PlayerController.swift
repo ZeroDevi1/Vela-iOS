@@ -112,6 +112,7 @@ public final class PlayerController {
     public let scrubPreview = ScrubPreviewer()
     @ObservationIgnored private var rateBeforeHold: Float = 1
     @ObservationIgnored private var hideTask: Task<Void, Never>?
+    @ObservationIgnored private var scrubSeekTask: Task<Void, Never>?
     /// 菜单等弹出层打开期间固定显示控制层；自动隐藏会连带关闭菜单。
     @ObservationIgnored private var pinCount = 0
     @ObservationIgnored private var hudTask: Task<Void, Never>?
@@ -122,6 +123,7 @@ public final class PlayerController {
         scrubPreview.shouldYield = { [weak self] in
             guard let self else { return true }
             let engine = self.engine
+            if (engine as? AVPlayerEngine)?.deferredSeekPosition != nil { return true }
             if engine.status == .buffering || engine.status == .loading || engine.rate > 1 { return true }
             guard engine.status == .playing, self.source?.url.isFileURL == false, engine.duration > 0,
                   engine.bufferedTime < engine.duration - 0.5 else { return false }
@@ -131,6 +133,7 @@ public final class PlayerController {
 
     /// 加载新条目。`resetMetadata` 为 false 时保留片段与字幕（同一条目切换音轨 / 码流时使用）。
     public func load(_ source: PlaybackSource, resetMetadata: Bool = true) {
+        scrubSeekTask?.cancel()
         self.source = source
         if resetMetadata {
             // 新条目：识别为 VR 时默认转平面（与 Android 版一致），可在菜单中关闭或改选排布。
@@ -156,6 +159,7 @@ public final class PlayerController {
     /// 替换内核：停止旧内核并保留倍速设置。调用方随后需重新 `load`。
     public func replaceEngine(_ newEngine: any PlaybackEngine) {
         guard ObjectIdentifier(newEngine) != ObjectIdentifier(engine) else { return }
+        scrubSeekTask?.cancel()
         let rate = engine.rate
         let isMuted = engine.isMuted
         engine.stop()
@@ -194,6 +198,7 @@ public final class PlayerController {
         onPictureInPictureStart = nil
         onPictureInPictureRestore = nil
         onPictureInPictureStop = nil
+        scrubSeekTask?.cancel()
         hideTask?.cancel()
         hudTask?.cancel()
         upNextTask?.cancel()
@@ -341,7 +346,9 @@ public final class PlayerController {
     }
 
     public func skip(by seconds: TimeInterval) {
-        let target = engine.currentTime + seconds
+        let engine = engine
+        let origin = (engine as? AVPlayerEngine)?.deferredSeekPosition ?? engine.currentTime
+        let target = origin + seconds
         Task { await engine.seek(to: target) }
         flashHUD(.skip(seconds: seconds))
     }
@@ -480,6 +487,8 @@ public final class PlayerController {
 
     /// 开始拖动：同时显示控制层，预览帧与时间指示都挂在控制层上。
     public func beginScrub() {
+        scrubSeekTask?.cancel()
+        (engine as? AVPlayerEngine)?.cancelDeferredSeek()
         scrubOrigin = engine.currentTime
         scrubTime = scrubOrigin
         controlsVisible = true
@@ -515,7 +524,11 @@ public final class PlayerController {
             scheduleAutoHide()
         }
         guard commit, let target = scrubTime else { return }
-        Task { await engine.seek(to: target) }
+        let engine = engine
+        scrubSeekTask = Task {
+            guard !Task.isCancelled else { return }
+            await engine.seek(to: target)
+        }
     }
 
     // MARK: - 长按倍速

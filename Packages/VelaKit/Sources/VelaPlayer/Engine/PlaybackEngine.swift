@@ -237,6 +237,8 @@ public struct PlaybackSource: Sendable, Hashable {
     public var forwardBufferDuration: TimeInterval
     /// 原文件总码率（bps），供高码率流选择缓冲恢复门槛；未知时沿用内核默认值。
     public var bitrate: Int?
+    /// 同一地址可以独立读取两个进度；服务端转码或转封装不具备这个条件。
+    public var allowsSeekPreloading: Bool
 
     public init(
         url: URL,
@@ -246,7 +248,8 @@ public struct PlaybackSource: Sendable, Hashable {
         httpHeaders: [String: String] = [:],
         vrLayout: VRLayout? = nil,
         forwardBufferDuration: TimeInterval = 0,
-        bitrate: Int? = nil
+        bitrate: Int? = nil,
+        allowsSeekPreloading: Bool = false
     ) {
         self.url = url
         self.title = title
@@ -256,5 +259,6 @@ public struct PlaybackSource: Sendable, Hashable {
         self.vrLayout = vrLayout
         self.forwardBufferDuration = forwardBufferDuration
         self.bitrate = bitrate
+        self.allowsSeekPreloading = allowsSeekPreloading
     }
 }

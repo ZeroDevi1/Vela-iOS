@@ -15,7 +15,6 @@ import QuartzCore
 final class SubtitlePictureInPictureSource: NSObject {
     let displayLayer = AVSampleBufferDisplayLayer()
     private(set) var pictureInPicture: AVPictureInPictureController?
-    private let player: AVPlayer
     private let burner: SubtitleBurner
     private weak var controller: PlayerController?
     private let pump: FramePump
@@ -27,7 +26,6 @@ final class SubtitlePictureInPictureSource: NSObject {
     var isPossible: Bool { pictureInPicture?.isPictureInPicturePossible == true }
 
     init(player: AVPlayer, controller: PlayerController, burner: SubtitleBurner) {
-        self.player = player
         self.controller = controller
         self.burner = burner
         pump = FramePump(layer: displayLayer, burner: burner)
@@ -38,7 +36,12 @@ final class SubtitlePictureInPictureSource: NSObject {
         possibleObservation = pictureInPicture?.observe(\.isPictureInPicturePossible, options: [.new]) { [weak self] _, _ in
             Task { @MainActor in self?.onPossibleChange?() }
         }
-        // 播放器换码流（切换音轨 / 画质）时 currentItem 会变，输出要跟着挂到新条目上。
+        setPlayer(player)
+    }
+
+    /// 换码流或接管跳转预热的播放器时，将输出挂到实际播放的条目。
+    func setPlayer(_ player: AVPlayer) {
+        itemObservation = nil
         itemObservation = player.observe(\.currentItem, options: [.initial, .new]) { [weak self] player, _ in
             let item = player.currentItem
             MainActor.assumeIsolated { self?.pump.attach(to: item) }

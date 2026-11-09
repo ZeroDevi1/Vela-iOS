@@ -116,6 +116,7 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
     /// 画中画期间按 10 Hz 更新要画进画面的字幕文字。
     private var subtitleTimer: Timer?
     private var lastToggleRequest: Int
+    private var isStartingPictureInPicture = false
     private weak var controller: PlayerController?
     private weak var player: AVPlayer?
 
@@ -128,6 +129,21 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
         case .avPlayer(let player):
             view.player = player
             self.player = player
+            #if os(iOS)
+            if let engine = controller.engine as? AVPlayerEngine {
+                engine.canReplacePresentationPlayer = { [weak self] in
+                    guard let self, let controller = self.controller else { return false }
+                    return self.view.window?.windowScene?.activationState == .foregroundActive &&
+                        self.view.player != nil && !controller.vrEnabled && !controller.isPictureInPictureActive &&
+                        !self.isStartingPictureInPicture && self.activePictureInPicture == nil
+                }
+                engine.replacePresentationPlayer = { [weak self] player in
+                    self?.player = player
+                    self?.view.player = player
+                    self?.subtitleSource?.setPlayer(player)
+                }
+            }
+            #endif
             guard AVPictureInPictureController.isPictureInPictureSupported() else { break }
             let pip = AVPictureInPictureController(playerLayer: view.activeLayer)
             pip?.delegate = self
@@ -238,6 +254,7 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
     }
 
     func pictureInPictureControllerWillStartPictureInPicture(_ pip: AVPictureInPictureController) {
+        isStartingPictureInPicture = true
         #if os(macOS)
         selectManifestSubtitleForPictureInPicture()
         #endif
@@ -260,6 +277,7 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
     #endif
 
     func pictureInPictureControllerDidStartPictureInPicture(_ pip: AVPictureInPictureController) {
+        isStartingPictureInPicture = false
         if pip === subtitleSource?.pictureInPicture {
             subtitleSource?.didStart()
             // 画中画期间 AVPlayer 只输出到视频输出：仍挂在 AVPlayerLayer 上的播放器切到后台会被系统暂停。
@@ -282,6 +300,13 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
         #endif
         controller?.isPictureInPictureActive = true
         controller?.onPictureInPictureStart?()
+    }
+
+    func pictureInPictureController(
+        _ pip: AVPictureInPictureController,
+        failedToStartPictureInPictureWithError error: any Error
+    ) {
+        isStartingPictureInPicture = false
     }
 
     func pictureInPictureController(

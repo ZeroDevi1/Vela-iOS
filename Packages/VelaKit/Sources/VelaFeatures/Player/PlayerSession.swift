@@ -165,7 +165,7 @@ final class PlayerSession {
                 }
                 // 离线 / 外部地址没有服务器元数据，只按路径（文件名）识别 VR 排布。
                 let vrLayout = VRLayoutParser.parse(mediaSourcePath: url.path)
-                controller.load(PlaybackSource(url: url, title: request.title, vrLayout: vrLayout))
+                controller.load(PlaybackSource(url: url, title: request.title, vrLayout: vrLayout, allowsSeekPreloading: true))
                 // 外部地址不涉及服务器转码会话，预览可以直接用同一地址。
                 controller.scrubPreview.configure(url.pathExtension.lowercased() == "m3u8" ? .stream(url) : .file(url),
                                                   allowsSweep: previewAllowsSweep(url))
@@ -464,7 +464,8 @@ final class PlayerSession {
                 forwardBufferDuration: app?.playerPreferences.forwardBufferDuration(
                     bitrate: stream.mediaSource.bitrate, isMetered: app?.network.isMetered ?? true
                 ) ?? 0,
-                bitrate: stream.mediaSource.bitrate
+                bitrate: stream.mediaSource.bitrate,
+                allowsSeekPreloading: stream.method == .directPlay
             ),
             resetMetadata: resetMetadata
         )
