@@ -1323,7 +1323,7 @@ final class PlayerSession {
         // 烧录、缩放与视频重编码仍依赖服务器 HLS。直放只有确认存在连续缓冲时才尝试换内核。
         let isRemux = stream?.method == .transcode && stream?.burnedSubtitleIndex == nil
             && !PlaybackEngineChoice.reencodesVideo(reasons: stream?.transcodeReasons ?? [])
-        if let avPlayer = engine as? AVPlayerEngine, engine.status == .buffering, !isSwitchingStream,
+        if let avPlayer = engine as? AVPlayerEngine, engine.status == .buffering, engine.pendingSeekPosition == nil, !isSwitchingStream,
            stream?.method != .transcode || isRemux {
             let now = ProcessInfo.processInfo.systemUptime
             let buffered = avPlayer.isWaitingWithBufferedVideo
@@ -1389,14 +1389,17 @@ final class PlayerSession {
             engine.pause()
             controller.showMessage("睡眠定时已到，已暂停播放", symbol: "moon.zzz.fill", duration: .seconds(4))
         }
-        autoSkipIfNeeded()
-        preloadNextIfNeeded(position: position, duration: engine.duration)
+        if engine.pendingSeekPosition == nil {
+            autoSkipIfNeeded()
+            preloadNextIfNeeded(position: position, duration: engine.duration)
+        }
         if let pendingOrientation, engine.videoSize != .zero {
             self.pendingOrientation = nil
             applyOrientation(pendingOrientation)
         }
 
-        if let next = nextEpisode, shouldPresentUpNext(position: position, duration: engine.duration, ended: engine.status == .ended) {
+        if engine.pendingSeekPosition == nil, let next = nextEpisode,
+           shouldPresentUpNext(position: position, duration: engine.duration, ended: engine.status == .ended) {
             controller.presentUpNext(
                 .init(
                     title: partPosition.map { "第 \($0.index + 1) 段 · \(next.name)" }

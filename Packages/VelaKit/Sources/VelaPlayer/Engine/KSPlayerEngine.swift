@@ -21,6 +21,7 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
     public private(set) var currentTime: TimeInterval = 0
     public private(set) var duration: TimeInterval = 0
     public private(set) var bufferedTime: TimeInterval = 0
+    public private(set) var pendingSeekPosition: TimeInterval?
     public private(set) var rate: Float = 1
     public private(set) var isMuted = false
     public private(set) var networkThroughput: Double?
@@ -50,7 +51,11 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
     /// 渲染容器：KSMEPlayer 的视频视图挂在其中并铺满。由 `PlayerSurface` 放进视图层级。
     @ObservationIgnored public let containerView = PlayerPlatformView()
     @ObservationIgnored private var player: KSMEPlayer?
-    @ObservationIgnored private var options: KSOptions?
+    @ObservationIgnored private var options: SeekBufferOptions?
+    @ObservationIgnored private var isNetworkSource = false
+    @ObservationIgnored private var seekTask: Task<Void, Never>?
+    @ObservationIgnored private var seekAttempt: SeekAttempt?
+    @ObservationIgnored private var seekRevision = UUID()
     @ObservationIgnored private var pollTimer: Timer?
     /// 起播请求：KSMEPlayer 必须在 `readyToPlay` 之后才能 `play()`。
     @ObservationIgnored private var wantsPlay = false
@@ -77,7 +82,7 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
     public var surface: PlaybackSurface { .view(containerView) }
 
     public var preciseCurrentTime: TimeInterval {
-        guard let player, player.isReadyToPlay else { return currentTime }
+        guard pendingSeekPosition == nil, let player, player.isReadyToPlay else { return currentTime }
         let time = player.currentPlaybackTime
         return time.isFinite ? time : currentTime
     }
@@ -99,6 +104,8 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
     // MARK: - 播放控制
 
     public func load(_ source: PlaybackSource) {
+        cancelSeek()
+        isNetworkSource = SeekBufferPolicy.isNetworkSource(source.url)
         status = .loading
         updatePolling()
         currentTime = source.startTime
@@ -116,7 +123,7 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
         pendingSubtitleOrdinal = selectedSubtitleOrdinal
         activateAudioSession()
 
-        let options = KSOptions()
+        let options = SeekBufferOptions()
         options.hardwareDecode = configuration.hardwareDecoding
         options.asynchronousDecompression = configuration.asynchronousDecompression
         options.decoderOptions["threads"] = configuration.decodeThreads > 0 ? String(configuration.decodeThreads) : "auto"
@@ -192,8 +199,13 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
     public func play() {
         wantsPlay = true
         guard let player, player.isReadyToPlay else { return }
+        if pendingSeekPosition != nil {
+            updateStatus()
+            return
+        }
         if status == .ended {
             Task { await seek(to: 0) }
+            return
         }
         player.play()
         updateStatus()
@@ -206,23 +218,118 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
     }
 
     public func seek(to seconds: TimeInterval) async {
+        guard seconds.isFinite, !Task.isCancelled else { return }
         let target = duration > 0 ? min(max(0, seconds), duration) : max(0, seconds)
-        currentTime = target
-        if isImageSubtitle {
-            activeSubtitleParts = []
-            subtitleImageCache = [:]
-        }
-        if status == .ended { status = .paused }
-        guard let player, player.isReadyToPlay else {
+        guard let player, player.isReadyToPlay, let options else {
+            currentTime = target
             options?.startPlayTime = target
             return
         }
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            player.seek(time: target) { _ in continuation.resume() }
+
+        seekRevision = UUID()
+        pendingSeekPosition = target
+        if seekTask == nil {
+            seekTask = Task { [weak self] in
+                await self?.performSeeks(player: player, options: options)
+            }
         }
-        // KSMEPlayer 在 seek 期间把播放状态置为 seeking；完成后按用户意图恢复。
-        if wantsPlay { player.play() } else { player.pause() }
-        updateStatus()
+        await seekTask?.value
+    }
+
+    private func performSeeks(player: KSMEPlayer, options: SeekBufferOptions) async {
+        // FFmpeg 同时只保留一个 seek 回调。先等当前跳转返回，再处理最新目标，避免回调被覆盖。
+        while let target = pendingSeekPosition, !Task.isCancelled {
+            let revision = seekRevision
+            let shouldBuffer = isNetworkSource && player.seekable && wantsPlay && duration - target > 0.1
+            let deadline = ContinuousClock.now + SeekBufferPolicy.maximumWait
+            if isImageSubtitle {
+                activeSubtitleParts = []
+                subtitleImageCache = [:]
+            }
+            let finished = await withCheckedContinuation { continuation in
+                let attempt = SeekAttempt(continuation: continuation)
+                seekAttempt = attempt
+                player.seek(time: target) { [weak attempt] finished in
+                    MainActor.assumeIsolated { attempt?.complete(finished) }
+                }
+                updateStatus()
+            }
+            guard !Task.isCancelled else { return }
+            seekAttempt = nil
+            guard revision == seekRevision else { continue }
+
+            let sampleBeforeBuffering = options.bufferSample.revision
+            if finished, shouldBuffer {
+                while wantsPlay, revision == seekRevision, !Task.isCancelled, ContinuousClock.now < deadline {
+                    let sample = options.bufferSample
+                    let required = SeekBufferPolicy.targetDuration(
+                        at: target, duration: duration, rate: rate, bufferLimit: options.maxBufferDuration
+                    )
+                    if sample.revision != sampleBeforeBuffering, sample.isPlayable,
+                       sample.isEndOfFile || (sample.loadedTime.isFinite && sample.loadedTime + 0.1 >= required) { break }
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
+
+            guard !Task.isCancelled else { return }
+            guard revision == seekRevision else { continue }
+            pendingSeekPosition = nil
+            seekTask = nil
+            if finished {
+                currentTime = target
+                let playable = player.playableTime
+                bufferedTime = playable.isFinite ? max(target, playable) : target
+            }
+            if status == .ended { status = .paused }
+            if wantsPlay { player.play() } else { player.pause() }
+            updateStatus()
+            return
+        }
+    }
+
+    private func cancelSeek() {
+        seekTask?.cancel()
+        seekTask = nil
+        seekAttempt?.complete(false)
+        seekAttempt = nil
+        pendingSeekPosition = nil
+    }
+
+    @MainActor
+    private final class SeekAttempt {
+        private var continuation: CheckedContinuation<Bool, Never>?
+
+        init(continuation: CheckedContinuation<Bool, Never>) {
+            self.continuation = continuation
+        }
+
+        func complete(_ finished: Bool) {
+            continuation?.resume(returning: finished)
+            continuation = nil
+        }
+    }
+
+    private final class SeekBufferOptions: KSOptions {
+        struct BufferSample: Sendable {
+            var revision = 0
+            var loadedTime: TimeInterval = 0
+            var isPlayable = false
+            var isEndOfFile = false
+        }
+
+        private let sample = OSAllocatedUnfairLock(initialState: BufferSample())
+        var bufferSample: BufferSample { sample.withLock { $0 } }
+
+        override func playable(capacitys: [any CapacityProtocol], isFirst: Bool, isSeek: Bool) -> LoadingState {
+            let state = super.playable(capacitys: capacitys, isFirst: isFirst, isSeek: isSeek)
+            let snapshot = BufferSample(loadedTime: state.loadedTime, isPlayable: state.isPlayable, isEndOfFile: state.isEndOfFile)
+            sample.withLock {
+                let revision = $0.revision &+ 1
+                $0 = snapshot
+                $0.revision = revision
+            }
+            return state
+        }
     }
 
     public func currentFrameRate() -> Double? {
@@ -381,6 +488,7 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
     }
 
     public func stop() {
+        cancelSeek()
         pollTimer?.invalidate()
         pollTimer = nil
         wantsPlay = false
@@ -455,9 +563,11 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
     private func poll(ticksPerSecond: Int) {
         guard let player, player.isReadyToPlay else { return }
         let time = player.currentPlaybackTime
-        if time.isFinite, player.playbackState != .seeking, currentTime != time { currentTime = time }
-        let playable = player.playableTime
-        if playable.isFinite, bufferedTime != playable { bufferedTime = playable }
+        if pendingSeekPosition == nil {
+            if time.isFinite, player.playbackState != .seeking, currentTime != time { currentTime = time }
+            let playable = player.playableTime
+            if playable.isFinite, bufferedTime != playable { bufferedTime = playable }
+        }
         // 部分片源打开时还不知道画面尺寸，首帧解码后才有。
         if videoSize == .zero, player.naturalSize != .zero { videoSize = player.naturalSize }
         pollTick += 1
@@ -484,6 +594,8 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
         let playbackState = player.playbackState
         let next: PlaybackStatus
         switch playbackState {
+        case _ where pendingSeekPosition != nil:
+            next = wantsPlay ? .buffering : .paused
         case .finished:
             next = .ended
         case .playing, .seeking:
@@ -552,6 +664,7 @@ extension KSPlayerEngine: MediaPlayerDelegate {
     public func finish(player: some MediaPlayerProtocol, error: Error?) {
         guard player === self.player else { return }
         if let error {
+            cancelSeek()
             Log.player.error("KSPlayer 播放失败：\(error.localizedDescription, privacy: .public)")
             status = .failed(error.localizedDescription)
         } else {

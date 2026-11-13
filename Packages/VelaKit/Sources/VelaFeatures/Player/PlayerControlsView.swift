@@ -369,7 +369,7 @@ struct PlayerControlsView: View {
     @ViewBuilder
     private var macPlayPauseButton: some View {
         let status = controller.engine.status
-        if status == .buffering || status == .loading || session.isSwitchingStream {
+        if (status == .buffering && controller.engine.pendingSeekPosition == nil) || status == .loading || session.isSwitchingStream {
             ProgressView().controlSize(.small).tint(.white)
                 .frame(width: 40, height: 40)
         } else {
@@ -493,7 +493,7 @@ struct PlayerControlsView: View {
     /// 播放 / 暂停；缓冲时转圈占据按钮位置。开启「长按播放暂停键退出播放器」时长按关闭播放器。
     private var playPauseButton: some View {
         let status = controller.engine.status
-        let buffering = status == .buffering || status == .loading || session.isSwitchingStream
+        let buffering = (status == .buffering && controller.engine.pendingSeekPosition == nil) || status == .loading || session.isSwitchingStream
         return ZStack {
             Circle().fill(Self.buttonFill)
             if buffering {

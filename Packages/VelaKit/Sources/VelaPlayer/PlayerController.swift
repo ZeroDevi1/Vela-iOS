@@ -123,7 +123,7 @@ public final class PlayerController {
         scrubPreview.shouldYield = { [weak self] in
             guard let self else { return true }
             let engine = self.engine
-            if (engine as? AVPlayerEngine)?.deferredSeekPosition != nil { return true }
+            if engine.pendingSeekPosition != nil { return true }
             if engine.status == .buffering || engine.status == .loading || engine.rate > 1 { return true }
             guard engine.status == .playing, self.source?.url.isFileURL == false, engine.duration > 0,
                   engine.bufferedTime < engine.duration - 0.5 else { return false }
@@ -254,8 +254,8 @@ public final class PlayerController {
             for remaining in stride(from: seconds - 1, through: 0, by: -1) {
                 try? await Task.sleep(for: .seconds(1))
                 guard !Task.isCancelled, let self else { return }
-                // 暂停时冻结倒计时，避免用户暂停查看片尾时被强制切走。
-                while !self.isPlaying && self.engine.status != .ended {
+                // 暂停或跳转时冻结倒计时，等当前位置确定后再继续。
+                while self.engine.pendingSeekPosition != nil || (!self.isPlaying && self.engine.status != .ended) {
                     try? await Task.sleep(for: .milliseconds(300))
                     if Task.isCancelled { return }
                 }
@@ -346,8 +346,9 @@ public final class PlayerController {
     }
 
     public func skip(by seconds: TimeInterval) {
+        cancelUpNext()
         let engine = engine
-        let origin = (engine as? AVPlayerEngine)?.deferredSeekPosition ?? engine.currentTime
+        let origin = engine.pendingSeekPosition ?? engine.currentTime
         let target = origin + seconds
         Task { await engine.seek(to: target) }
         flashHUD(.skip(seconds: seconds))
@@ -487,9 +488,8 @@ public final class PlayerController {
 
     /// 开始拖动：同时显示控制层，预览帧与时间指示都挂在控制层上。
     public func beginScrub() {
-        scrubSeekTask?.cancel()
-        (engine as? AVPlayerEngine)?.cancelDeferredSeek()
-        scrubOrigin = engine.currentTime
+        scrubOrigin = engine.pendingSeekPosition ?? engine.currentTime
+        (engine as? AVPlayerEngine)?.cancelUncommittedSeek()
         scrubTime = scrubOrigin
         controlsVisible = true
         hideTask?.cancel()
@@ -524,6 +524,8 @@ public final class PlayerController {
             scheduleAutoHide()
         }
         guard commit, let target = scrubTime else { return }
+        cancelUpNext()
+        scrubSeekTask?.cancel()
         let engine = engine
         scrubSeekTask = Task {
             guard !Task.isCancelled else { return }

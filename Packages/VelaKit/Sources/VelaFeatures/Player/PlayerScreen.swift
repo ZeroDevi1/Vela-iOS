@@ -128,10 +128,22 @@ public struct PlayerScreen: View {
                     }
                     .foregroundStyle(.white)
                 }
-                // 控制层显示时播放键本身会转圈（与 Android 版一致），这里只在控制层隐藏时显示。
-                if !session.controller.controlsVisible || session.controller.isLocked || isMiniWindow,
-                   session.isSwitchingStream || session.controller.engine.status == .buffering
-                    || session.controller.engine.status == .loading {
+                if let target = session.controller.engine.pendingSeekPosition, !isMiniWindow {
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small).tint(.white)
+                        Text("正在缓冲 \(PlayerTime.format(target))").monospacedDigit()
+                    }
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.black.opacity(0.72), in: .capsule)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .padding(.top, 60)
+                    .allowsHitTesting(false)
+                } else if !session.controller.controlsVisible || session.controller.isLocked || isMiniWindow,
+                          session.isSwitchingStream || session.controller.engine.status == .buffering
+                            || session.controller.engine.status == .loading {
                     ProgressView().controlSize(isMiniWindow ? .regular : .large).tint(.white).allowsHitTesting(false)
                 }
                 if !isMiniWindow {
