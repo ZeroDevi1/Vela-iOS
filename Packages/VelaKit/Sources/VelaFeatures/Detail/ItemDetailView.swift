@@ -573,19 +573,14 @@ private struct DetailHero: View {
             .frame(height: isCompact ? 480 : 560)
             .frame(maxWidth: .infinity)
             .overlay {
-                RemoteArtwork(
-                    url: style == .poster
-                        ? client?.imageURL(for: item, kind: .primary, maxWidth: 1200)
-                        : client?.imageURL(for: item, kind: .backdrop, maxWidth: 1920)
-                            ?? client?.imageURL(for: item, kind: .primary, maxWidth: 1200),
-                    placeholderSymbol: "film"
-                )
+                DetailHeroArtwork(item: item, client: client, style: style, posterWidth: 1200, backdropWidth: 1920)
             }
             .overlay {
                 LinearGradient(
                     stops: [.init(color: .clear, location: 0.35), .init(color: .black.opacity(0.85), location: 1)],
                     startPoint: .top, endPoint: .bottom
                 )
+                .allowsHitTesting(false)
             }
             .clipped()
             .overlay(alignment: .bottom) { titleBlock.velaPageMargin().padding(.bottom, VelaTheme.Spacing.l) }

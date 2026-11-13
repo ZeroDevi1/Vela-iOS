@@ -106,13 +106,17 @@ public struct RemoteImageInfo: Decodable, Identifiable, Sendable {
 public struct RemoteImagesResult: Decodable, Sendable {
     public var images: [RemoteImageInfo]
     public var providers: [String]
+    public var totalRecordCount: Int?
 
-    enum CodingKeys: String, CodingKey { case images = "Images", providers = "Providers" }
+    enum CodingKeys: String, CodingKey {
+        case images = "Images", providers = "Providers", totalRecordCount = "TotalRecordCount"
+    }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         images = try container.decodeIfPresent([RemoteImageInfo].self, forKey: .images) ?? []
         providers = try container.decodeIfPresent([String].self, forKey: .providers) ?? []
+        totalRecordCount = try container.decodeIfPresent(Int.self, forKey: .totalRecordCount)
     }
 }
 
@@ -265,12 +269,17 @@ extension MediaServerClient {
     }
 
     /// 远程候选图片；`type` 为 `Primary` / `Backdrop` / `Logo` / `Thumb` 等，`providerName` 为 nil 时查询全部提供方。
-    public func remoteImages(itemID: String, type: String, providerName: String?, allLanguages: Bool) async throws -> RemoteImagesResult {
+    public func remoteImages(
+        itemID: String, type: String, providerName: String?, allLanguages: Bool,
+        startIndex: Int = 0, limit: Int? = nil
+    ) async throws -> RemoteImagesResult {
         var query: [URLQueryItem] = [
             .init(name: "Type", value: type),
             .init(name: "IncludeAllLanguages", value: allLanguages ? "true" : "false"),
         ]
         if let providerName { query.append(.init(name: "ProviderName", value: providerName)) }
+        if startIndex > 0 { query.append(.init(name: "StartIndex", value: String(startIndex))) }
+        if let limit { query.append(.init(name: "Limit", value: String(limit))) }
         return try await httpClient.decode(
             RemoteImagesResult.self,
             APIRequest("/Items/\(itemID)/RemoteImages", query: query, timeout: 60),
@@ -305,10 +314,19 @@ extension MediaServerClient {
         _ = try await httpClient.data(APIRequest(path, method: .delete), baseURL: baseURL, headers: requestHeaders)
     }
 
+    /// 调整同类型图片的服务器索引；Jellyfin 会交换两个位置。
+    public func updateImageIndex(itemID: String, type: String, index: Int, newIndex: Int) async throws {
+        _ = try await httpClient.data(
+            APIRequest("/Items/\(itemID)/Images/\(type)/\(index)/Index", method: .post,
+                       query: [.init(name: "NewIndex", value: String(newIndex))]),
+            baseURL: baseURL, headers: requestHeaders
+        )
+    }
+
     /// 图片地址（带 tag 以绕过缓存）。
     public func imageURL(itemID: String, image: ItemImageInfo, maxWidth: Int) -> URL? {
         var path = "/Items/\(itemID)/Images/\(image.type)"
-        if let index = image.index, image.type == "Backdrop" { path += "/\(index)" }
+        if let index = image.index { path += "/\(index)" }
         var query: [URLQueryItem] = [.init(name: "maxWidth", value: String(maxWidth))]
         if let tag = image.tag { query.append(.init(name: "tag", value: tag)) }
         return try? HTTPClient.makeURL(baseURL: baseURL, path: path, query: query)

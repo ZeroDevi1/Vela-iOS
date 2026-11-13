@@ -24,19 +24,15 @@ struct WideDetailHero<Actions: View>: View {
             .overlay {
                 // 剧照与压暗层一起向下渐隐到透明，露出页面的模糊背景，头图与下方分区之间没有硬边（与 Forward 一致）。
                 ZStack {
-                    RemoteArtwork(
-                        url: style == .poster
-                            ? client?.imageURL(for: item, kind: .primary, maxWidth: 1600)
-                            : client?.imageURL(for: item, kind: .backdrop, maxWidth: 2560)
-                                ?? client?.imageURL(for: item, kind: .primary, maxWidth: 1600),
-                        placeholderSymbol: "film"
-                    )
+                    DetailHeroArtwork(item: item, client: client, style: style, posterWidth: 1600, backdropWidth: 2560)
                     // 底部压暗保证文字可读；左侧再加一层横向渐变，Logo 与简介落在亮背景上也清晰。
                     LinearGradient(
                         stops: [.init(color: .clear, location: 0.4), .init(color: .black.opacity(0.7), location: 1)],
                         startPoint: .top, endPoint: .bottom
                     )
+                    .allowsHitTesting(false)
                     LinearGradient(colors: [.black.opacity(0.35), .clear], startPoint: .leading, endPoint: .center)
+                        .allowsHitTesting(false)
                 }
                 .mask {
                     LinearGradient(
