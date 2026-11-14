@@ -101,6 +101,10 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
     }
 
     public func load(_ source: PlaybackSource) {
+        load(source, asset: nil)
+    }
+
+    public func load(_ source: PlaybackSource, asset preparedAsset: AVURLAsset?) {
         if timeObserver == nil { observePlayer() }
         cancelDeferredSeek()
         isNetworkSource = SeekBufferPolicy.isNetworkSource(source.url)
@@ -123,7 +127,7 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         if let mimeType = source.mimeType {
             options[AVURLAssetOverrideMIMETypeKey] = mimeType
         }
-        let asset = AVURLAsset(url: source.url, options: options)
+        let asset = preparedAsset ?? AVURLAsset(url: source.url, options: options)
         let item = AVPlayerItem(asset: asset)
         item.allowedAudioSpatializationFormats = allowsMultichannelSpatialization ? .monoStereoAndMultichannel : .monoAndStereo
         // 预缓冲时长（秒）；0 表示由系统按网络情况决定。高码率片源（如 8K VR）可在设置中调大以减少卡顿。

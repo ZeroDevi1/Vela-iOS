@@ -199,6 +199,40 @@ public struct NavidromeClient: Sendable {
         try await downloadResource(url, fileExtension: "flac").0
     }
 
+    public func checkOriginalFLACRanges(at url: URL) async throws {
+        var request = URLRequest(url: url, timeoutInterval: 8)
+        request.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        let (stream, response) = try await Self.session.bytes(for: request)
+        // 这里只检查响应头，服务器忽略 Range 时立即停止读取。
+        stream.task.cancel()
+        guard let http = response as? HTTPURLResponse, http.statusCode == 206,
+              http.value(forHTTPHeaderField: "Content-Range")?.hasPrefix("bytes 0-0/") == true else {
+            throw NavidromeError.invalidResponse
+        }
+    }
+
+    /// 读取原始流的指定范围与完整文件长度。
+    public func originalFLACRange(from url: URL, bytes range: Range<Int64>) async throws -> (Data, Int64) {
+        guard range.lowerBound >= 0, !range.isEmpty else { throw NavidromeError.invalidResponse }
+        var request = URLRequest(url: url, timeoutInterval: 15)
+        request.setValue("bytes=\(range.lowerBound)-\(range.upperBound - 1)", forHTTPHeaderField: "Range")
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        let (data, response) = try await Self.session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 206,
+              let contentRange = http.value(forHTTPHeaderField: "Content-Range"),
+              let total = Int64(contentRange.split(separator: "/").last ?? ""),
+              total > range.lowerBound else {
+            throw NavidromeError.invalidResponse
+        }
+        let end = min(total, range.upperBound)
+        let count = Int(end - range.lowerBound)
+        guard contentRange == "bytes \(range.lowerBound)-\(end - 1)/\(total)", data.count == count else {
+            throw NavidromeError.invalidResponse
+        }
+        return (data, total)
+    }
+
     func downloadResource(_ url: URL, fileExtension: String? = nil) async throws -> (URL, String?) {
         let (file, response): (URL, URLResponse)
         do {

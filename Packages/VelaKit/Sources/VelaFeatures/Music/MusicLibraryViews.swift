@@ -29,7 +29,15 @@ struct MusicHomePage: View {
                         HStack {
                             Text("最近播放").font(.title3.bold())
                             Spacer()
-                            NavigationLink("查看全部", value: MusicRoute.recent).font(.subheadline)
+                            NavigationLink(value: MusicRoute.recent) {
+                                HStack(spacing: 4) {
+                                    Text("查看全部")
+                                    Image(systemName: "chevron.forward").font(.caption.weight(.semibold))
+                                }
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
                         }
                         .padding(.horizontal, 16)
                         .padding(.bottom, 8)
@@ -68,7 +76,7 @@ struct MusicHomePage: View {
                     MusicCover(source: source, id: track?.coverArt, size: 216, radius: 10).frame(width: 64)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(playingTrack == nil ? (track == nil ? "Navidrome" : "最近播放") : "正在播放")
-                            .font(.caption.weight(.semibold)).foregroundStyle(.tint)
+                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                         Text(track?.title ?? "你的音乐库").font(.headline).lineLimit(1)
                         Text(track?.artist ?? "浏览专辑或搜索想听的歌曲")
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -99,9 +107,10 @@ struct MusicHomePage: View {
 
     private func shortcut(_ title: String, _ symbol: String) -> some View {
         VStack(spacing: 7) {
-            Image(systemName: symbol).font(.headline).foregroundStyle(.tint)
+            Image(systemName: symbol).font(.headline)
             Text(title).font(.caption.weight(.medium))
         }
+        .foregroundStyle(.primary)
         .frame(maxWidth: .infinity, minHeight: 62)
         .background(.quaternary.opacity(0.55), in: .rect(cornerRadius: 11))
     }
@@ -423,7 +432,8 @@ struct MusicDetailPage: View {
                     Button("恢复队列与播放位置", systemImage: "play.fill") {
                         app.playMusic(tracks, at: remote.selectedIndex, from: source, position: Double(remote.position ?? 0) / 1000)
                     }
-                    .buttonStyle(.borderedProminent).padding(16)
+                    .foregroundStyle(.primary)
+                    .buttonStyle(.glass).padding(16)
                     trackSection(tracks, numbered: true)
                 } else {
                     ContentUnavailableView("没有已保存的队列", systemImage: "music.note.list")
@@ -475,8 +485,9 @@ struct MusicDetailPage: View {
             } label: {
                 Label("播放全部", systemImage: "play.fill")
                     .frame(maxWidth: .infinity)
+                    .foregroundStyle(.primary)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.glass)
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
             MusicTrackRows(tracks: tracks, source: source, numbered: numbered)
@@ -536,7 +547,7 @@ private struct MusicAlbumDetail: View {
                             }
                         }
                         .buttonStyle(.plain)
-                        .foregroundStyle(.tint)
+                        .foregroundStyle(.secondary)
                     } else {
                         Text(artist).foregroundStyle(.secondary)
                     }

@@ -59,7 +59,7 @@ struct MusicPlayerRecommendations: View {
             NavigationLink(value: MusicRoute.track(track.id, track.title)) {
                 HStack(spacing: 12) {
                     MusicCover(source: source, id: track.coverArt, size: 144).frame(width: 48)
-                    Text(track.title).font(.title3.bold()).lineLimit(2)
+                    Text(track.title).font(.title3.bold()).lineLimit(2).foregroundStyle(.primary)
                     Spacer(minLength: 4)
                     Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
                 }
@@ -69,13 +69,15 @@ struct MusicPlayerRecommendations: View {
             .accessibilityHint("打开歌曲详情")
             if let artist = track.artist, let id = track.artistId {
                 NavigationLink(value: MusicRoute.artist(id, artist)) {
-                    Label(artist, systemImage: "person").lineLimit(1)
+                    Label(artist, systemImage: "person").lineLimit(1).foregroundStyle(.secondary)
                 }
+                .buttonStyle(.plain)
             }
             if let album = track.album, let id = track.albumId {
                 NavigationLink(value: MusicRoute.album(id, album)) {
-                    Label(album, systemImage: "square.stack").lineLimit(1)
+                    Label(album, systemImage: "square.stack").lineLimit(1).foregroundStyle(.secondary)
                 }
+                .buttonStyle(.plain)
             }
         }
         .font(.subheadline)

@@ -153,7 +153,7 @@ struct MusicTrackLabel: View {
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text(track.title).font(.subheadline.weight(.medium)).lineLimit(1)
-                    .foregroundStyle(playing ? VelaTheme.accent : Color.primary)
+                    .foregroundStyle(.primary)
                 let detail = [track.artist, number == nil ? track.album : nil].compactMap { $0 }.filter { !$0.isEmpty }
                 if !detail.isEmpty {
                     Text(detail.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -181,6 +181,7 @@ struct MusicAlbumTile: View {
             VStack(alignment: .leading, spacing: 7) {
                 MusicCover(source: source, id: album.coverArt, glyph: "square.stack", radius: 14)
                 Text(album.name).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    .foregroundStyle(.primary)
                 Text(album.artist ?? "未知歌手").font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -200,6 +201,7 @@ struct MusicArtistRow: View {
                 MusicCover(source: source, id: artist.coverArt, size: 144, radius: 24, artist: artist)
                     .frame(width: 48)
                 Text(artist.name).font(.subheadline.weight(.medium)).lineLimit(1)
+                    .foregroundStyle(.primary)
                 Spacer(minLength: 8)
                 if let count = artist.albumCount {
                     Text("\(count) 张专辑").font(.caption).foregroundStyle(.secondary)
@@ -235,10 +237,10 @@ struct MusicDestinationRow: View {
     var body: some View {
         NavigationLink(value: route) {
             HStack(spacing: 12) {
-                Image(systemName: icon).foregroundStyle(.tint)
+                Image(systemName: icon).foregroundStyle(.primary)
                     .frame(width: 32, height: 33)
                     .background(.quaternary, in: .rect(cornerRadius: 8))
-                Text(title).font(.subheadline).lineLimit(1)
+                Text(title).font(.subheadline).lineLimit(1).foregroundStyle(.primary)
                 Spacer()
                 if let subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary) }
                 Image(systemName: "chevron.forward").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)

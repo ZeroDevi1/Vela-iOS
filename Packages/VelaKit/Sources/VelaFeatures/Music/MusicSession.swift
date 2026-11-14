@@ -87,7 +87,9 @@ final class MusicSession {
     @ObservationIgnored private var resumeAfterInterruption = false
     @ObservationIgnored private var sourceLoad: Task<Void, Never>?
     @ObservationIgnored private var negotiatedStream = false
-    @ObservationIgnored private var remoteFLACStartup: FLACStartup?
+    @ObservationIgnored private var flacLoader: MusicFLACLoader?
+    @ObservationIgnored private var progressiveFLACURL: URL?
+    @ObservationIgnored private var progressiveFLACStartedAt: ContinuousClock.Instant?
     @ObservationIgnored private var stagedOriginal: URL?
     private var preparingStream = false
     private var pendingOriginalPosition: TimeInterval?
@@ -95,13 +97,6 @@ final class MusicSession {
     private var radioURL: URL?
     var isRadio: Bool { radioURL != nil }
     private var history: [String: [NavidromeTrack]] = [:]
-
-    private struct FLACStartup {
-        static let gracePeriod: Duration = .seconds(4)
-        let url: URL
-        var position: TimeInterval
-        var deadline: ContinuousClock.Instant?
-    }
 
     var current: NavidromeTrack? { index.flatMap { queue.indices.contains($0) ? queue[$0] : nil } }
     var duration: TimeInterval {
@@ -198,23 +193,20 @@ final class MusicSession {
 
     func play() {
         guard current != nil else { return }
-        if preparingStream { requestedAutoplay = true; return }
+        requestedAutoplay = true
+        if preparingStream { return }
         if playbackError != nil {
             load(compatible: compatible, at: position)
         } else if engine.status == .ended {
             beginTrack()
         } else {
-            if remoteFLACStartup?.deadline == nil { remoteFLACStartup?.deadline = .now + FLACStartup.gracePeriod }
             engine.play()
         }
     }
 
     func pause() {
-        if preparingStream {
-            requestedAutoplay = false
-            return
-        }
-        remoteFLACStartup?.deadline = nil
+        requestedAutoplay = false
+        if preparingStream { return }
         engine.pause()
         if current != nil { publish(rate: 0) }
     }
@@ -236,7 +228,6 @@ final class MusicSession {
             pendingOriginalPosition = target
             return
         }
-        remoteFLACStartup?.position = target
         let wasPlaying = wantsPlayback
         if compatible {
             load(compatible: true, at: target, autoplay: wasPlaying)
@@ -311,7 +302,6 @@ final class MusicSession {
         sourceLoad?.cancel()
         preparingStream = false
         pendingOriginalPosition = nil
-        remoteFLACStartup = nil
         negotiatedStream = false
         requestedAutoplay = autoplay
         if compatible, source.capabilities.supports("transcoding"), !isRadio {
@@ -339,14 +329,21 @@ final class MusicSession {
             let url = try url ?? source.client.streamURL(id: track.id, compatible: compatible, offset: offset)
             let isFLAC = track.suffix?.lowercased() == "flac" || track.contentType?.lowercased() == "audio/flac"
             let rawFLAC = !compatible && !isRadio && isFLAC
-            // stream.view 没有媒体扩展名。先提示 AVPlayer 按 FLAC 读取，再监测起播是否推进。
+            let previousLoader = flacLoader
+            flacLoader = nil
+            progressiveFLACURL = nil
+            progressiveFLACStartedAt = nil
             if rawFLAC, !url.isFileURL {
-                let deadline = autoplay ? ContinuousClock.now + FLACStartup.gracePeriod : nil
-                remoteFLACStartup = FLACStartup(url: url, position: seconds, deadline: deadline)
+                flacLoader = MusicFLACLoader(client: source.client, url: url)
+                progressiveFLACURL = url
+                progressiveFLACStartedAt = .now
             }
             engine.load(PlaybackSource(url: url, title: track.title, subtitle: track.artist,
                                        startTime: compatible ? 0 : seconds,
-                                       mimeType: rawFLAC ? "audio/flac" : nil))
+                                       mimeType: rawFLAC ? "audio/flac" : nil,
+                                       forwardBufferDuration: flacLoader == nil ? 0 : 2),
+                        asset: flacLoader?.makeAsset())
+            previousLoader?.cancel()
             if !url.isFileURL { removeStagedOriginal() }
             if !autoplay { engine.pause() }
             publish(rate: 0)
@@ -355,15 +352,14 @@ final class MusicSession {
         }
     }
 
-    private func stageOriginalFLAC(_ startup: FLACStartup, track: NavidromeTrack, source: MusicSource) {
-        remoteFLACStartup = nil
-        pendingOriginalPosition = startup.position
+    private func stageOriginalFLAC(_ url: URL, track: NavidromeTrack, source: MusicSource) {
+        pendingOriginalPosition = position
         preparingStream = true
-        requestedAutoplay = true
+        releaseFLACLoader()
         engine.stop()
         sourceLoad = Task {
             do {
-                let file = try await source.client.stageOriginalFLAC(from: startup.url)
+                let file = try await source.client.stageOriginalFLAC(from: url)
                 guard !Task.isCancelled, let target = pendingOriginalPosition else {
                     try? FileManager.default.removeItem(at: file)
                     return
@@ -385,12 +381,19 @@ final class MusicSession {
         stagedOriginal = nil
     }
 
+    private func releaseFLACLoader() {
+        flacLoader?.cancel()
+        flacLoader = nil
+        progressiveFLACURL = nil
+        progressiveFLACStartedAt = nil
+    }
+
     private func finishTrack() {
         sourceLoad?.cancel()
         if usedTimeline { sendTimeline(.stopped, at: position) }
         preparingStream = false
         pendingOriginalPosition = nil
-        remoteFLACStartup = nil
+        releaseFLACLoader()
         usedTimeline = false
         lastSample = nil
         artworkTask?.cancel()
@@ -402,7 +405,9 @@ final class MusicSession {
         guard let track = current, let source else { return }
         guard !preparingStream else { return }
         if case .failed = engine.status {
-            if !compatible && radioURL == nil {
+            if let url = progressiveFLACURL {
+                stageOriginalFLAC(url, track: track, source: source)
+            } else if !compatible && radioURL == nil {
                 load(compatible: true, at: position)
             } else if negotiatedStream {
                 negotiatedStream = false
@@ -414,13 +419,11 @@ final class MusicSession {
             }
             return
         }
-        if let startup = remoteFLACStartup {
-            if engine.preciseCurrentTime > startup.position + 0.1 {
-                remoteFLACStartup = nil
-            } else if let deadline = startup.deadline, ContinuousClock.now >= deadline {
-                stageOriginalFLAC(startup, track: track, source: source)
-                return
-            }
+        if engine.player.timeControlStatus == .playing, let startedAt = progressiveFLACStartedAt, let flacLoader {
+            let elapsed = startedAt.duration(to: .now).components
+            let milliseconds = elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000
+            Log.player.info("原始 FLAC 起播：\(milliseconds, privacy: .public) ms，已读取 \(flacLoader.receivedBytes, privacy: .public) 字节")
+            progressiveFLACStartedAt = nil
         }
         if engine.status == .ended {
             guard lastPlaying != false || usedTimeline else { return }
