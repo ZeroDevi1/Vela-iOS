@@ -1,6 +1,124 @@
 import SwiftUI
 import VelaNetwork
 
+struct MusicPlayerRecommendations: View {
+    let source: MusicSource
+    let track: NavidromeTrack
+    let isActive: Bool
+
+    @State private var suggestions: Suggestions?
+    @State private var retry = 0
+
+    private struct Suggestions {
+        let similar: [NavidromeTrack]
+        let albumTracks: [NavidromeTrack]
+        let artistAlbums: [MusicAlbum]
+        let error: String?
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                currentTrack
+                if let suggestions {
+                    if !suggestions.similar.isEmpty {
+                        trackSection("相似歌曲", tracks: suggestions.similar)
+                    }
+                    if !suggestions.albumTracks.isEmpty {
+                        trackSection("同专辑歌曲", tracks: suggestions.albumTracks)
+                    }
+                    if !suggestions.artistAlbums.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("同歌手专辑").font(.headline).padding(.horizontal, 16)
+                            MusicAlbumGrid(albums: suggestions.artistAlbums, source: source)
+                        }
+                    }
+                    if suggestions.similar.isEmpty, suggestions.albumTracks.isEmpty, suggestions.artistAlbums.isEmpty {
+                        if let error = suggestions.error {
+                            MusicLoadError(message: error) { retry += 1 }
+                        } else {
+                            ContentUnavailableView("暂无相关推荐", systemImage: "music.note.list")
+                        }
+                    }
+                } else {
+                    ProgressView("正在加载推荐").frame(maxWidth: .infinity, minHeight: 110)
+                }
+            }
+            .padding(.vertical, 12)
+            .frame(maxWidth: 660)
+            .frame(maxWidth: .infinity)
+        }
+        .task(id: isActive ? retry : nil) {
+            guard isActive, suggestions == nil || suggestions?.error != nil else { return }
+            await load()
+        }
+    }
+
+    private var currentTrack: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            NavigationLink(value: MusicRoute.track(track.id, track.title)) {
+                HStack(spacing: 12) {
+                    MusicCover(source: source, id: track.coverArt, size: 144).frame(width: 48)
+                    Text(track.title).font(.title3.bold()).lineLimit(2)
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("打开歌曲详情")
+            if let artist = track.artist, let id = track.artistId {
+                NavigationLink(value: MusicRoute.artist(id, artist)) {
+                    Label(artist, systemImage: "person").lineLimit(1)
+                }
+            }
+            if let album = track.album, let id = track.albumId {
+                NavigationLink(value: MusicRoute.album(id, album)) {
+                    Label(album, systemImage: "square.stack").lineLimit(1)
+                }
+            }
+        }
+        .font(.subheadline)
+        .padding(16)
+        .background(.thinMaterial, in: .rect(cornerRadius: 18))
+        .padding(.horizontal, 16)
+    }
+
+    private func trackSection(_ title: String, tracks: [NavidromeTrack]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.headline).padding(.horizontal, 16)
+            MusicTrackRows(tracks: tracks, source: source)
+        }
+    }
+
+    private func load() async {
+        suggestions = nil
+        let client = source.client
+        async let onAlbum: MusicAlbum? = if let id = track.albumId { try? await client.album(id) } else { nil }
+        async let byArtist: MusicArtist? = if let id = track.artistId { try? await client.artist(id) } else { nil }
+        var related: [NavidromeTrack] = []
+        var failure: String?
+        do {
+            if source.capabilities.supports("sonicSimilarity") {
+                related = (try? await client.sonicMatches(from: track.id, limit: 8)) ?? []
+            }
+            if related.allSatisfy({ $0.id == track.id }) {
+                related = try await client.similarSongs(track.id, limit: 8)
+            }
+        } catch {
+            failure = error.localizedDescription
+        }
+        let (album, artist) = await (onAlbum, byArtist)
+        guard !Task.isCancelled else { return }
+        var seen: Set<String> = [track.id]
+        let similar = related.filter { seen.insert($0.id).inserted }
+        let albumTracks = (album?.song ?? []).filter { seen.insert($0.id).inserted }.prefix(8)
+        let artistAlbums = (artist?.album ?? []).filter { $0.id != track.albumId }.prefix(6)
+        suggestions = Suggestions(similar: similar, albumTracks: Array(albumTracks), artistAlbums: Array(artistAlbums),
+                                  error: similar.isEmpty && albumTracks.isEmpty && artistAlbums.isEmpty ? failure : nil)
+    }
+}
+
 struct MusicMetadataSection: View {
     let source: MusicSource
     let id: String
@@ -30,7 +148,7 @@ struct MusicMetadataSection: View {
             if let artists = metadata?.similarArtist, !artists.isEmpty {
                 Text("相似歌手").font(.headline).padding(.horizontal, 16)
                 ForEach(artists.filter { !$0.id.isEmpty && $0.id != "-1" }) { artist in
-                    MusicDestinationRow(title: artist.name, subtitle: nil, icon: "person", route: .artist(artist.id, artist.name))
+                    MusicArtistRow(artist: artist, source: source)
                 }
             }
             if !top.isEmpty {

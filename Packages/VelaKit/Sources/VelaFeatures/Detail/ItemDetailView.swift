@@ -537,25 +537,11 @@ private struct DetailBackdrop: View {
         .ignoresSafeArea()
         .task(id: posterURL) {
             guard let posterURL, let image = await ImagePipeline.shared.image(for: posterURL),
-                  let average = Self.averageColor(of: image),
-                  let hsb = BackdropTone.darkTone(red: average.red, green: average.green, blue: average.blue) else { return }
+                  let hsb = BackdropTone.darkTone(for: image) else { return }
             withAnimation(.easeInOut(duration: 0.4)) {
                 tone = Color(hue: hsb.hue, saturation: hsb.saturation, brightness: hsb.brightness)
             }
         }
-    }
-
-    /// 把图片缩绘到 1×1 像素取平均色（sRGB，0–1）。
-    private static func averageColor(of image: CGImage) -> (red: Double, green: Double, blue: Double)? {
-        var pixel = [UInt8](repeating: 0, count: 4)
-        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(
-                data: &pixel, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4, space: space,
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-              ) else { return nil }
-        context.interpolationQuality = .medium
-        context.draw(image, in: CGRect(x: 0, y: 0, width: 1, height: 1))
-        return (Double(pixel[0]) / 255, Double(pixel[1]) / 255, Double(pixel[2]) / 255)
     }
 }
 

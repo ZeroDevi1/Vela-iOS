@@ -120,6 +120,9 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         if !source.httpHeaders.isEmpty {
             options["AVURLAssetHTTPHeaderFieldsKey"] = source.httpHeaders
         }
+        if let mimeType = source.mimeType {
+            options[AVURLAssetOverrideMIMETypeKey] = mimeType
+        }
         let asset = AVURLAsset(url: source.url, options: options)
         let item = AVPlayerItem(asset: asset)
         item.allowedAudioSpatializationFormats = allowsMultichannelSpatialization ? .monoStereoAndMultichannel : .monoAndStereo

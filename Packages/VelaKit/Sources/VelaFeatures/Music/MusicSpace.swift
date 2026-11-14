@@ -10,32 +10,45 @@ struct MusicSpace: View {
     @State private var source: MusicSource?
     @State private var connectionError: String?
     @State private var retry = 0
-    @State private var panel: MusicPlayerPanel?
+    @State private var isPlayerOpen = false
+    @State private var isQueueOpen = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var sizeClass
     #endif
 
     var body: some View {
-        shell
-            .task(id: LoadKey(server: server, unlocked: app.isActiveServerAccessible, retry: retry)) {
-                source = nil
-                connectionError = nil
-                guard app.isActiveServerAccessible else { return }
-                do {
-                    source = try await app.musicSource(for: server)
-                } catch is CancellationError {
-                } catch {
-                    guard !Task.isCancelled else { return }
-                    connectionError = error.localizedDescription
-                }
+        ZStack {
+            shell
+                .allowsHitTesting(!isPlayerOpen)
+                .accessibilityHidden(isPlayerOpen)
+            if isPlayerOpen, showsPlayer {
+                MusicPlaybackPage(onClose: { showPlayer(false) }, onQueue: openQueue)
+                    .transition(reduceMotion ? .opacity : .move(edge: .bottom))
+                    .zIndex(1)
             }
-            .sheet(item: $panel) { selected in
-                MusicPlaybackSheet(initialPanel: selected)
-                    .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $isQueueOpen) {
+            MusicQueueSheet()
+        }
+        .task(id: LoadKey(server: server, unlocked: app.isActiveServerAccessible, retry: retry)) {
+            source = nil
+            connectionError = nil
+            guard app.isActiveServerAccessible else { return }
+            do {
+                source = try await app.musicSource(for: server)
+            } catch is CancellationError {
+            } catch {
+                guard !Task.isCancelled else { return }
+                connectionError = error.localizedDescription
             }
-            .onChange(of: app.music.current == nil, initial: true) { _, empty in
-                if empty { panel = nil }
+        }
+        .onChange(of: showsPlayer) { _, available in
+            if !available {
+                isPlayerOpen = false
+                isQueueOpen = false
             }
+        }
     }
 
     private struct LoadKey: Equatable {
@@ -86,7 +99,18 @@ struct MusicSpace: View {
     }
 
     private var miniPlayer: some View {
-        MusicMiniPlayer(onOpen: { panel = .playing }, onQueue: { panel = .queue })
+        MusicMiniPlayer(onOpen: { showPlayer(true) }, onQueue: openQueue)
+    }
+
+    private func showPlayer(_ open: Bool) {
+        guard !open || showsPlayer else { return }
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.3)) {
+            isPlayerOpen = open
+        }
+    }
+
+    private func openQueue() {
+        if showsPlayer { isQueueOpen = true }
     }
 
     @ViewBuilder
@@ -137,7 +161,7 @@ struct MusicSpace: View {
         case .home:
             MusicHomePage(source: source,
                           openLibrary: { selection = .library },
-                          openPlayer: { panel = .playing })
+                          openPlayer: { showPlayer(true) })
         case .library:
             MusicLibraryPage(source: source)
         case .mine:

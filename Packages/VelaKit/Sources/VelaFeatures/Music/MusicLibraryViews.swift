@@ -1,4 +1,5 @@
 import SwiftUI
+import VelaDesignSystem
 import VelaNetwork
 
 struct MusicHomePage: View {
@@ -84,15 +85,15 @@ struct MusicHomePage: View {
                 } label: {
                     Image(systemName: playingTrack != nil && app.music.wantsPlayback ? "pause.fill" : "play.fill")
                         .frame(width: 43, height: 43)
-                        .foregroundStyle(.white)
-                        .background(Color.accentColor, in: Circle())
                 }
-                .buttonStyle(.plain)
+                .buttonBorderShape(.circle)
+                .buttonStyle(.glass)
+                .foregroundStyle(.primary)
                 .accessibilityLabel(playingTrack != nil && app.music.wantsPlayback ? "暂停" : "播放")
             }
         }
         .padding(13)
-        .background(.thinMaterial, in: .rect(cornerRadius: 16))
+        .background(.regularMaterial, in: .rect(cornerRadius: 22))
         .padding(.horizontal, 16)
     }
 
@@ -127,29 +128,20 @@ struct MusicLibraryPage: View {
     @State private var folder: Int?
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                ForEach(Category.allCases, id: \.self) { item in
-                    Button {
-                        category = item
-                    } label: {
-                        VStack(spacing: 7) {
-                            Text(item.rawValue).font(.subheadline.weight(category == item ? .semibold : .regular))
-                                .foregroundStyle(category == item ? Color.accentColor : Color.secondary)
-                            Capsule().fill(category == item ? Color.accentColor : .clear)
-                                .frame(width: 21, height: 2)
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 43)
-                        .contentShape(Rectangle())
+        content.id("\(category.rawValue):\(folder ?? -1)")
+            .safeAreaInset(edge: .top, spacing: 0) {
+                Picker("曲库分类", selection: $category) {
+                    ForEach(Category.allCases, id: \.self) { item in
+                        Text(item.rawValue).tag(item)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(category == item ? .isSelected : [])
                 }
+                .pickerStyle(.segmented)
+                .controlSize(.large)
+                .frame(maxWidth: 450)
+                .padding(.horizontal, 20)
+                .padding(.top, 6)
+                .padding(.bottom, 8)
             }
-            .padding(.horizontal, 12)
-            Divider()
-            content.id("\(category.rawValue):\(folder ?? -1)")
-        }
         .toolbar {
             ToolbarItem(placement: .secondaryAction) {
                 Menu("曲库选项", systemImage: "line.3.horizontal.decrease") {
@@ -188,8 +180,7 @@ struct MusicLibraryPage: View {
             MusicLoadedPage { try await client.artists(folder: folder) } content: { artists in
                 if artists.isEmpty { ContentUnavailableView("暂无歌手", systemImage: "person.2") }
                 ForEach(artists) { artist in
-                    MusicDestinationRow(title: artist.name, subtitle: artist.albumCount.map { "\($0) 张专辑" },
-                                        icon: "person", route: .artist(artist.id, artist.name))
+                    MusicArtistRow(artist: artist, source: source)
                 }
             }
         case .genres:
@@ -374,16 +365,21 @@ struct MusicDetailPage: View {
         switch route {
         case .album(let id, _):
             MusicLoadedPage { try await client.album(id) } content: { album in
-                headline(album.name, subtitle: [album.artist, album.year.map(String.init)].compactMap { $0 }.joined(separator: " · "),
-                         cover: album.coverArt, icon: "square.stack")
-                trackSection(album.song ?? [], numbered: true)
-                MusicItemActions(source: source, id: id, title: album.name, kind: .album, starred: album.starred != nil)
-                MusicMetadataSection(source: source, id: id, isArtist: false)
+                MusicAlbumDetail(album: album, source: source)
             }
         case .artist(let id, _):
             MusicLoadedPage { try await client.artist(id) } content: { artist in
-                headline(artist.name, subtitle: artist.albumCount.map { "\($0) 张专辑" },
-                         cover: artist.coverArt, icon: "person")
+                VStack(spacing: 10) {
+                    MusicCover(source: source, id: artist.coverArt, size: 384, radius: 88, artist: artist)
+                        .frame(width: 176)
+                    Text(artist.name).font(.largeTitle.bold()).multilineTextAlignment(.center)
+                        .accessibilityAddTraits(.isHeader)
+                    if let count = artist.albumCount {
+                        Text("\(count) 张专辑").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(24)
                 if let albums = artist.album, !albums.isEmpty { MusicAlbumGrid(albums: albums, source: source) }
                 else { ContentUnavailableView("暂无专辑", systemImage: "square.stack") }
                 MusicItemActions(source: source, id: id, title: artist.name, kind: .artist, starred: artist.starred != nil)
@@ -488,6 +484,94 @@ struct MusicDetailPage: View {
     }
 }
 
+private struct MusicAlbumDetail: View {
+    let album: MusicAlbum
+    let source: MusicSource
+    @Environment(AppModel.self) private var app
+
+    private var tracks: [NavidromeTrack] { album.song ?? [] }
+    private var cover: String? { album.coverArt ?? tracks.first?.coverArt }
+
+    var body: some View {
+        VStack(spacing: 25) {
+            hero
+            tracksSection
+            MusicMetadataSection(source: source, id: album.id, isArtist: false)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .buttonStyle(.glass)
+                .padding(.horizontal, 4)
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 30)
+        .frame(maxWidth: 720)
+        .frame(maxWidth: .infinity)
+        .background(alignment: .top) {
+            MusicArtworkBackdrop(source: source, coverArt: cover)
+                .frame(height: 500)
+                .mask {
+                    LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.28),
+                                           .init(color: .black, location: 0.55), .init(color: .clear, location: 1)],
+                                   startPoint: .top, endPoint: .bottom)
+                }
+                .allowsHitTesting(false)
+        }
+    }
+
+    private var hero: some View {
+        VStack(spacing: 18) {
+            MusicCover(source: source, id: cover, size: 650, glyph: "square.stack", radius: 24)
+                .frame(maxWidth: 245)
+                .overlay { RoundedRectangle(cornerRadius: 24).strokeBorder(.white.opacity(0.20)) }
+                .shadow(color: .black.opacity(0.23), radius: 20, y: 10)
+
+            VStack(spacing: 6) {
+                Text(album.name).font(.largeTitle.bold()).multilineTextAlignment(.center)
+                    .accessibilityAddTraits(.isHeader)
+                if let artist = album.artist, !artist.isEmpty {
+                    if let id = album.artistId ?? tracks.first(where: { $0.artist == artist })?.artistId {
+                        NavigationLink(value: MusicRoute.artist(id, artist)) {
+                            HStack(spacing: 5) {
+                                Text(artist)
+                                Image(systemName: "chevron.forward").font(.caption.weight(.semibold))
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.tint)
+                    } else {
+                        Text(artist).foregroundStyle(.secondary)
+                    }
+                }
+                let duration = album.duration.map(Double.init) ?? tracks.compactMap(\.duration).reduce(0, +)
+                let details = [album.year.flatMap { $0 > 0 ? String($0) : nil }, "\(album.songCount ?? tracks.count) 首",
+                               duration > 0 ? "\(max(1, Int(duration / 60))) 分钟" : nil].compactMap { $0 }
+                Text(details.joined(separator: " · ")).font(.footnote).foregroundStyle(.secondary)
+            }
+            MusicItemActions(source: source, id: album.id, title: album.name, kind: .album, starred: album.starred != nil,
+                             albumPlay: tracks.isEmpty ? nil : { app.playMusic(tracks, at: 0, from: source) })
+        }
+        .padding(.top, 18)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var tracksSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("曲目").font(.title3.weight(.bold)).accessibilityAddTraits(.isHeader)
+                .padding(.horizontal, 16).padding(.vertical, 13)
+            if tracks.isEmpty {
+                ContentUnavailableView("暂无歌曲", systemImage: "music.note")
+            } else {
+                LazyVStack(spacing: 0) {
+                    MusicTrackRows(tracks: tracks, source: source, numbered: true)
+                }
+                .padding(.bottom, 6)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.primary.opacity(0.045), in: .rect(cornerRadius: 24))
+        .overlay { RoundedRectangle(cornerRadius: 24).strokeBorder(.primary.opacity(0.08)).allowsHitTesting(false) }
+    }
+}
+
 struct MusicSearchPage: View {
     let source: MusicSource
     @State private var query = ""
@@ -544,8 +628,7 @@ private struct MusicResults: View {
         if let artists = results.artist, !artists.isEmpty {
             heading("歌手")
             ForEach(artists) { artist in
-                MusicDestinationRow(title: artist.name, subtitle: artist.albumCount.map { "\($0) 张专辑" },
-                                    icon: "person", route: .artist(artist.id, artist.name))
+                MusicArtistRow(artist: artist, source: source)
             }
         }
         if results.song?.isEmpty != false && results.album?.isEmpty != false && results.artist?.isEmpty != false {

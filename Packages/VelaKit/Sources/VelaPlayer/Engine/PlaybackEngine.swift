@@ -251,6 +251,8 @@ public struct PlaybackSource: Sendable, Hashable {
     public var startTime: TimeInterval
     /// 部分 CDN / 直链需要的额外请求头。AVPlayer 通过私有选项注入，不保证所有分片都生效，优先使用 URL 鉴权。
     public var httpHeaders: [String: String]
+    /// 已知原始文件格式，但串流 URL 没有对应扩展名时，供 AVPlayer 识别容器。
+    public var mimeType: String?
     /// 识别出的 VR 排布；非 nil 时播放器提供「VR 转平面」。
     public var vrLayout: VRLayout?
     /// 前向缓冲时长（秒）；0 表示使用内核默认值（本地文件播放时）。
@@ -266,6 +268,7 @@ public struct PlaybackSource: Sendable, Hashable {
         subtitle: String? = nil,
         startTime: TimeInterval = 0,
         httpHeaders: [String: String] = [:],
+        mimeType: String? = nil,
         vrLayout: VRLayout? = nil,
         forwardBufferDuration: TimeInterval = 0,
         bitrate: Int? = nil,
@@ -276,6 +279,7 @@ public struct PlaybackSource: Sendable, Hashable {
         self.subtitle = subtitle
         self.startTime = startTime
         self.httpHeaders = httpHeaders
+        self.mimeType = mimeType
         self.vrLayout = vrLayout
         self.forwardBufferDuration = forwardBufferDuration
         self.bitrate = bitrate

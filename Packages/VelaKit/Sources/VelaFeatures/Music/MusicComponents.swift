@@ -40,9 +40,14 @@ struct MusicCover: View {
     var size = 360
     var glyph = "music.note"
     var radius: CGFloat = 8
+    var artist: MusicArtist?
     @State private var loaded: CGImage?
 
-    private var key: URL? { id.flatMap { source.coverKey($0, size: size) } }
+    private var imageURL: URL? { artist?.artistImageUrl.flatMap(musicWebURL) }
+    private var key: URL? {
+        let identifier = id ?? (imageURL == nil ? nil : artist.map { "artist-url:\($0.id)" })
+        return identifier.flatMap { source.coverKey($0, size: size) }
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -53,6 +58,10 @@ struct MusicCover: View {
                         .resizable()
                         .scaledToFill()
                         .frame(width: proxy.size.width, height: proxy.size.height)
+                } else if let artist, let initial = artist.name.first {
+                    Text(String(initial).uppercased())
+                        .font(.system(size: min(proxy.size.width * 0.38, 62), weight: .semibold))
+                        .foregroundStyle(.secondary)
                 } else {
                     Image(systemName: glyph)
                         .font(.system(size: max(11, min(proxy.size.width * 0.29, 92)), weight: .medium))
@@ -65,8 +74,15 @@ struct MusicCover: View {
         .accessibilityHidden(true)
         .task(id: key) {
             loaded = nil
-            guard let id else { return }
-            let image = await source.artwork(id, size: size)
+            var image: CGImage?
+            if let id { image = await source.artwork(id, size: size) }
+            if image == nil, !Task.isCancelled, let imageURL, let artist,
+               let fallback = source.coverKey("artist-url:\(artist.id)", size: size) {
+                let client = source.client
+                image = await ImagePipeline.shared.image(key: fallback, memoryOnly: source.isPrivate) {
+                    try await client.artwork(from: imageURL)
+                }
+            }
             if !Task.isCancelled { loaded = image }
         }
     }
@@ -85,7 +101,9 @@ struct MusicTrackRows: View {
                 Button {
                     app.playMusic(tracks, at: index, from: source)
                 } label: {
-                    MusicTrackLabel(track: track, source: source, number: numbered ? (track.track ?? index + 1) : nil)
+                    let playing = app.music.source?.id == source.id && app.music.current?.id == track.id
+                    MusicTrackLabel(track: track, source: source,
+                                    number: numbered ? (track.track ?? index + 1) : nil, playing: playing)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("music.track.\(index)")
@@ -135,6 +153,7 @@ struct MusicTrackLabel: View {
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text(track.title).font(.subheadline.weight(.medium)).lineLimit(1)
+                    .foregroundStyle(playing ? VelaTheme.accent : Color.primary)
                 let detail = [track.artist, number == nil ? track.album : nil].compactMap { $0 }.filter { !$0.isEmpty }
                 if !detail.isEmpty {
                     Text(detail.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -160,7 +179,7 @@ struct MusicAlbumTile: View {
     var body: some View {
         NavigationLink(value: MusicRoute.album(album.id, album.name)) {
             VStack(alignment: .leading, spacing: 7) {
-                MusicCover(source: source, id: album.coverArt, glyph: "square.stack")
+                MusicCover(source: source, id: album.coverArt, glyph: "square.stack", radius: 14)
                 Text(album.name).font(.subheadline.weight(.semibold)).lineLimit(1)
                 Text(album.artist ?? "未知歌手").font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
@@ -168,6 +187,30 @@ struct MusicAlbumTile: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+struct MusicArtistRow: View {
+    let artist: MusicArtist
+    let source: MusicSource
+
+    var body: some View {
+        NavigationLink(value: MusicRoute.artist(artist.id, artist.name)) {
+            HStack(spacing: 13) {
+                MusicCover(source: source, id: artist.coverArt, size: 144, radius: 24, artist: artist)
+                    .frame(width: 48)
+                Text(artist.name).font(.subheadline.weight(.medium)).lineLimit(1)
+                Spacer(minLength: 8)
+                if let count = artist.albumCount {
+                    Text("\(count) 张专辑").font(.caption).foregroundStyle(.secondary)
+                }
+                Image(systemName: "chevron.forward").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .frame(minHeight: 60)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 20)
     }
 }
 

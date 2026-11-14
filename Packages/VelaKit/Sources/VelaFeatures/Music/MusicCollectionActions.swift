@@ -11,6 +11,7 @@ struct MusicItemActions: View {
     let starred: Bool
     var rating: Int? = nil
     var track: NavidromeTrack? = nil
+    var albumPlay: (() -> Void)? = nil
 
     @Environment(AppModel.self) private var app
     @State private var localStar: Bool?
@@ -21,41 +22,37 @@ struct MusicItemActions: View {
     @State private var error: String?
 
     var body: some View {
-        HStack {
-            Button(localStar ?? starred ? "取消收藏" : "收藏", systemImage: localStar ?? starred ? "heart.fill" : "heart") {
-                let next = !(localStar ?? starred)
-                run {
-                    try await source.client.setFavorite(next, id: id, kind: kind)
-                    localStar = next
-                }
-            }
-            if kind == .song {
-                Menu("\(localRating ?? rating ?? 0) 分", systemImage: "star") {
-                    ForEach(0...5, id: \.self) { value in
-                        Button(value == 0 ? "清除评分" : "\(value) 星") {
-                            run { try await source.client.setRating(value, id: id); localRating = value }
+        VStack(spacing: 10) {
+            if kind == .album {
+                GlassEffectContainer(spacing: 10) {
+                    HStack(spacing: 10) {
+                        if let albumPlay {
+                            Button(action: albumPlay) {
+                                Label("播放专辑", systemImage: "play.fill")
+                                    .foregroundStyle(.primary)
+                            }
+                            .buttonStyle(.glass)
                         }
+                        collectionControls
+                            .labelStyle(.iconOnly)
+                            .buttonBorderShape(.circle)
+                            .buttonStyle(.glass)
                     }
+                    .controlSize(.large)
                 }
-            }
-            if track != nil || (source.canShare && kind != .artist) {
-                Menu("更多操作", systemImage: "ellipsis.circle") {
-                    if let track {
-                        Button("添加到歌单", systemImage: "music.note.list") { pickPlaylist = true }
-                        Button("保存播放书签", systemImage: "bookmark") {
-                            let time = app.music.source?.id == source.id && app.music.current?.id == track.id ? app.music.position : 0
-                            run { try await source.client.saveBookmark(track.id, position: time) }
-                        }
-                    }
-                    if source.canShare, kind != .artist {
-                        Button("创建分享链接", systemImage: "link") { share = true }
-                    }
+            } else {
+                HStack {
+                    collectionControls
+                    Spacer()
                 }
-                .labelStyle(.iconOnly)
+                .buttonStyle(.bordered)
             }
-            Spacer()
+            if source.canDownload && !source.isPrivate {
+                MusicDownloadButton(source: source, id: id, title: title, album: kind != .song)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: kind == .album ? .center : .leading)
+            }
         }
-        .buttonStyle(.bordered)
         .disabled(busy)
         .padding(.horizontal, 16).padding(.vertical, 8)
         .sheet(isPresented: $share) { MusicShareEditor(source: source, ids: [id]) }
@@ -65,9 +62,39 @@ struct MusicItemActions: View {
         .alert("操作失败", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("好", role: .cancel) {}
         } message: { Text(error ?? "") }
-        if source.canDownload && !source.isPrivate {
-            MusicDownloadButton(source: source, id: id, title: title, album: kind != .song)
-                .padding(.horizontal, 16).padding(.bottom, 10)
+    }
+
+    @ViewBuilder private var collectionControls: some View {
+        Button(localStar ?? starred ? "取消收藏" : "收藏", systemImage: localStar ?? starred ? "heart.fill" : "heart") {
+            let next = !(localStar ?? starred)
+            run {
+                try await source.client.setFavorite(next, id: id, kind: kind)
+                localStar = next
+            }
+        }
+        if kind == .song {
+            Menu("\(localRating ?? rating ?? 0) 分", systemImage: "star") {
+                ForEach(0...5, id: \.self) { value in
+                    Button(value == 0 ? "清除评分" : "\(value) 星") {
+                        run { try await source.client.setRating(value, id: id); localRating = value }
+                    }
+                }
+            }
+        }
+        if track != nil || (source.canShare && kind != .artist) {
+            Menu("更多操作", systemImage: "ellipsis.circle") {
+                if let track {
+                    Button("添加到歌单", systemImage: "music.note.list") { pickPlaylist = true }
+                    Button("保存播放书签", systemImage: "bookmark") {
+                        let time = app.music.source?.id == source.id && app.music.current?.id == track.id ? app.music.position : 0
+                        run { try await source.client.saveBookmark(track.id, position: time) }
+                    }
+                }
+                if source.canShare, kind != .artist {
+                    Button("创建分享链接", systemImage: "link") { share = true }
+                }
+            }
+            .labelStyle(.iconOnly)
         }
     }
 

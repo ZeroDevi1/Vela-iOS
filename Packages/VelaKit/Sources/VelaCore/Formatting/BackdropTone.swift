@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// 由海报平均色推出详情页背景的深色调（Forward 风格：取海报主色的低饱和深色渐变）。
@@ -17,6 +18,17 @@ public enum BackdropTone {
     static let maxSaturation = 0.5
     /// 平均色饱和度低于此值视为灰色海报。
     static let grayThreshold = 0.08
+
+    /// 在 sRGB 中将图片缩到 1 像素，再用平均色计算背景色调。
+    public static func darkTone(for image: CGImage) -> HSB? {
+        var pixel = [UInt8](repeating: 0, count: 4)
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: &pixel, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                                      space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.interpolationQuality = .medium
+        context.draw(image, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        return darkTone(red: Double(pixel[0]) / 255, green: Double(pixel[1]) / 255, blue: Double(pixel[2]) / 255)
+    }
 
     /// - Parameters: 平均色的 sRGB 分量（0–1）。
     public static func darkTone(red: Double, green: Double, blue: Double) -> HSB? {

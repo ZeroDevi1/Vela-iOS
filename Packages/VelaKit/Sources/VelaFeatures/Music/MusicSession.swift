@@ -87,21 +87,37 @@ final class MusicSession {
     @ObservationIgnored private var resumeAfterInterruption = false
     @ObservationIgnored private var sourceLoad: Task<Void, Never>?
     @ObservationIgnored private var negotiatedStream = false
+    @ObservationIgnored private var remoteFLACStartup: FLACStartup?
+    @ObservationIgnored private var stagedOriginal: URL?
     private var preparingStream = false
+    private var pendingOriginalPosition: TimeInterval?
     private var requestedAutoplay = true
     private var radioURL: URL?
     var isRadio: Bool { radioURL != nil }
     private var history: [String: [NavidromeTrack]] = [:]
+
+    private struct FLACStartup {
+        static let gracePeriod: Duration = .seconds(4)
+        let url: URL
+        var position: TimeInterval
+        var deadline: ContinuousClock.Instant?
+    }
 
     var current: NavidromeTrack? { index.flatMap { queue.indices.contains($0) ? queue[$0] : nil } }
     var duration: TimeInterval {
         if let duration = current?.duration, duration.isFinite, duration > 0 { return duration }
         return engine.duration > 0 ? engine.duration + Double(offset) : current?.duration ?? 0
     }
-    var position: TimeInterval { duration > 0 ? min(duration, engine.currentTime + Double(offset)) : 0 }
+    var position: TimeInterval {
+        if let pendingOriginalPosition { return pendingOriginalPosition }
+        return duration > 0 ? min(duration, engine.currentTime + Double(offset)) : 0
+    }
     var lyricPosition: TimeInterval {
-        let time = engine.preciseCurrentTime + Double(offset)
-        return time.isFinite ? max(0, time) : position
+        if let pendingOriginalPosition { return pendingOriginalPosition }
+        if preparingStream { return Double(offset) }
+        // 当前进度负责通知暂停时的跳转，播放时用播放器的精确时钟绘制逐字进度。
+        let time = isPlaying ? engine.preciseCurrentTime : engine.currentTime
+        return max(0, time + Double(offset))
     }
     var isPlaying: Bool { engine.player.rate > 0 || engine.status == .playing }
     var wantsPlayback: Bool {
@@ -188,6 +204,7 @@ final class MusicSession {
         } else if engine.status == .ended {
             beginTrack()
         } else {
+            if remoteFLACStartup?.deadline == nil { remoteFLACStartup?.deadline = .now + FLACStartup.gracePeriod }
             engine.play()
         }
     }
@@ -197,6 +214,7 @@ final class MusicSession {
             requestedAutoplay = false
             return
         }
+        remoteFLACStartup?.deadline = nil
         engine.pause()
         if current != nil { publish(rate: 0) }
     }
@@ -214,6 +232,11 @@ final class MusicSession {
         guard seconds.isFinite, canSeek else { return }
         let target = max(0, min(seconds, max(0, duration - 1)))
         lastSample = nil
+        if pendingOriginalPosition != nil {
+            pendingOriginalPosition = target
+            return
+        }
+        remoteFLACStartup?.position = target
         let wasPlaying = wantsPlayback
         if compatible {
             load(compatible: true, at: target, autoplay: wasPlaying)
@@ -287,6 +310,8 @@ final class MusicSession {
         playbackError = nil
         sourceLoad?.cancel()
         preparingStream = false
+        pendingOriginalPosition = nil
+        remoteFLACStartup = nil
         negotiatedStream = false
         requestedAutoplay = autoplay
         if compatible, source.capabilities.supports("transcoding"), !isRadio {
@@ -312,8 +337,17 @@ final class MusicSession {
     private func openStream(_ track: NavidromeTrack, source: MusicSource, url: URL?, seconds: Double, autoplay: Bool) {
         do {
             let url = try url ?? source.client.streamURL(id: track.id, compatible: compatible, offset: offset)
+            let isFLAC = track.suffix?.lowercased() == "flac" || track.contentType?.lowercased() == "audio/flac"
+            let rawFLAC = !compatible && !isRadio && isFLAC
+            // stream.view 没有媒体扩展名。先提示 AVPlayer 按 FLAC 读取，再监测起播是否推进。
+            if rawFLAC, !url.isFileURL {
+                let deadline = autoplay ? ContinuousClock.now + FLACStartup.gracePeriod : nil
+                remoteFLACStartup = FLACStartup(url: url, position: seconds, deadline: deadline)
+            }
             engine.load(PlaybackSource(url: url, title: track.title, subtitle: track.artist,
-                                       startTime: compatible ? 0 : seconds))
+                                       startTime: compatible ? 0 : seconds,
+                                       mimeType: rawFLAC ? "audio/flac" : nil))
+            if !url.isFileURL { removeStagedOriginal() }
             if !autoplay { engine.pause() }
             publish(rate: 0)
         } catch {
@@ -321,14 +355,47 @@ final class MusicSession {
         }
     }
 
+    private func stageOriginalFLAC(_ startup: FLACStartup, track: NavidromeTrack, source: MusicSource) {
+        remoteFLACStartup = nil
+        pendingOriginalPosition = startup.position
+        preparingStream = true
+        requestedAutoplay = true
+        engine.stop()
+        sourceLoad = Task {
+            do {
+                let file = try await source.client.stageOriginalFLAC(from: startup.url)
+                guard !Task.isCancelled, let target = pendingOriginalPosition else {
+                    try? FileManager.default.removeItem(at: file)
+                    return
+                }
+                stagedOriginal = file
+                openStream(track, source: source, url: file, seconds: target, autoplay: requestedAutoplay)
+                pendingOriginalPosition = nil
+            } catch {
+                guard !Task.isCancelled else { return }
+                playbackError = "无法读取原始音频，请重试或使用兼容转码"
+                publish(rate: 0)
+            }
+            preparingStream = false
+        }
+    }
+
+    private func removeStagedOriginal() {
+        if let stagedOriginal { try? FileManager.default.removeItem(at: stagedOriginal) }
+        stagedOriginal = nil
+    }
+
     private func finishTrack() {
         sourceLoad?.cancel()
-        preparingStream = false
         if usedTimeline { sendTimeline(.stopped, at: position) }
+        preparingStream = false
+        pendingOriginalPosition = nil
+        remoteFLACStartup = nil
         usedTimeline = false
         lastSample = nil
         artworkTask?.cancel()
         engine.stop()
+        removeStagedOriginal()
     }
 
     private func tick() {
@@ -346,6 +413,14 @@ final class MusicSession {
                 sendTimeline(.paused, at: position)
             }
             return
+        }
+        if let startup = remoteFLACStartup {
+            if engine.preciseCurrentTime > startup.position + 0.1 {
+                remoteFLACStartup = nil
+            } else if let deadline = startup.deadline, ContinuousClock.now >= deadline {
+                stageOriginalFLAC(startup, track: track, source: source)
+                return
+            }
         }
         if engine.status == .ended {
             guard lastPlaying != false || usedTimeline else { return }

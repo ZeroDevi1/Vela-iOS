@@ -1,4 +1,5 @@
 import SwiftUI
+import VelaDesignSystem
 import VelaNetwork
 
 struct KaraokeLyrics {
@@ -24,17 +25,16 @@ struct KaraokeLyrics {
     }
 
     let rows: [Row]
+    let credits: [String]
     let synced: Bool
-    let hasWordTiming: Bool
-    let timedRows: [Row]
+    private let timedRows: [Row]
 
-    init(_ document: NavidromeLyrics) {
+    init(_ document: NavidromeLyrics, trackTitle: String) {
         let offset = document.offset ?? 0
         let lines = document.line ?? []
         let cues = Dictionary(grouping: document.cueLine ?? [], by: \.index)
         let agents = document.agents ?? []
         var result: [Row] = []
-        var hasWords = false
         for index in Set(lines.indices).union(cues.keys.filter { $0 >= 0 }).sorted() {
             let line = lines.indices.contains(index) ? lines[index] : nil
             let layers = cues[index] ?? []
@@ -44,23 +44,41 @@ struct KaraokeLyrics {
             let voices = layers.enumerated().map { i, layer in
                 let agent = agents.first { $0.id == layer.agentId }
                 let fragments = Self.fragments(layer, offset: offset, lineEnd: end ?? next)
-                hasWords = hasWords || fragments.contains { $0.start != nil }
                 return Voice(id: i, name: agent?.name, isBackground: agent?.role == "background", fragments: fragments)
             }
             let fallback = line?.value ?? ""
-            guard !voices.isEmpty || !fallback.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
+            let hasText = !fallback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let textVoices = hasText ? [Voice(id: 0, name: nil, isBackground: false, fragments: [.init(text: fallback)])] : []
             result.append(Row(id: index, start: start.map { ($0 - offset) / 1000 }, end: end.map { ($0 - offset) / 1000 },
-                              voices: voices.isEmpty ? [.init(id: 0, name: nil, isBackground: false, fragments: [.init(text: fallback)])] : voices))
+                              voices: voices.isEmpty ? textVoices : voices))
         }
-        rows = result
-        timedRows = result.filter { $0.start != nil }.sorted {
+        let openingCredits = document.synced && cues.isEmpty ? Self.openingCredits(in: result, trackTitle: trackTitle) : []
+        credits = openingCredits.compactMap { $0.voices.first?.text }
+        let remaining = result.dropFirst(openingCredits.count)
+        rows = remaining.filter { !$0.voices.isEmpty }
+        timedRows = remaining.filter { $0.start != nil }.sorted {
             ($0.start ?? 0, $0.id) < ($1.start ?? 0, $1.id)
         }
-        synced = document.synced && !timedRows.isEmpty
-        hasWordTiming = hasWords
+        synced = document.synced && timedRows.contains { !$0.voices.isEmpty }
     }
 
-    func current(at time: Double) -> Int? {
+    private static func openingCredits(in rows: [Row], trackTitle: String) -> [Row] {
+        let labels: Set<String> = ["词", "作词", "曲", "作曲", "编曲", "制作人", "联合制作人", "配唱监制", "吉他", "贝斯",
+                                   "和声编写", "和声", "人声录音", "音频编辑", "混音", "母带", "混音/母带", "全景声混音",
+                                   "a&r", "制作统筹", "企划协力", "出品人", "出品", "lyrics", "composer", "producer"]
+        let first = rows.first?.voices.first?.text ?? ""
+        let title = trackTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let skipTitle = !title.isEmpty && first.localizedCaseInsensitiveContains(title) ? 1 : 0
+        let matched = rows.dropFirst(skipTitle).prefix { row in
+            guard let text = row.voices.first?.text, let separator = text.firstIndex(where: { $0 == ":" || $0 == "：" }) else { return false }
+            let label = text[..<separator].trimmingCharacters(in: .whitespaces).lowercased()
+            return labels.contains(label)
+        }
+        guard matched.count >= 2, rows.dropFirst(skipTitle + matched.count).contains(where: { !$0.voices.isEmpty }) else { return [] }
+        return Array(rows.prefix(skipTitle + matched.count))
+    }
+
+    func current(at time: Double) -> (id: Int, start: Double, end: Double?)? {
         guard synced else { return nil }
         var low = 0
         var high = timedRows.count
@@ -71,7 +89,9 @@ struct KaraokeLyrics {
         }
         guard low > 0 else { return nil }
         let row = timedRows[low - 1]
-        return row.end.map { time < $0 ? row.id : nil } ?? row.id
+        guard !row.voices.isEmpty, let start = row.start, row.end.map({ time < $0 }) != false else { return nil }
+        let nextStart = low < timedRows.count ? timedRows[low].start : nil
+        return (row.id, start, row.end ?? nextStart)
     }
 
     private static func fragments(_ layer: NavidromeLyrics.CueLine, offset: Double, lineEnd: Double?) -> [Fragment] {
@@ -101,8 +121,13 @@ private struct KaraokeCue: TextAttribute {
 
 private struct KaraokeFill: TextRenderer {
     let time: Double
+    var lineProgress: Double? = nil
 
     func draw(layout: Text.Layout, in context: inout GraphicsContext) {
+        if let lineProgress {
+            drawLineProgress(layout, progress: lineProgress, in: context)
+            return
+        }
         for line in layout {
             for run in line {
                 guard let cue = run[KaraokeCue.self] else { context.draw(run); continue }
@@ -119,12 +144,35 @@ private struct KaraokeFill: TextRenderer {
             }
         }
     }
+
+    private func drawLineProgress(_ layout: Text.Layout, progress: Double, in context: GraphicsContext) {
+        var remaining = layout.reduce(CGFloat.zero) { $0 + $1.typographicBounds.rect.width } * progress
+        var dim = context
+        dim.opacity *= 0.43
+        for line in layout {
+            var rect = line.typographicBounds.rect
+            if remaining >= rect.width {
+                context.draw(line)
+                remaining -= rect.width
+            } else {
+                dim.draw(line)
+                if remaining > 0 {
+                    var bright = context
+                    rect.size.width = remaining
+                    bright.clip(to: Path(rect.insetBy(dx: 0, dy: -4)))
+                    bright.draw(line)
+                    remaining = 0
+                }
+            }
+        }
+    }
 }
 
 struct MusicLyricsView: View {
     let source: MusicSource
     let track: NavidromeTrack
     let session: MusicSession
+    let isActive: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var documents: [NavidromeLyrics] = []
     @State private var selected = 0
@@ -132,7 +180,7 @@ struct MusicLyricsView: View {
     @State private var loading = true
     @State private var error: String?
     @State private var retry = 0
-    @State private var follows = true
+    @State private var isBrowsing = false
 
     var body: some View {
         Group {
@@ -147,17 +195,19 @@ struct MusicLyricsView: View {
                                        description: Text("这首歌曲没有可显示的歌词。"))
             }
         }
-        .task(id: retry) {
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: isActive ? retry : nil) {
+            guard isActive, loading || error != nil else { return }
             loading = true
             error = nil
             do {
                 let result = try await source.client.lyrics(for: track, enhanced: source.capabilities.supports("songLyrics", version: 2))
                 guard !Task.isCancelled else { return }
                 documents = result
-                selected = result.firstIndex { ($0.kind ?? "main") == "main" && !($0.cueLine ?? []).isEmpty }
+                selected = result.firstIndex { ($0.kind ?? "main") == "main" && $0.synced && !($0.cueLine ?? []).isEmpty }
                     ?? result.firstIndex { ($0.kind ?? "main") == "main" && $0.synced }
                     ?? result.firstIndex { ($0.kind ?? "main") == "main" } ?? 0
-                lyrics = result.indices.contains(selected) ? KaraokeLyrics(result[selected]) : nil
+                lyrics = result.indices.contains(selected) ? KaraokeLyrics(result[selected], trackTitle: track.title) : nil
             } catch {
                 if !Task.isCancelled { self.error = error.localizedDescription }
             }
@@ -167,53 +217,48 @@ struct MusicLyricsView: View {
 
     private func lyricDisplay(_ lyric: KaraokeLyrics) -> some View {
         VStack(spacing: 0) {
-            HStack {
-                Text(lyric.hasWordTiming ? "逐字歌词" : lyric.synced ? "逐行歌词" : "纯文本歌词")
-                    .font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                Spacer()
-                if documents.count > 1 {
-                    Picker("歌词版本", selection: $selected) {
-                        ForEach(documents.indices, id: \.self) { i in
-                            Text(versionTitle(documents[i], index: i)).tag(i)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .onChange(of: selected) { _, i in
-                        lyrics = KaraokeLyrics(documents[i])
-                        follows = true
+            if documents.count > 1 {
+                Picker("歌词版本", selection: $selected) {
+                    ForEach(documents.indices, id: \.self) { i in
+                        Text(versionTitle(documents[i], index: i)).tag(i)
                     }
                 }
-                if lyric.synced && !follows {
-                    Button("跟随播放") { follows = true }.font(.caption)
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.horizontal, 22)
+                .onChange(of: selected) { _, i in
+                    isBrowsing = false
+                    lyrics = KaraokeLyrics(documents[i], trackTitle: track.title)
                 }
             }
-            .padding(.horizontal, 22)
             ScrollViewReader { reader in
-                TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !session.isPlaying || !lyric.hasWordTiming)) { _ in
+                let playing = session.isPlaying
+                TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !isActive || !playing || !lyric.synced)) { _ in
                     let time = session.lyricPosition
-                    let active = lyric.current(at: time)
+                    let cue = lyric.current(at: time)
+                    let active = cue?.id
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 19) {
+                        LazyVStack(alignment: .leading, spacing: 21) {
                             ForEach(lyric.rows) { row in
                                 Button {
                                     guard let start = row.start, session.canSeek else { return }
                                     session.seek(to: start)
-                                    follows = true
+                                    if active == row.id { scroll(reader, to: row.id) }
                                 } label: {
                                     VStack(alignment: .leading, spacing: 6) {
                                         ForEach(row.voices) { voice in
                                             if let name = voice.name, row.voices.count > 1 {
                                                 Text(name).font(.caption).foregroundStyle(.secondary)
                                             }
-                                            if active == row.id {
-                                                timedText(voice, at: time)
-                                                    .foregroundStyle(voice.isBackground ? Color.accentColor.opacity(0.82) : Color.accentColor)
+                                            if let cue, cue.id == row.id {
+                                                timedText(voice, at: time, start: cue.start, end: cue.end)
+                                                    .foregroundStyle(VelaTheme.accent.opacity(voice.isBackground ? 0.82 : 1))
                                             } else {
                                                 Text(voice.text).foregroundStyle(lyric.synced ? Color.secondary : .primary)
                                             }
                                         }
                                     }
-                                    .font(.title3.weight(active == row.id ? .bold : .semibold))
+                                    .font(.title2.weight(active == row.id ? .bold : .regular))
                                     .multilineTextAlignment(.leading)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .contentShape(Rectangle())
@@ -222,21 +267,41 @@ struct MusicLyricsView: View {
                                 .disabled(row.start == nil || !session.canSeek)
                                 .id(row.id)
                             }
+                            if !lyric.credits.isEmpty {
+                                DisclosureGroup("制作信息") {
+                                    Text(lyric.credits.joined(separator: "\n"))
+                                        .textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.top, 6)
+                                }
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            }
                         }
                         .padding(.horizontal, 22)
                         .padding(.vertical, 24)
                     }
                     .onScrollPhaseChange { _, phase in
-                        if phase == .interacting { follows = false }
+                        if phase == .interacting {
+                            isBrowsing = true
+                        } else if phase == .idle, isBrowsing {
+                            isBrowsing = false
+                            if isActive, playing, let active { scroll(reader, to: active) }
+                        }
                     }
                     .onChange(of: active, initial: true) { _, id in
-                        if follows, let id { scroll(reader, to: id) }
+                        if isActive, !isBrowsing, let id { scroll(reader, to: id) }
                     }
-                    .onChange(of: follows) { _, enabled in
-                        if enabled, let active { scroll(reader, to: active) }
+                    .onChange(of: playing) { _, playing in
+                        if isActive, playing, !isBrowsing, let active { scroll(reader, to: active) }
+                    }
+                    .onChange(of: isActive) { _, visible in
+                        isBrowsing = false
+                        if visible, let active { scroll(reader, to: active) }
                     }
                 }
             }
+            .id(selected)
         }
     }
 
@@ -244,7 +309,12 @@ struct MusicLyricsView: View {
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) { reader.scrollTo(id, anchor: .center) }
     }
 
-    private func timedText(_ voice: KaraokeLyrics.Voice, at time: Double) -> some View {
+    private func timedText(_ voice: KaraokeLyrics.Voice, at time: Double, start: Double, end: Double?) -> some View {
+        let lineProgress: Double? = if let end, end > start, !voice.fragments.contains(where: { $0.start != nil }) {
+            min(1, max(0, (time - start) / (end - start)))
+        } else {
+            nil
+        }
         let combined = voice.fragments.reduce(Text(verbatim: "")) { text, part in
             let value = Text(verbatim: part.text)
             if let start = part.start, let end = part.end {
@@ -252,7 +322,7 @@ struct MusicLyricsView: View {
             }
             return Text("\(text)\(value)")
         }
-        return combined.textRenderer(KaraokeFill(time: time))
+        return combined.textRenderer(KaraokeFill(time: time, lineProgress: lineProgress))
     }
 
     private func versionTitle(_ lyric: NavidromeLyrics, index: Int) -> String {

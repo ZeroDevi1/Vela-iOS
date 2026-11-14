@@ -141,6 +141,10 @@ public struct NavidromeClient: Sendable {
 
     public func cover(_ id: String, size: Int) async throws -> Data {
         let url = try endpoint("getCoverArt", [Self.id(id), .init(name: "size", value: String(size))])
+        return try await artwork(from: url)
+    }
+
+    public func artwork(from url: URL) async throws -> Data {
         let (data, response) = try await fetch(url)
         guard response.mimeType?.hasPrefix("image/") == true else { throw NavidromeError.invalidResponse }
         return data
@@ -190,7 +194,12 @@ public struct NavidromeClient: Sendable {
         return result
     }
 
-    func downloadResource(_ url: URL) async throws -> (URL, String?) {
+    /// 从串流端点暂存原始 FLAC，沿用串流权限与原始字节。
+    public func stageOriginalFLAC(from url: URL) async throws -> URL {
+        try await downloadResource(url, fileExtension: "flac").0
+    }
+
+    func downloadResource(_ url: URL, fileExtension: String? = nil) async throws -> (URL, String?) {
         let (file, response): (URL, URLResponse)
         do {
             (file, response) = try await Self.session.download(for: URLRequest(url: url, timeoutInterval: 40))
@@ -210,7 +219,8 @@ public struct NavidromeClient: Sendable {
             }
             throw NavidromeError.invalidResponse
         }
-        let stage = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        var stage = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        if let fileExtension { stage.appendPathExtension(fileExtension) }
         try FileManager.default.moveItem(at: file, to: stage)
         return (stage, http.suggestedFilename)
     }
@@ -289,12 +299,14 @@ public struct NavidromeTrack: Codable, Hashable, Identifiable, Sendable {
     public let track: Int?
     public let discNumber: Int?
     public let suffix: String?
+    public let contentType: String?
     public let starred: String?
     public let userRating: Int?
 
     public static func radio(_ station: NavidromeRadio) -> Self {
         .init(id: station.id, title: station.name, artist: "网络电台", album: nil, artistId: nil, albumId: nil,
-              coverArt: station.coverArt, duration: nil, track: nil, discNumber: nil, suffix: nil, starred: nil, userRating: nil)
+              coverArt: station.coverArt, duration: nil, track: nil, discNumber: nil, suffix: nil, contentType: nil,
+              starred: nil, userRating: nil)
     }
 }
 
@@ -302,9 +314,11 @@ public struct MusicAlbum: Decodable, Hashable, Identifiable, Sendable {
     public let id: String
     public let name: String
     public let artist: String?
+    public let artistId: String?
     public let coverArt: String?
     public let year: Int?
     public let songCount: Int?
+    public let duration: Int?
     public let starred: String?
     public let song: [NavidromeTrack]?
 }
@@ -313,6 +327,7 @@ public struct MusicArtist: Decodable, Hashable, Identifiable, Sendable {
     public let id: String
     public let name: String
     public let coverArt: String?
+    public let artistImageUrl: String?
     public let albumCount: Int?
     public let starred: String?
     public let album: [MusicAlbum]?
