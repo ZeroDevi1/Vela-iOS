@@ -5,7 +5,7 @@
 <h1 align="center">Vela for iOS / iPadOS / macOS</h1>
 
 <p align="center">
-  面向 <strong>Jellyfin</strong> 与 <strong>Emby</strong> 的 Apple 原生客户端，Swift 6 + SwiftUI，适配 iOS / iPadOS / macOS 27 与 Liquid Glass。
+  面向 <strong>Jellyfin</strong>、<strong>Emby</strong> 与 <strong>Navidrome</strong> 的 Apple 原生客户端，Swift 6 + SwiftUI，适配 iOS / iPadOS / macOS 27 与 Liquid Glass。
 </p>
 
 Android 版见 [ZeroDevi1/Vela](https://github.com/ZeroDevi1/Vela)（基于 [JellyCine](https://github.com/sureshfizzy/JellyCine)）。本仓库按 Android 版的功能与约定在 Apple 平台上原生实现，不共享代码。
@@ -19,9 +19,16 @@ Android 版见 [ZeroDevi1/Vela](https://github.com/ZeroDevi1/Vela)（基于 [Jel
 ### 服务器
 
 - 同时支持 Jellyfin 与 Emby；添加时自动补全 `https` / `http` 与 Emby 的 `/emby` 路径，并识别服务器类型
-- 多服务器切换；每台服务器可设备注、多条线路（局域网 / 公网）、STRM 原始地址直连
+- 多服务器切换；Jellyfin / Emby 支持多条线路（局域网 / 公网）和 STRM 原始地址直连
 - **私密服务器**：每次启动后需面容 ID / 触控 ID / 密码解锁，解锁状态只在内存中保存；进入多任务切换器时遮挡内容；与 Android 版一致，私密服务器（无论是否解锁）不参与聚合搜索、跨服匹配与聚合继续观看
-- 访问 token 保存在 Keychain（仅本机），服务器列表 JSON 不含敏感信息
+- 登录凭据保存在 Keychain（仅本机），服务器列表 JSON 不保存凭据
+
+### Navidrome 音乐
+
+- 在「添加服务器」选择 Navidrome，填写基址及账号密码，或使用支持 API 密钥的服务器签发的密钥。基址支持反代子路径；省略协议默认使用 HTTPS，使用 HTTP 时需写出 `http://`。
+- 独立音乐界面支持分库浏览、搜索、收藏与评分、歌单编辑、书签，以及在 Navidrome 保存或恢复播放队列。
+- 迷你播放器和系统媒体控制共享同一播放会话，支持原流与兼容 MP3 转码。歌词有逐字时间时渐进填色，普通 LRC 按行高亮，纯文本可阅读；点击同步歌词可跳转。
+- 音乐设置按服务端能力和当前账号权限显示共享、电台管理、扫描和 Jukebox。可按权限下载并导出原始文件。参见 [公开接口覆盖范围](docs/ROADMAP.md#navidrome-音乐)。
 
 ### 浏览
 
@@ -183,7 +190,7 @@ Vela/                   App 入口（Scene / 窗口 / 设置）与资源
 Config/Vela-Info.plist  后台音频、ATS 等
 Packages/VelaKit/       全部业务代码（本地 Swift 包）
   VelaCore              领域模型、线路路由、日志
-  VelaNetwork           Jellyfin / Emby 客户端、DTO、DeviceProfile
+  VelaNetwork           Jellyfin / Emby / Navidrome 客户端、DTO、DeviceProfile
   VelaData              服务器存储、登录、聚合搜索、隐私、选流、播放上报
   VelaPlayer            播放内核协议、AVPlayer 内核、控制器、手势、字幕、VR、正在播放
   VelaDesignSystem      主题与通用卡片组件

@@ -34,10 +34,11 @@ struct EmbySuggestionsProvider: SuggestionsProvider {
 }
 
 extension MediaServerKind {
-    var suggestionsProvider: any SuggestionsProvider {
+    var suggestionsProvider: (any SuggestionsProvider)? {
         switch self {
         case .jellyfin: JellyfinSuggestionsProvider()
         case .emby: EmbySuggestionsProvider()
+        case .navidrome: nil
         }
     }
 }
@@ -46,9 +47,10 @@ extension MediaServerClient {
     /// 服务器推荐的条目（与 Android `MediaRepository.getSuggestions` 相同的接口）；按 id 去重，丢弃无名称的条目。
     /// 服务器未实现该接口时抛出 HTTP 错误，由调用方决定是否回退。
     public func suggestions(types: [String] = ["Movie", "Series"], limit: Int = 15) async throws -> [MediaItem] {
+        guard let provider = kind.suggestionsProvider else { return [] }
         let result = try await httpClient.decode(
             QueryResult<BaseItemDTO>.self,
-            kind.suggestionsProvider.request(userID: userID, types: types, limit: limit, fields: Self.listFields),
+            provider.request(userID: userID, types: types, limit: limit, fields: Self.listFields),
             baseURL: baseURL,
             headers: requestHeaders
         )

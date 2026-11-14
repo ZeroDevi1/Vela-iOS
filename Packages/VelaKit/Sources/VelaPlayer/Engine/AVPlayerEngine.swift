@@ -86,7 +86,11 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         return end - time.seconds >= max(3, Double(rate) * 3)
     }
 
-    public init() {
+    private let forMusic: Bool
+
+    public init(forMusic: Bool = false) {
+        self.forMusic = forMusic
+        preciseSeeking = forMusic
         // 由系统预估缓冲是否跟得上再起播 / 恢复，避免高码率片源在带宽不足时播一下卡一下。
         player.automaticallyWaitsToMinimizeStalling = true
         player.appliesMediaSelectionCriteriaAutomatically = true
@@ -97,6 +101,7 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
     }
 
     public func load(_ source: PlaybackSource) {
+        if timeObserver == nil { observePlayer() }
         cancelDeferredSeek()
         isNetworkSource = SeekBufferPolicy.isNetworkSource(source.url)
         allowsSeekPreloading = source.allowsSeekPreloading && isNetworkSource
@@ -165,7 +170,7 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         let seekableRanges = item.seekableTimeRanges
         let seekable = seekableRanges.contains { $0.timeRangeValue.containsTime(time) }
             || (allowsSeekPreloading && seekableRanges.isEmpty)
-        let shouldBuffer = isNetworkSource && item.status == .readyToPlay && wantsPlay && needed > 0.1
+        let shouldBuffer = !forMusic && isNetworkSource && item.status == .readyToPlay && wantsPlay && needed > 0.1
             && seekable && bufferedAhead + 0.1 < needed
         item.cancelPendingSeeks()
         let request = DeferredSeek(target: time, wantsPlay: wantsPlay)
@@ -187,7 +192,7 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
             await prepareInPlace(request, item: item, tolerance: preloadTolerance, deadline: deadline)
         } else {
             pendingSeekPosition = nil
-            let seekTolerance = shouldBuffer || (isNetworkSource && bufferedAhead > 0) ? preloadTolerance : tolerance
+            let seekTolerance = !forMusic && (shouldBuffer || (isNetworkSource && bufferedAhead > 0)) ? preloadTolerance : tolerance
             let finished = await seekImmediately(to: time, tolerance: seekTolerance)
             if finished, deferredSeek === request, !Task.isCancelled, request.wantsPlay,
                player.timeControlStatus == .paused { play() }
@@ -427,7 +432,11 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playback, mode: .moviePlayback, policy: .longFormVideo)
+            if forMusic {
+                try session.setCategory(.playback, mode: .default, policy: .longFormAudio)
+            } else {
+                try session.setCategory(.playback, mode: .moviePlayback, policy: .longFormVideo)
+            }
             try session.setActive(true)
         } catch {
             Log.player.error("音频会话配置失败：\(error.localizedDescription, privacy: .public)")
@@ -516,13 +525,24 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
                     }
                 case .failed:
                     self.cancelDeferredSeek()
-                    self.status = .failed(message ?? "无法播放")
-                    Log.player.error("AVPlayerItem 失败：\(message ?? "unknown", privacy: .public)")
+                    let detail = self.forMusic ? "无法播放音频" : message ?? "无法播放"
+                    self.status = .failed(detail)
+                    Log.player.error("AVPlayerItem 失败：\(detail, privacy: .public)")
                 default:
                     break
                 }
             }
         }]
+        if forMusic {
+            itemObservations.append(item.observe(\.duration, options: [.new]) { [weak self] item, _ in
+                let seconds = item.duration.seconds
+                guard seconds.isFinite, seconds > 0 else { return }
+                Task { @MainActor in
+                    guard let self, self.player.currentItem === item else { return }
+                    self.duration = seconds
+                }
+            })
+        }
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         endObserver = NotificationCenter.default.addObserver(
             forName: AVPlayerItem.didPlayToEndTimeNotification,

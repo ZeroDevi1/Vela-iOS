@@ -3,7 +3,7 @@ import Observation
 import VelaCore
 import VelaNetwork
 
-/// 已登录服务器的唯一真相源：服务器列表落盘为 JSON（Application Support），token 存 Keychain。
+/// 已登录服务器的唯一真相源：服务器列表落盘为 JSON（Application Support），凭据存 Keychain。
 ///
 /// 只在主线程读写；网络请求通过 `client(for:)` 拿到的值类型 client 在任意线程执行。
 @MainActor
@@ -49,6 +49,7 @@ public final class ServerStore {
             }
             merged.serverName = server.serverName
             merged.kind = server.kind
+            merged.usesNavidromeAPIKey = server.usesNavidromeAPIKey
             merged.lastUsedAt = .now
             servers[index] = merged
         } else {
@@ -120,7 +121,7 @@ public final class ServerStore {
 
     /// 为指定服务器构造 API client。token 缺失（例如 Keychain 被清空）时抛出未授权，界面应引导重新登录。
     public func client(for server: SavedServer) throws -> MediaServerClient {
-        guard let token = try keychain.string(for: server.id) else { throw APIError.unauthorized }
+        guard server.kind != .navidrome, let token = try keychain.string(for: server.id) else { throw APIError.unauthorized }
         var onFailure: (@Sendable (URL) -> Void)?
         if let handler = transportFailureHandler {
             let serverID = server.id
@@ -135,6 +136,15 @@ public final class ServerStore {
             identity: identity,
             http: HTTPClient(onTransportFailure: onFailure)
         )
+    }
+
+    public func navidromeClient(for server: SavedServer) throws -> NavidromeClient {
+        guard server.kind == .navidrome, let password = try keychain.string(for: server.id) else {
+            throw NavidromeError.authentication
+        }
+        let apiKey = server.usesNavidromeAPIKey == true ? password : nil
+        return NavidromeClient(accountID: server.id, baseURL: server.baseURL, username: server.username,
+                               password: apiKey == nil ? password : "", apiKey: apiKey)
     }
 
     public func client(forServerID serverID: String) throws -> MediaServerClient {

@@ -30,6 +30,8 @@ public final class AppModel {
     public let downloads = DownloadManager()
     /// 网络状态：无网络时首页回退到已下载内容。
     public let network = NetworkStatus()
+    let music = MusicSession()
+    @ObservationIgnored private weak var videoPlaybackOwner: PlayerSession?
     /// 启动时探测一次；外接显示器变化导致的 HDR 能力变化在播放前重新探测。
     public private(set) var capabilities: PlaybackCapabilities
 
@@ -85,7 +87,7 @@ public final class AppModel {
     /// 返回服务器对应的 client，并按「服务器 + 当前线路」缓存，避免每次取图片地址都读 Keychain。
     public func client(forServerID serverID: String) -> MediaServerClient? {
         // 每张卡片渲染都会调用：只做查找与 URL 比较，不拼接字符串、不读 Keychain。
-        guard let server = servers.servers.first(where: { $0.id == serverID }) else { return nil }
+        guard let server = servers.servers.first(where: { $0.id == serverID }), server.kind != .navidrome else { return nil }
         if let cached = clientCache[serverID], cached.baseURL == server.baseURL { return cached.client }
         guard let client = try? servers.client(for: server) else { return nil }
         clientCache[serverID] = (server.baseURL, client)
@@ -94,6 +96,47 @@ public final class AppModel {
 
     public var activeClient: MediaServerClient? {
         servers.activeServer.flatMap { client(forServerID: $0.id) }
+    }
+
+    func musicSource(for server: SavedServer) async throws -> MusicSource {
+        let client = try servers.navidromeClient(for: server)
+        async let capabilities = client.capabilities()
+        async let permissions = try? client.user()
+        try Task.checkCancellation()
+        return await MusicSource(client: client, capabilities: capabilities, isPrivate: server.isPrivate, user: permissions)
+    }
+
+    func playMusic(_ tracks: [NavidromeTrack], at index: Int, from source: MusicSource,
+                   position: Double = 0, radio: URL? = nil) {
+        guard tracks.indices.contains(index), servers.activeServer?.id == source.id, isActiveServerAccessible else { return }
+        let video = videoPlaybackOwner
+        videoPlaybackOwner = nil
+        pendingPictureInPicturePlayback = nil
+        video?.yieldPlayback()
+        pictureInPictureSession = nil
+        presentedPlayback = nil
+        music.start(tracks, at: index, source: source, position: position, radio: radio)
+    }
+
+    func claimVideoPlayback(_ session: PlayerSession) {
+        music.stop()
+        if let previous = videoPlaybackOwner, previous !== session { previous.yieldPlayback() }
+        videoPlaybackOwner = session
+    }
+
+    func reconcileMusicSession() {
+        guard let source = music.source else { return }
+        guard servers.activeServer?.id == source.id,
+              servers.activeServer?.isPrivate == source.isPrivate,
+              isActiveServerAccessible else {
+            music.stop()
+            return
+        }
+    }
+
+    func removeMusicAccount(_ id: String) {
+        if music.source?.id == id { music.stop() }
+        music.removeHistory(id)
     }
 
     /// 当前服务器是否可以展示内容：私密服务器必须在本进程内解锁过。

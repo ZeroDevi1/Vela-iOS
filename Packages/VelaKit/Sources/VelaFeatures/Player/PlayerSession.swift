@@ -137,6 +137,7 @@ final class PlayerSession {
         guard !closed else { return }
         didPrepare = true
         self.app = app
+        app.claimVideoPlayback(self)
         let preferences = app.playerPreferences
         controller.preferences = preferences
         controller.onPlayNext = { [weak self] in self?.playNextEpisode() }
@@ -209,6 +210,13 @@ final class PlayerSession {
         stopPreviewEncoding()
         nowPlaying.deactivate()
         controller.shutdown()
+    }
+
+    /// 播放器窗口仍可见时，新起播的会话接管音频和系统控制。
+    func yieldPlayback() {
+        controller.stopPictureInPicture()
+        close()
+        phase = .failed("播放会话已结束")
     }
 
     // MARK: - 起播

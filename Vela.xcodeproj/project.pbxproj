@@ -239,7 +239,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Vela;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "用于解锁私密服务器";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "用于连接局域网中的 Jellyfin / Emby 服务器";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "用于连接局域网中的 Jellyfin、Emby 或 Navidrome 服务器";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "用于把播放器截图保存到相册";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
@@ -285,7 +285,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Vela;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "用于解锁私密服务器";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "用于连接局域网中的 Jellyfin / Emby 服务器";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "用于连接局域网中的 Jellyfin、Emby 或 Navidrome 服务器";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "用于把播放器截图保存到相册";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;

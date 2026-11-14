@@ -66,6 +66,11 @@ public final class ImagePipeline: Sendable {
         return await loader.load(url, priority: priority)
     }
 
+    /// 需要鉴权的图片使用不含凭据的稳定标识去重，下载器负责生成实际请求。
+    public func image(key: URL, memoryOnly: Bool, fetch: @escaping @Sendable () async throws -> Data) async -> CGImage? {
+        await loader.load(key, priority: .userInitiated, memoryOnly: memoryOnly, download: fetch)
+    }
+
     /// 低优先级预取（进入内存缓存）；网格加载下一页后调用，滚动到时图片通常已就绪。
     public func prefetch(_ urls: [URL]) {
         let pending = urls.filter { memory.image(for: $0) == nil }
@@ -140,7 +145,8 @@ public final class ImagePipeline: Sendable {
             self.memory = memory
         }
 
-        func load(_ url: URL, priority: TaskPriority) async -> CGImage? {
+        func load(_ url: URL, priority: TaskPriority, memoryOnly: Bool = false,
+                  download: (@Sendable () async throws -> Data)? = nil) async -> CGImage? {
             if let image = memory.image(for: url) { return image }
             if let failedAt = failures[url] {
                 if Date.now.timeIntervalSince(failedAt) < Self.failureTTL { return nil }
@@ -150,7 +156,7 @@ public final class ImagePipeline: Sendable {
             if let task = inFlight[url] {
                 fetch = await task.value
             } else {
-                let task = makeFetch(url, priority: priority)
+                let task = makeFetch(url, priority: priority, memoryOnly: memoryOnly, download: download)
                 inFlight[url] = task
                 fetch = await task.value
                 // 先填内存再清除进行中的请求，预取和界面同时查找时不会重复解码。
@@ -165,20 +171,29 @@ public final class ImagePipeline: Sendable {
             return nil
         }
 
-        private func makeFetch(_ url: URL, priority: TaskPriority) -> Task<Fetch, Never> {
+        private func makeFetch(_ url: URL, priority: TaskPriority, memoryOnly: Bool,
+                               download: (@Sendable () async throws -> Data)?) -> Task<Fetch, Never> {
             let file = fileURL(for: url)
             let session = session
             return Task.detached(priority: priority) { () -> Fetch in
-                if let data = try? Data(contentsOf: file, options: .mappedIfSafe), let image = Self.decode(data) {
+                if !memoryOnly, let data = try? Data(contentsOf: file, options: .mappedIfSafe), let image = Self.decode(data) {
                     Self.touch(file)
                     return .image(image, writtenBytes: 0)
                 }
-                guard let (data, response) = try? await session.data(from: url),
-                      let http = response as? HTTPURLResponse else { return .failed }
-                guard (200..<300).contains(http.statusCode) else {
-                    return (400..<500).contains(http.statusCode) ? .missing : .failed
+                let data: Data
+                if let download {
+                    guard let bytes = try? await download() else { return .failed }
+                    data = bytes
+                } else {
+                    guard let (bytes, response) = try? await session.data(from: url),
+                          let http = response as? HTTPURLResponse else { return .failed }
+                    guard (200..<300).contains(http.statusCode) else {
+                        return (400..<500).contains(http.statusCode) ? .missing : .failed
+                    }
+                    data = bytes
                 }
                 guard let image = Self.decode(data) else { return .missing }
+                if memoryOnly { return .image(image, writtenBytes: 0) }
                 try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
                 guard (try? data.write(to: file, options: .atomic)) != nil else { return .image(image, writtenBytes: 0) }
                 return .image(image, writtenBytes: Int64(data.count))

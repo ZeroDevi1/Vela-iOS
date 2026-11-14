@@ -26,6 +26,8 @@ public struct VelaRootView: View {
         Group {
             if app.servers.servers.isEmpty {
                 OnboardingView()
+            } else if let server = app.servers.activeServer, server.kind == .navidrome {
+                MusicSpace(server: server).id(server.id)
             } else {
                 MainTabView()
             }
@@ -47,6 +49,8 @@ public struct VelaRootView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { app.lineRouter.appDidBecomeActive() }
         }
+        .onChange(of: app.servers.activeServer) { _, _ in app.reconcileMusicSession() }
+        .onChange(of: app.isActiveServerAccessible) { _, _ in app.reconcileMusicSession() }
         // 进入多任务切换器时遮挡私密服务器内容，防止快照泄露。
         .overlay {
             if scenePhase != .active, app.servers.activeServer?.isPrivate == true {

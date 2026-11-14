@@ -247,14 +247,20 @@ struct ServerEditView: View {
                 Section {
                     TextField("备注", text: binding(server, \.noteText))
                     Toggle("私密服务器", isOn: binding(server, \.isPrivate))
-                    Toggle("STRM 优先播放原始地址", isOn: binding(server, \.preferStrmOriginalPath))
-                    Toggle("自动切换线路", isOn: binding(server, \.autoRouteEnabled))
+                    if server.kind != .navidrome {
+                        Toggle("STRM 优先播放原始地址", isOn: binding(server, \.preferStrmOriginalPath))
+                        Toggle("自动切换线路", isOn: binding(server, \.autoRouteEnabled))
+                    }
                 }
-                LineManagementSection(server: server)
-                Section {
-                    NavigationLink("服务器管理") { ServerAdminView(serverID: server.id) }
-                } footer: {
-                    Text("系统信息、活动会话、计划任务与媒体库扫描，需要管理员账号。")
+                if server.kind == .navidrome {
+                    Section("连接") { LabeledContent("地址", value: server.baseURL.absoluteString) }
+                } else {
+                    LineManagementSection(server: server)
+                    Section {
+                        NavigationLink("服务器管理") { ServerAdminView(serverID: server.id) }
+                    } footer: {
+                        Text("系统信息、活动会话、计划任务与媒体库扫描，需要管理员账号。")
+                    }
                 }
                 Section {
                     if server.id != app.servers.activeServer?.id {
@@ -268,6 +274,7 @@ struct ServerEditView: View {
             .confirmationDialog("删除「\(server.displayName)」？", isPresented: $confirmDelete, titleVisibility: .visible) {
                 Button("删除", role: .destructive) {
                     app.servers.remove(server.id)
+                    if server.kind == .navidrome { app.removeMusicAccount(server.id) }
                     dismiss()
                 }
             } message: {

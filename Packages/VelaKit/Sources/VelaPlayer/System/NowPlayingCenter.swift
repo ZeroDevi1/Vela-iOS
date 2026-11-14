@@ -22,6 +22,11 @@ public final class NowPlayingCenter {
         deactivate()
         self.controller = controller
         let center = MPRemoteCommandCenter.shared()
+        center.nextTrackCommand.isEnabled = false
+        center.previousTrackCommand.isEnabled = false
+        center.skipBackwardCommand.isEnabled = true
+        center.skipForwardCommand.isEnabled = true
+        center.changePlaybackPositionCommand.isEnabled = true
 
         register(center.playCommand) { $0.engine.play() }
         register(center.pauseCommand) { $0.engine.pause() }
@@ -55,22 +60,68 @@ public final class NowPlayingCenter {
         #endif
     }
 
+    public func activateMusic(play: @escaping @MainActor @Sendable () -> Void,
+                              pause: @escaping @MainActor @Sendable () -> Void,
+                              toggle: @escaping @MainActor @Sendable () -> Void,
+                              next: @escaping @MainActor @Sendable () -> Void,
+                              previous: @escaping @MainActor @Sendable () -> Void,
+                              seek: @escaping @MainActor @Sendable (TimeInterval) -> Void) {
+        deactivate()
+        let center = MPRemoteCommandCenter.shared()
+        center.skipBackwardCommand.isEnabled = false
+        center.skipForwardCommand.isEnabled = false
+        for (command, action) in [(center.playCommand, play), (center.pauseCommand, pause),
+                                  (center.togglePlayPauseCommand, toggle), (center.nextTrackCommand, next),
+                                  (center.previousTrackCommand, previous)] {
+            command.isEnabled = true
+            let target = command.addTarget { @Sendable _ in
+                Task { @MainActor in action() }
+                return .success
+            }
+            targets.append((command, target))
+        }
+        let command = center.changePlaybackPositionCommand
+        command.isEnabled = true
+        let target = command.addTarget { @Sendable event in
+            guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+            let position = event.positionTime
+            Task { @MainActor in seek(position) }
+            return .success
+        }
+        targets.append((command, target))
+    }
+
+    public func updateMusicCommands(canSkipNext: Bool, canSeek: Bool) {
+        let center = MPRemoteCommandCenter.shared()
+        center.nextTrackCommand.isEnabled = canSkipNext
+        center.changePlaybackPositionCommand.isEnabled = canSeek
+    }
+
     /// 播放状态变化（起播、暂停、拖动、倍速）时调用。系统根据 elapsed + rate 自行推算进度，无需每秒更新。
-    public func update(title: String, subtitle: String?, duration: TimeInterval, position: TimeInterval, rate: Float) {
+    public func update(title: String, subtitle: String?, duration: TimeInterval, position: TimeInterval, rate: Float,
+                       isMusic: Bool = false, album: String? = nil) {
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: title,
-            MPMediaItemPropertyMediaType: MPMediaType.movie.rawValue,
+            MPNowPlayingInfoPropertyMediaType: (isMusic ? MPNowPlayingInfoMediaType.audio : .video).rawValue,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: position,
             MPNowPlayingInfoPropertyPlaybackRate: rate,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0
         ]
         if let subtitle { info[MPMediaItemPropertyArtist] = subtitle }
+        if let album { info[MPMediaItemPropertyAlbumTitle] = album }
         if duration > 0 { info[MPMediaItemPropertyPlaybackDuration] = duration }
         if let artwork { info[MPMediaItemPropertyArtwork] = artwork }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         #if os(macOS)
         MPNowPlayingInfoCenter.default().playbackState = rate > 0 ? .playing : .paused
         #endif
+    }
+
+    public func setArtwork(_ image: CGImage?) {
+        artwork = image.flatMap(Self.makeArtwork)
+        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+        info[MPMediaItemPropertyArtwork] = artwork
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
     /// 异步加载封面；失败时保持无封面，不影响其余信息。
@@ -98,6 +149,15 @@ public final class NowPlayingCenter {
         nonisolated(unsafe) let unsafeImage = image
         return MPMediaItemArtwork(boundsSize: image.size) { @Sendable _ in unsafeImage }
         #endif
+    }
+
+    private nonisolated static func makeArtwork(_ pixels: CGImage) -> MPMediaItemArtwork? {
+        #if os(iOS)
+        let image = UIImage(cgImage: pixels)
+        #else
+        nonisolated(unsafe) let image = NSImage(cgImage: pixels, size: .zero)
+        #endif
+        return MPMediaItemArtwork(boundsSize: image.size) { @Sendable _ in image }
     }
 
     private func register(_ command: MPRemoteCommand, action: @escaping @MainActor @Sendable (PlayerController) -> Void) {

@@ -4,11 +4,13 @@ import Foundation
 public enum MediaServerKind: String, Codable, Sendable, CaseIterable {
     case jellyfin
     case emby
+    case navidrome
 
     public var displayName: String {
         switch self {
         case .jellyfin: "Jellyfin"
         case .emby: "Emby"
+        case .navidrome: "Navidrome"
         }
     }
 }
@@ -39,6 +41,7 @@ public struct SavedServer: Codable, Hashable, Sendable, Identifiable {
     public var serverName: String
     public var kind: MediaServerKind
     public var username: String
+    public var usesNavidromeAPIKey: Bool? = nil
     public var userID: String
     /// 用户备注；非空时替换服务器自报的名称显示。
     public var note: String?

@@ -38,4 +38,20 @@ public struct ServerLoginService: Sendable {
         )
         return Output(server: server, accessToken: auth.accessToken)
     }
+
+    public func loginNavidrome(address: String, username: String, password: String, note: String?,
+                               useAPIKey: Bool = false) async throws -> Output {
+        let url = try NavidromeClient.address(address)
+        // Subsonic 不提供稳定的实例 ID；首版单线路，以规范化基址识别同一账号。
+        let instance = "navidrome:" + url.absoluteString
+        let client = NavidromeClient(accountID: "", baseURL: url, username: username, password: useAPIKey ? "" : password,
+                                     apiKey: useAPIKey ? password : nil)
+        try await client.ping()
+        let resolved = try await (useAPIKey ? client.tokenUsername() : client.user().username)
+        var server = SavedServer(serverInstanceID: instance, serverName: "Navidrome", kind: .navidrome,
+                                 username: resolved, userID: resolved, note: note, lines: [ServerLine(url: url)],
+                                 autoRouteEnabled: false, preferStrmOriginalPath: false)
+        server.usesNavidromeAPIKey = useAPIKey
+        return Output(server: server, accessToken: password)
+    }
 }

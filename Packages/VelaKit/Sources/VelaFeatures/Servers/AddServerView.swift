@@ -10,7 +10,7 @@ struct OnboardingView: View {
             ContentUnavailableView {
                 Label("欢迎使用 Vela", systemImage: "play.tv")
             } description: {
-                Text("连接你的 Jellyfin 或 Emby 服务器，开始观看。")
+                Text("连接 Jellyfin、Emby 或 Navidrome，开始观影或听歌。")
             } actions: {
                 Button("添加服务器") { isAdding = true }
                     .buttonStyle(.borderedProminent)
@@ -29,6 +29,8 @@ struct AddServerView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var address = ""
+    @State private var isNavidrome = false
+    @State private var useAPIKey = false
     @State private var username = ""
     @State private var password = ""
     @State private var note = ""
@@ -43,7 +45,12 @@ struct AddServerView: View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("服务器地址", text: $address, prompt: Text("例如 192.168.1.2:8096 或 media.example.com"))
+                    Picker("服务器类型", selection: $isNavidrome) {
+                        Text("Jellyfin / Emby（自动识别）").tag(false)
+                        Text("Navidrome").tag(true)
+                    }
+                    .onChange(of: isNavidrome) { errorMessage = nil }
+                    TextField("服务器地址", text: $address, prompt: Text(isNavidrome ? "例如 https://example.com/music" : "例如 192.168.1.2:8096"))
                         .textContentType(.URL)
                         .autocorrectionDisabled()
                         #if os(iOS)
@@ -52,12 +59,20 @@ struct AddServerView: View {
                         #endif
                         .focused($focus, equals: .address)
                         .submitLabel(.next)
-                        .onSubmit { focus = .username }
+                        .onSubmit { focus = isNavidrome && useAPIKey ? .password : .username }
                 } footer: {
-                    Text("支持 Jellyfin 与 Emby，未填写协议时自动尝试 HTTPS / HTTP。")
+                    Text(isNavidrome ? "省略协议时使用 HTTPS。若服务器只提供 HTTP，请填写完整的 http:// 地址。" :
+                                       "未填写协议时自动尝试 HTTPS / HTTP。")
                 }
 
                 Section("账号") {
+                    if isNavidrome {
+                        Picker("验证方式", selection: $useAPIKey) {
+                            Text("用户名和密码").tag(false)
+                            Text("API 密钥").tag(true)
+                        }
+                    }
+                    if !isNavidrome || !useAPIKey {
                     TextField("用户名", text: $username)
                         .textContentType(.username)
                         .autocorrectionDisabled()
@@ -67,8 +82,9 @@ struct AddServerView: View {
                         .focused($focus, equals: .username)
                         .submitLabel(.next)
                         .onSubmit { focus = .password }
-                    SecureField("密码", text: $password)
-                        .textContentType(.password)
+                    }
+                    SecureField(isNavidrome && useAPIKey ? "API 密钥" : "密码", text: $password)
+                        .textContentType(isNavidrome && useAPIKey ? nil : .password)
                         .focused($focus, equals: .password)
                         .submitLabel(.next)
                         .onSubmit { focus = .note }
@@ -117,22 +133,23 @@ struct AddServerView: View {
     }
 
     private var canSubmit: Bool {
-        !address.trimmingCharacters(in: .whitespaces).isEmpty && !username.trimmingCharacters(in: .whitespaces).isEmpty
+        !address.trimmingCharacters(in: .whitespaces).isEmpty
+            && ((isNavidrome && useAPIKey) || !username.trimmingCharacters(in: .whitespaces).isEmpty)
+            && (!isNavidrome || !password.isEmpty)
     }
 
     private func submit() {
         guard canSubmit, !isSubmitting else { return }
         isSubmitting = true
         errorMessage = nil
+        let username = username.trimmingCharacters(in: .whitespaces)
+        let note = note.isEmpty ? nil : note
         Task {
             defer { isSubmitting = false }
             do {
-                var output = try await app.loginService.login(
-                    address: address,
-                    username: username.trimmingCharacters(in: .whitespaces),
-                    password: password,
-                    note: note.isEmpty ? nil : note
-                )
+                var output = try await (isNavidrome
+                    ? app.loginService.loginNavidrome(address: address, username: username, password: password, note: note, useAPIKey: useAPIKey)
+                    : app.loginService.login(address: address, username: username, password: password, note: note))
                 output.server.isPrivate = isPrivate
                 try app.servers.upsert(output.server, accessToken: output.accessToken)
                 if isPrivate {
