@@ -28,7 +28,7 @@ jobs:
             artifact: Vela-iOS-iPadOS-unsigned.ipa
           - platform: macos
             name: macOS Universal
-            artifact: Vela-macOS-universal.zip
+            artifact: Vela-macOS-universal.dmg
 
     steps:
       - name: Checkout

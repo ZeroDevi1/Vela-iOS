@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 与 GitHub Actions 共用的 Release 构建入口；iOS 产出供自行签名的通用 IPA，macOS 使用 ad-hoc 签名。
+# 与 GitHub Actions 共用的 Release 构建入口。产出未签名的通用 IPA 和内含 ad-hoc 签名应用的 macOS DMG。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -59,8 +59,13 @@ PY
       exit 1
     fi
     codesign --verify --deep --strict "$APP"
-    # 先打 ZIP 再上传，保留 app 内的执行权限、框架符号链接与包结构。
-    ditto -c -k --sequesterRsrc --keepParent "$APP" "$BUILD_DIR/Vela-macOS-universal.zip"
+    DMG_DIR="$(mktemp -d "$BUILD_DIR/dmg.XXXXXX")"
+    trap 'rm -rf "$DMG_DIR"' EXIT
+    chmod 755 "$DMG_DIR"
+    ditto "$APP" "$DMG_DIR/Vela.app"
+    ln -s /Applications "$DMG_DIR/Applications"
+    hdiutil create -srcfolder "$DMG_DIR" -volname Vela -format UDZO -ov \
+      "$BUILD_DIR/Vela-macOS-universal.dmg"
     ;;
 esac
 
