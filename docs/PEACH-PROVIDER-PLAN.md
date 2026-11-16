@@ -60,7 +60,7 @@
 
 - `MediaServerKind` 增加 `.peach`。
 - 在 VelaNetwork 定义 `MediaProvider` 核心协议：媒体库、列表查询、详情、搜索、图片 URL、选流、进度上报、已看 / 收藏切换。
-- 可选能力用独立协议表达，功能层通过 `as?` 判断能力，写法与 `PlaybackEngine` 的能力协议一致（`docs/PLAN.md`「内核抽象」）：
+- 可选能力用独立协议表达，功能层通过 `as?` 判断能力，写法与 `PlaybackEngine` 的能力协议一致：
   - 通用：`PersonBrowsing`、`PlaylistManaging`、`SubtitleListing`、`EpisodeBrowsing`、`MediaSegmentProviding`；
   - Jellyfin / Emby：`ServerAdministering`、`MetadataEditing`；
   - Peach：`PeachTaskManaging`、`PeachFollowManaging`、`PeachConfigurationManaging` 等，见第 5 节。

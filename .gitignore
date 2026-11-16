@@ -18,3 +18,12 @@ Packages/VLCKit/
 
 # xcodebuild 未指定 -derivedDataPath 时的本地产物
 build/
+
+# 本机部署脚本及含设备信息的开发记录
+/scripts/install-ios.sh
+/scripts/install-ipad.sh
+/scripts/install-mac.sh
+/docs/PLAN.md
+/docs/RELEASE-INSTALL.md
+*.p12
+*.mobileprovision

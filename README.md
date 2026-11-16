@@ -10,6 +10,8 @@
 
 Android 版见 [ZeroDevi1/Vela](https://github.com/ZeroDevi1/Vela)（基于 [JellyCine](https://github.com/sureshfizzy/JellyCine)）。本仓库按 Android 版的功能与约定在 Apple 平台上原生实现，不共享代码。
 
+安装包见 [GitHub Releases](https://github.com/ZeroDevi1/Vela-iOS/releases)。iPhone 和 iPad 共用一个需自行签名的 IPA，Mac 使用通用 ZIP。设备需运行 iOS、iPadOS 或 macOS 27 及以上版本。
+
 > 当前状态：应用大框架基本完成（M0–M8 代码完成，界面已与 Android 版对齐），待实机逐项验收（各项状态见路线图）。进度与排期见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
 ---
@@ -98,7 +100,7 @@ cd Packages/VelaKit && swift test
 | `Vela-iOS-iPadOS-unsigned.ipa` | iPhone / iPad（同一份通用 IPA） | 未签名，需用自己的证书或侧载工具签名后安装，不能直接安装 |
 | `Vela-macOS-universal.zip` | macOS，arm64 / x86_64 通用二进制 | ad-hoc 签名，未公证；下载后可能需要在「系统设置 → 隐私与安全性」允许打开 |
 
-无需配置签名 Secrets，不创建 GitHub Release，不上传 App Store / TestFlight。某个平台构建失败时，另一个平台继续构建，并上传失败平台的日志与 `.xcresult`（保留 7 天）。
+日常构建无需配置签名 Secrets。某个平台构建失败时，另一个平台继续构建，并上传失败平台的日志与 `.xcresult`（保留 7 天）。
 
 本地可使用同一入口验证打包（先准备播放器依赖）：
 
