@@ -316,7 +316,6 @@ final class PlayerSession {
             }
         }
         apply(stream: stream, item: item, startTime: startTime, resetMetadata: true)
-        configurePreview(for: stream, item: item)
         if let initialSubtitle {
             selectSubtitle(initialSubtitle, remember: false)
         } else {
@@ -479,6 +478,7 @@ final class PlayerSession {
             ),
             resetMetadata: resetMetadata
         )
+        configurePreview(for: stream, item: item)
 
         guard let client else { return }
         let reporter = PlaybackReporter(
@@ -1230,11 +1230,18 @@ final class PlayerSession {
     private func configurePreview(for stream: ResolvedStream, item: MediaItem) {
         stopPreviewEncoding()
         let isPlaylist = stream.url.pathExtension.lowercased() == "m3u8"
+        let serverFrame: ScrubPreviewer.FrameProvider?
+        if let client {
+            let previews = ServerScrubPreviews(client: client, itemID: item.id, source: stream.mediaSource)
+            serverFrame = { await previews.frame(at: $0) }
+        } else {
+            serverFrame = nil
+        }
         // KSPlayer 直放的多为系统框架打不开的容器（MKV 等），本地抽帧不可用，改用服务器预览流。
         let container = stream.mediaSource.container?.split(separator: ",").first.map { String($0).lowercased() } ?? ""
         let systemReadable = controller.engine.kind == .avFoundation || ["mp4", "m4v", "mov"].contains(container)
         if stream.method == .directPlay, !isPlaylist, systemReadable {
-            controller.scrubPreview.configure(.file(stream.url), allowsSweep: previewAllowsSweep(stream.url))
+            controller.scrubPreview.configure(.file(stream.url), allowsSweep: previewAllowsSweep(stream.url), serverFrame: serverFrame)
             return
         }
         guard let app, let client else {
@@ -1243,10 +1250,10 @@ final class PlayerSession {
         }
         let resolver = app.playbackResolver
         let mediaSourceID = stream.mediaSource.id
-        controller.scrubPreview.configure(allowsSweep: previewAllowsSweep(nil)) { [weak self] in
+        controller.scrubPreview.configure(allowsSweep: previewAllowsSweep(nil), serverFrame: serverFrame) { [weak self] in
             do {
                 let preview = try await resolver.resolvePreview(item: item, client: client, mediaSourceID: mediaSourceID)
-                guard let self, self.item?.id == item.id, !self.closed else {
+                guard !Task.isCancelled, let self, self.item?.id == item.id, !self.closed else {
                     if let session = preview.playSessionID { try? await client.stopActiveEncodings(playSessionID: session) }
                     return nil
                 }

@@ -11,6 +11,7 @@ struct ScrubFrameCacheTests {
         #expect(cache.count == 1)
         #expect(cache.totalCost == 100)
         #expect(cache.exact(12.9) == "a")
+        #expect(cache.exact(12.9, maxDistance: 2) == nil)
         #expect(cache.exact(14) == nil)
         #expect(cache.hasExact(10.7))
     }
@@ -48,11 +49,5 @@ struct ScrubFrameCacheTests {
         #expect(Set(positions.map { Int($0) }).count == positions.count)
         #expect(ScrubSweep.positions(duration: 0).isEmpty)
         #expect(ScrubSweep.positions(duration: 20).count <= 20)
-    }
-
-    @Test func nearDistanceGrowsWithGridGap() {
-        #expect(ScrubSweep.nearDistance(duration: 0) == 8)
-        #expect(ScrubSweep.nearDistance(duration: 600) == 8)
-        #expect(ScrubSweep.nearDistance(duration: 7200) == 75)
     }
 }

@@ -58,6 +58,7 @@ public struct PlaybackInfoResponse: Decodable, Sendable {
 
 public struct MediaSourceInfo: Decodable, Sendable, Identifiable {
     public var id: String
+    public var itemID: String?
     public var name: String?
     public var path: String?
     /// `File` / `Http` 等；STRM 条目通常是 `Http`。
@@ -83,6 +84,7 @@ public struct MediaSourceInfo: Decodable, Sendable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id = "Id"
+        case itemID = "ItemId"
         case name = "Name"
         case path = "Path"
         case `protocol` = "Protocol"
@@ -105,6 +107,7 @@ public struct MediaSourceInfo: Decodable, Sendable, Identifiable {
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
+        itemID = try? c.decode(String.self, forKey: .itemID)
         name = try c.decodeIfPresent(String.self, forKey: .name)
         path = try c.decodeIfPresent(String.self, forKey: .path)
         `protocol` = try c.decodeIfPresent(String.self, forKey: .protocol)

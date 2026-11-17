@@ -33,18 +33,18 @@ struct ScrubFrameCache<Frame> {
 
     static func bucket(for time: TimeInterval) -> Int { Int(max(0, time)) }
 
-    /// 请求位置所在秒格已确定对应的帧；没有时为 nil。
-    mutating func exact(_ time: TimeInterval) -> Frame? {
-        guard let key = aliases[Self.bucket(for: time)], let entry = entries[key] else { return nil }
+    /// 同一请求秒格可复用，但仍按当前目标和实际帧时间校验误差。
+    mutating func exact(_ time: TimeInterval, maxDistance: TimeInterval = .infinity) -> Frame? {
+        guard let key = aliases[Self.bucket(for: time)], let entry = entries[key],
+              abs(Double(key) / 1000 - time) <= maxDistance else { return nil }
         touch(key)
         return entry.frame
     }
 
-    /// 离 `time` 最近、距离不超过 `maxDistance` 秒的帧；没有时为 nil。
     mutating func nearest(_ time: TimeInterval, maxDistance: TimeInterval) -> Frame? {
-        let target = Int(time * 1000)
-        guard let key = entries.keys.min(by: { abs($0 - target) < abs($1 - target) }),
-              Double(abs(key - target)) <= maxDistance * 1000 else { return nil }
+        let target = time * 1000
+        guard let key = entries.keys.min(by: { abs(Double($0) - target) < abs(Double($1) - target) }),
+              abs(Double(key) - target) <= maxDistance * 1000 else { return nil }
         touch(key)
         return entries[key]?.frame
     }
@@ -108,12 +108,6 @@ struct ScrubFrameCache<Frame> {
 enum ScrubSweep {
     /// 网格分档：先全片均分 12 张，再逐档加密到 96 张。由粗到细保证刚开始不久，任意位置就有一张不太远的预览。
     static let levels = [12, 24, 48, 96]
-
-    /// 缺精确帧时先顶上的邻近帧最大距离（秒）：至少 8 秒，长片放宽到网格最细一档的间距，
-    /// 让预生成的网格帧在拖到任意位置时都能立即顶上。
-    static func nearDistance(duration: TimeInterval) -> TimeInterval {
-        max(8, duration > 0 ? duration / Double(levels.last!) : 0)
-    }
 
     /// 预生成的取帧位置（秒），按分档由粗到细排列，同一秒格只出现一次；片长未知时为空。
     static func positions(duration: TimeInterval) -> [TimeInterval] {

@@ -1,0 +1,374 @@
+Expose video previews from packets already held by the player.
+
+diff --git a/Sources/KSPlayer/AVPlayer/KSOptions.swift b/Sources/KSPlayer/AVPlayer/KSOptions.swift
+index 1c1b945..6af4149 100644
+--- a/Sources/KSPlayer/AVPlayer/KSOptions.swift
++++ b/Sources/KSPlayer/AVPlayer/KSOptions.swift
+@@ -59,6 +59,7 @@ open class KSOptions {
+     public var cache = false
+     /// 已读 HTTP 字节的临时文件缓存上限，0 为关闭。
+     public var httpSeekCacheSize = 0
++    public var cachesVideoPreviewPackets = false
+     /// 跳转后恢复播放所需的缓冲秒数；nil 时用默认缓冲算法。
+     public var seekForwardBufferDuration: TimeInterval?
+     //  record stream
+diff --git a/Sources/KSPlayer/MEPlayer/CachedVideoPreview.swift b/Sources/KSPlayer/MEPlayer/CachedVideoPreview.swift
+new file mode 100644
+index 0000000..4e973d9
+--- /dev/null
++++ b/Sources/KSPlayer/MEPlayer/CachedVideoPreview.swift
+@@ -0,0 +1,194 @@
++import AVFoundation
++import Foundation
++import Libavcodec
++import Libavformat
++
++public struct KSCachedVideoPreview: Sendable {
++    public let image: CGImage
++    public let time: TimeInterval
++}
++
++/// 前向数据留在播放队列。仅保留一小段已送解码的包，从而补齐队首所在 GOP 的关键帧。
++final class CachedVideoPreview: @unchecked Sendable {
++    private final class Stream {
++        let parameters: UnsafeMutablePointer<AVCodecParameters>
++        let trackID: Int32
++        let secondsPerTick: Double
++        let startTime: TimeInterval
++
++        init?(track: FFmpegAssetTrack, startTime: TimeInterval) {
++            guard track.timebase.den > 0, abs(track.rotation) < 1,
++                  let parameters = avcodec_parameters_alloc() else { return nil }
++            let result = withUnsafePointer(to: track.codecpar) { avcodec_parameters_copy(parameters, $0) }
++            guard result >= 0 else {
++                var copy: UnsafeMutablePointer<AVCodecParameters>? = parameters
++                avcodec_parameters_free(&copy)
++                return nil
++            }
++            self.parameters = parameters
++            trackID = track.trackID
++            secondsPerTick = Double(track.timebase.num) / Double(track.timebase.den)
++            self.startTime = startTime
++        }
++
++        deinit {
++            var copy: UnsafeMutablePointer<AVCodecParameters>? = parameters
++            avcodec_parameters_free(&copy)
++        }
++
++        func time(_ timestamp: Int64) -> TimeInterval {
++            Double(timestamp) * secondsPerTick - startTime
++        }
++    }
++
++    private let lock = NSLock()
++    private var stream: Stream?
++    private var lastTrackID: Int32?
++    private weak var queue: CircularBuffer<Packet>?
++    private var history: [Packet] = []
++    private var historyBytes = 0
++    private var revision = 0
++    private let historyLimit = 24 * 1024 * 1024
++    private let packetLimit = 720
++
++    func attach(to queue: CircularBuffer<Packet>?) {
++        lock.withLock { self.queue = queue }
++    }
++
++    /// 由读包线程调用。深拷贝编解码参数，使预览快照不依赖主解封装器的生命周期。
++    func prepare(track: FFmpegAssetTrack, startTime: TimeInterval) {
++        lock.withLock {
++            guard lastTrackID != track.trackID else { return }
++            lastTrackID = track.trackID
++            stream = Stream(track: track, startTime: startTime)
++            resetHistory()
++        }
++    }
++
++    func record(_ packet: Packet) {
++        lock.withLock {
++            guard stream?.trackID == packet.assetTrack.trackID, packet.size > 0,
++                  !history.isEmpty || packet.isKeyFrame else { return }
++            history.append(packet)
++            historyBytes += Int(packet.size)
++            if historyBytes > historyLimit || history.count > packetLimit {
++                let count = history.dropFirst().firstIndex(where: { $0.isKeyFrame }) ?? history.count
++                historyBytes -= history.prefix(count).reduce(0) { $0 + Int($1.size) }
++                history.removeFirst(count)
++            }
++        }
++    }
++
++    func flush() {
++        lock.withLock { resetHistory() }
++    }
++
++    func close() {
++        lock.withLock {
++            resetHistory()
++            stream = nil
++            lastTrackID = nil
++            queue = nil
++        }
++    }
++
++    private func resetHistory() {
++        history.removeAll()
++        historyBytes = 0
++        revision &+= 1
++    }
++
++    func frame(at target: TimeInterval, width: Int32) -> KSCachedVideoPreview? {
++        let (currentStream, queue, revision) = lock.withLock { (stream, self.queue, self.revision) }
++        guard let currentStream, !Task.isCancelled else { return nil }
++        // 先读待解码队列，再读历史。两次读取之间移动的包可能出现两次，按对象身份合并。
++        let pending = queue?.snapshot() ?? []
++        guard let history = lock.withLock({ self.revision == revision ? self.history : nil }) else { return nil }
++        let end = pending.first.flatMap { first in history.firstIndex(where: { $0 === first }) } ?? history.count
++        let packets = Array(history.prefix(end)) + pending
++        var start: Int?
++        var reached: Int?
++        var next = packets.count
++        for (index, packet) in packets.enumerated() {
++            guard !Task.isCancelled else { return nil }
++            guard packet.assetTrack.trackID == currentStream.trackID else {
++                if reached != nil { next = index; break }
++                start = nil
++                continue
++            }
++            guard packet.timestamp != .min else { continue }
++            let time = currentStream.time(packet.timestamp)
++            if packet.isKeyFrame {
++                if time <= target {
++                    start = index
++                    reached = nil
++                } else {
++                    if start == nil { return nil }
++                    if reached != nil {
++                        next = index
++                        break
++                    }
++                }
++            }
++            if start != nil, time >= target, reached == nil { reached = index }
++            // 给有 B 帧重排的解码器少量读前数据。
++            if let reached, index - reached >= 16 { next = index + 1; break }
++        }
++        guard let start, reached != nil, next - start <= packetLimit, start < next else { return nil }
++        return decode(packets[start..<next], stream: currentStream, target: target, width: width)
++    }
++
++    private func decode(_ packets: ArraySlice<Packet>, stream: Stream, target: TimeInterval, width: Int32) -> KSCachedVideoPreview? {
++        let options = KSOptions()
++        options.hardwareDecode = false
++        options.decoderOptions["threads"] = "2"
++        var parameters = stream.parameters.pointee
++        guard let decoder = try? parameters.createContext(options: options) else { return nil }
++        defer {
++            var pointer: UnsafeMutablePointer<AVCodecContext>? = decoder
++            avcodec_free_context(&pointer)
++        }
++        var output = av_frame_alloc()
++        var best = av_frame_alloc()
++        defer {
++            av_frame_free(&output)
++            av_frame_free(&best)
++        }
++        guard let output, let best else { return nil }
++        var bestTime = TimeInterval.infinity
++        func receive() -> Bool {
++            while !Task.isCancelled, avcodec_receive_frame(decoder, output) >= 0 {
++                defer { av_frame_unref(output) }
++                let timestamp = output.pointee.best_effort_timestamp
++                guard timestamp != .min else { continue }
++                let time = stream.time(timestamp)
++                if abs(time - target) < abs(bestTime - target) {
++                    av_frame_unref(best)
++                    if av_frame_ref(best, output) >= 0 { bestTime = time }
++                }
++                if time >= target { return true }
++            }
++            return false
++        }
++
++        var reached = false
++        for packet in packets {
++            guard !Task.isCancelled, let input = packet.corePacket,
++                  avcodec_send_packet(decoder, input) >= 0 else { return nil }
++            if receive() { reached = true; break }
++        }
++        if !reached, !Task.isCancelled {
++            _ = avcodec_send_packet(decoder, nil)
++            _ = receive()
++        }
++
++        let frame = best.pointee
++        guard !Task.isCancelled, abs(bestTime - target) <= 0.75, frame.width > 0, frame.height > 0 else { return nil }
++        let width = min(width, frame.width)
++        let height = max(1, Int32(Int64(frame.height) * Int64(width) / Int64(frame.width)))
++        let scaler = VideoSwresample(dstWidth: width, dstHeight: height, isDovi: false)
++        defer { scaler.shutdown() }
++        guard let image = scaler.transfer(frame: frame, forceScale: true)?.cgImage() else { return nil }
++        return KSCachedVideoPreview(image: image, time: bestTime)
++    }
++}
+diff --git a/Sources/KSPlayer/MEPlayer/CircularBuffer.swift b/Sources/KSPlayer/MEPlayer/CircularBuffer.swift
+index 2f10911..3938adc 100644
+--- a/Sources/KSPlayer/MEPlayer/CircularBuffer.swift
++++ b/Sources/KSPlayer/MEPlayer/CircularBuffer.swift
+@@ -150,6 +150,13 @@ public class CircularBuffer<Item: ObjectQueueItem> {
+         return result
+     }
+
++    /// 供预览读取等待解码的包，不推动队列的读指针。
++    func snapshot() -> [Item] {
++        condition.lock()
++        defer { condition.unlock() }
++        return (0..<_count).compactMap { _buffer[Int((headIndex &+ UInt($0)) & mask)] }
++    }
++
+     public func flush() {
+         condition.lock()
+         defer { condition.unlock() }
+diff --git a/Sources/KSPlayer/MEPlayer/KSMEPlayer.swift b/Sources/KSPlayer/MEPlayer/KSMEPlayer.swift
+index 53f938d..e59e265 100644
+--- a/Sources/KSPlayer/MEPlayer/KSMEPlayer.swift
++++ b/Sources/KSPlayer/MEPlayer/KSMEPlayer.swift
+@@ -369,6 +369,10 @@ extension KSMEPlayer: MediaPlayerProtocol {
+
+     public var seekable: Bool { playerItem.seekable }
+
++    public func cachedVideoPreview(at time: TimeInterval, width: Int32) async -> KSCachedVideoPreview? {
++        await playerItem.cachedVideoPreview(at: time, width: width)
++    }
++
+     public var dynamicInfo: DynamicInfo? {
+         playerItem.dynamicInfo
+     }
+diff --git a/Sources/KSPlayer/MEPlayer/MEPlayerItem.swift b/Sources/KSPlayer/MEPlayer/MEPlayerItem.swift
+index a6da3d7..57781a9 100644
+--- a/Sources/KSPlayer/MEPlayer/MEPlayerItem.swift
++++ b/Sources/KSPlayer/MEPlayer/MEPlayerItem.swift
+@@ -35,6 +35,7 @@ public final class MEPlayerItem: Sendable {
+     private var allPlayerItemTracks = [PlayerItemTrackProtocol]()
+     private var maxFrameDuration = 10.0
+     private var videoAudioTracks = [CapacityProtocol]()
++    private let videoPreview = CachedVideoPreview()
+     private var videoTrack: SyncPlayerItemTrack<VideoVTBFrame>?
+     private var audioTrack: SyncPlayerItemTrack<AudioFrame>?
+     private(set) var assetTracks = [FFmpegAssetTrack]()
+@@ -289,6 +290,18 @@ extension MEPlayerItem {
+         }
+     }
+
++    func cachedVideoPreview(at time: TimeInterval, width: Int32) async -> KSCachedVideoPreview? {
++        guard options.cachesVideoPreviewPackets, time.isFinite, width > 0, !Task.isCancelled else { return nil }
++        let task = Task.detached(priority: .userInitiated) { [videoPreview] in
++            videoPreview.frame(at: time, width: width)
++        }
++        return await withTaskCancellationHandler {
++            await task.value
++        } onCancel: {
++            task.cancel()
++        }
++    }
++
+     private func closeInput() {
+         avformat_close_input(&formatCtx)
+         cachedHTTPInput = nil
+@@ -356,6 +369,7 @@ extension MEPlayerItem {
+     }
+
+     private func createCodec(formatCtx: UnsafeMutablePointer<AVFormatContext>) {
++        videoPreview.close()
+         allPlayerItemTracks.removeAll()
+         assetTracks.removeAll()
+         videoAdaptation = nil
+@@ -410,6 +424,10 @@ extension MEPlayerItem {
+                 track.delegate = self
+                 allPlayerItemTracks.append(track)
+                 videoTrack = track
++                if options.cachesVideoPreviewPackets {
++                    track.videoPreview = videoPreview
++                    videoPreview.attach(to: (track as? AsyncPlayerItemTrack<VideoVTBFrame>)?.packetQueue)
++                }
+                 if first.codecpar.codec_id != AV_CODEC_ID_MJPEG {
+                     videoAudioTracks.append(track)
+                 }
+@@ -610,6 +628,7 @@ extension MEPlayerItem {
+                     if options.readVideoTime == 0 {
+                         options.readVideoTime = CACurrentMediaTime()
+                     }
++                    videoTrack?.videoPreview?.prepare(track: first, startTime: startTime.seconds)
+                     videoTrack?.putPacket(packet: packet)
+                 } else if first.mediaType == .audio {
+                     if options.readAudioTime == 0 {
+@@ -689,6 +708,7 @@ extension MEPlayerItem: MediaPlayback {
+         let closeOperation = BlockOperation {
+             Thread.current.name = (self.operationQueue.name ?? "") + "_close"
+             self.allPlayerItemTracks.forEach { $0.shutdown() }
++            self.videoPreview.close()
+             KSLog("清空formatCtx")
+             // 自定义的协议才会av_class为空
+             if self.cachedHTTPInput == nil, let formatCtx = self.formatCtx,
+diff --git a/Sources/KSPlayer/MEPlayer/MEPlayerItemTrack.swift b/Sources/KSPlayer/MEPlayer/MEPlayerItemTrack.swift
+index fea4569..325ae46 100644
+--- a/Sources/KSPlayer/MEPlayer/MEPlayerItemTrack.swift
++++ b/Sources/KSPlayer/MEPlayer/MEPlayerItemTrack.swift
+@@ -24,6 +24,7 @@ protocol PlayerItemTrackProtocol: CapacityProtocol, AnyObject {
+ class SyncPlayerItemTrack<Frame: MEFrame>: PlayerItemTrackProtocol, CustomStringConvertible {
+     var seekTime = 0.0
+     fileprivate let options: KSOptions
++    var videoPreview: CachedVideoPreview?
+     fileprivate var decoderMap = [Int32: DecodeProtocol]()
+     fileprivate var state = MECodecState.idle {
+         didSet {
+@@ -70,6 +71,7 @@ class SyncPlayerItemTrack<Frame: MEFrame>: PlayerItemTrackProtocol, CustomString
+     }
+
+     func seek(time: TimeInterval) {
++        videoPreview?.flush()
+         if options.isAccurateSeek {
+             seekTime = time
+         } else {
+@@ -87,6 +89,7 @@ class SyncPlayerItemTrack<Frame: MEFrame>: PlayerItemTrackProtocol, CustomString
+             state = .decoding
+         }
+         if state == .decoding {
++            videoPreview?.record(packet)
+             doDecode(packet: packet)
+         }
+     }
+@@ -257,9 +260,11 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
+                 if isEndOfFile, packetQueue.count == 0 {
+                     state = .finished
+                 } else {
+-                    guard let packet = packetQueue.pop(wait: true), state != .flush, state != .closed else {
+-                        continue
+-                    }
++                    let packet = packetQueue.pop(wait: true, where: { packet, _ in
++                        if self.state == .decoding { self.videoPreview?.record(packet) }
++                        return true
++                    })
++                    guard let packet, state != .flush, state != .closed else { continue }
+                     autoreleasepool {
+                         doDecode(packet: packet)
+                     }
+diff --git a/Sources/KSPlayer/MEPlayer/Resample.swift b/Sources/KSPlayer/MEPlayer/Resample.swift
+index e7f3851..f51ab21 100644
+--- a/Sources/KSPlayer/MEPlayer/Resample.swift
++++ b/Sources/KSPlayer/MEPlayer/Resample.swift
+@@ -117,11 +117,11 @@ class VideoSwresample: FrameChange {
+         pool = CVPixelBufferPool.create(width: dstWidth, height: dstHeight, bytesPerRowAlignment: linesize, pixelFormatType: pixelFormatType)
+     }
+
+-    func transfer(frame: AVFrame) -> PixelBufferProtocol? {
++    func transfer(frame: AVFrame, forceScale: Bool = false) -> PixelBufferProtocol? {
+         let format = AVPixelFormat(rawValue: frame.format)
+         let width = frame.width
+         let height = frame.height
+-        if format.leftShift > 0 {
++        if format.leftShift > 0, !forceScale {
+             return PixelBuffer(frame: frame)
+         }
+         let pbuf = transfer(format: format, width: width, height: height, data: Array(tuple: frame.data), linesize: Array(tuple: frame.linesize))

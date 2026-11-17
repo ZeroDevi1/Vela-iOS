@@ -152,6 +152,13 @@ public final class PlayerController {
             upNextDismissed = false
         }
         engine.preciseSeeking = preferences.preciseSeek
+        if let player = engine as? KSPlayerEngine, preferences.scrubPreview != .off {
+            player.cachesVideoPreviewPackets = true
+            scrubPreview.bufferedFrame = { [weak player] in await player?.cachedScrubFrame(at: $0) }
+        } else {
+            (engine as? KSPlayerEngine)?.cachesVideoPreviewPackets = false
+            scrubPreview.bufferedFrame = nil
+        }
         engine.load(source)
         scheduleAutoHide()
     }

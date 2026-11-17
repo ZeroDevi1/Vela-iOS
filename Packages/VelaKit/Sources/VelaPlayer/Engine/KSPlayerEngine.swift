@@ -31,6 +31,7 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
     }
     /// 解码参数；下次 `load` 生效。
     @ObservationIgnored public var configuration = Configuration()
+    @ObservationIgnored var cachesVideoPreviewPackets = false
 
     public struct Configuration: Sendable {
         /// 硬解（VideoToolbox）；false 为 FFmpeg 软解（耗电高，仅用于硬解失败的片源）。
@@ -121,6 +122,7 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
         activateAudioSession()
 
         let options = KSOptions()
+        options.cachesVideoPreviewPackets = cachesVideoPreviewPackets
         options.hardwareDecode = configuration.hardwareDecoding
         options.asynchronousDecompression = configuration.asynchronousDecompression
         options.decoderOptions["threads"] = configuration.decodeThreads > 0 ? String(configuration.decodeThreads) : "auto"
@@ -295,6 +297,12 @@ public final class KSPlayerEngine: NSObject, PlaybackEngine, EmbeddedSubtitlePro
             continuation?.resume(returning: finished)
             continuation = nil
         }
+    }
+
+    func cachedScrubFrame(at time: TimeInterval) async -> ScrubPreviewFrameSample? {
+        guard let player, let frame = await player.cachedVideoPreview(at: time, width: 480),
+              !Task.isCancelled, player === self.player else { return nil }
+        return ScrubPreviewFrameSample(image: frame.image, time: frame.time)
     }
 
     public func currentFrameRate() -> Double? {

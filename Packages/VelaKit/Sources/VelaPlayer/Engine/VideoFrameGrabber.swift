@@ -20,18 +20,37 @@ enum VideoFrameGrabber {
         timeout: Duration = .seconds(2),
         nudge: (() async -> Void)? = nil
     ) async -> CGImage? {
+        await grabSample(from: item, maxPixelWidth: maxPixelWidth, timeout: timeout, nudge: nudge)?.image
+    }
+
+    static func grabSample(
+        from item: AVPlayerItem,
+        maxPixelWidth: CGFloat? = nil,
+        timeout: Duration,
+        nudge: (() async -> Void)? = nil,
+        prepare: (() async -> Bool)? = nil
+    ) async -> ScrubPreviewFrameSample? {
         let output = AVPlayerItemVideoOutput(pixelBufferAttributes: attributes)
         item.add(output)
         defer { item.remove(output) }
+        if let prepare {
+            guard await prepare(), !Task.isCancelled else { return nil }
+        }
 
         let clock = ContinuousClock()
         let deadline = clock.now + timeout
         var nudged = false
-        while clock.now < deadline {
+        while clock.now < deadline, !Task.isCancelled {
             let time = item.currentTime()
-            if output.hasNewPixelBuffer(forItemTime: time),
-               let buffer = output.pixelBufferAndDisplayTime(forItemTime: time).pixelBuffer {
-                return buffer.withUnsafeBuffer { image(from: $0, maxPixelWidth: maxPixelWidth) }
+            if output.hasNewPixelBuffer(forItemTime: time) {
+                let sample = output.pixelBufferAndDisplayTime(forItemTime: time)
+                if let buffer = sample.pixelBuffer,
+                   let frame = buffer.withUnsafeBuffer({ image(from: $0, maxPixelWidth: maxPixelWidth) }) {
+                    if sample.itemTimeForDisplay.isNumeric {
+                        return ScrubPreviewFrameSample(image: frame, time: sample.itemTimeForDisplay.seconds)
+                    }
+                    if prepare == nil { return ScrubPreviewFrameSample(image: frame, time: time.seconds) }
+                }
             }
             if !nudged, clock.now > deadline - timeout * 0.8, let nudge {
                 nudged = true
