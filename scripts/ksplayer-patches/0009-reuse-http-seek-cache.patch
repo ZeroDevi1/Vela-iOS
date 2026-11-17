@@ -87,7 +87,7 @@ index 0000000..a249187
 +        guard pageCount > 0 else { return nil }
 +
 +        // An unlinked temporary file releases its storage even if the app is terminated.
-+        var path = FileManager.default.temporaryDirectory.appendingPathComponent("vela-video.XXXXXX").path.utf8CString
++        var path = Array(FileManager.default.temporaryDirectory.appendingPathComponent("vela-video.XXXXXX").path.utf8CString)
 +        let descriptor = mkstemp(&path)
 +        guard descriptor >= 0 else { return nil }
 +        guard unlink(path) == 0 else {
