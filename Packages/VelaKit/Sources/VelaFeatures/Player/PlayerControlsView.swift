@@ -736,7 +736,7 @@ private struct PlaybackTimeLabel: View {
     let controller: PlayerController
 
     var body: some View {
-        let position = controller.scrubTime ?? controller.engine.currentTime
+        let position = controller.scrubTime ?? controller.engine.pendingSeekPosition ?? controller.engine.currentTime
         let duration = controller.engine.duration
         let remaining = controller.preferences.progressTimeMode == .remaining && duration > 0
         // 时长未知（起播中、直播）时不显示误导性的 0:00。
@@ -774,9 +774,10 @@ private struct PlayerScrubber: View {
         GeometryReader { proxy in
             let width = proxy.size.width
             let duration = controller.engine.duration
-            let position = controller.scrubTime ?? controller.engine.currentTime
+            let position = controller.scrubTime ?? controller.engine.pendingSeekPosition ?? controller.engine.currentTime
             let progress = fraction(position, of: duration)
-            let buffered = fraction(controller.engine.bufferedTime, of: duration)
+            let buffered = controller.engine.pendingSeekPosition == nil
+                ? fraction(controller.engine.bufferedTime, of: duration) : progress
             let isScrubbing = controller.scrubTime != nil
 
             Canvas { context, size in

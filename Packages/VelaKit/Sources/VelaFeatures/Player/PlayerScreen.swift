@@ -131,7 +131,7 @@ public struct PlayerScreen: View {
                 if let target = session.controller.engine.pendingSeekPosition, !isMiniWindow {
                     HStack(spacing: 10) {
                         ProgressView().controlSize(.small).tint(.white)
-                        Text("正在缓冲 \(PlayerTime.format(target))").monospacedDigit()
+                        Text("正在跳转到 \(PlayerTime.format(target))").monospacedDigit()
                     }
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.white)

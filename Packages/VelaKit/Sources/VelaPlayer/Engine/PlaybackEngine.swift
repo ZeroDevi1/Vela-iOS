@@ -15,7 +15,7 @@ public protocol PlaybackEngine: AnyObject {
     var duration: TimeInterval { get }
     /// 已缓冲到的位置（秒）。
     var bufferedTime: TimeInterval { get }
-    /// 正在准备的跳转目标；跳转前仍用实际播放位置上报进度。
+    /// 正在定位的目标；定位完成前仍用实际播放位置上报进度。
     var pendingSeekPosition: TimeInterval? { get }
     var rate: Float { get }
     /// 最近测得的下载速度（bit/s）；未知时为 nil。用于「播放信息」判断卡顿是否因网络带宽不足。
@@ -195,22 +195,6 @@ extension PlaybackEngine {
     }
 }
 
-enum SeekBufferPolicy {
-    static let maximumWait: Duration = .seconds(10)
-
-    /// 以正常倍速的 15 秒为目标，同时受片尾和当前片源的预读上限约束。
-    static func targetDuration(at position: TimeInterval, duration: TimeInterval, rate: Float, bufferLimit: TimeInterval) -> TimeInterval {
-        let target = 15 * Double(max(1, rate))
-        let budget = bufferLimit > 0 ? min(target, bufferLimit) : target
-        return max(0, min(budget, duration - position))
-    }
-
-    static func isNetworkSource(_ url: URL) -> Bool {
-        let scheme = url.scheme?.lowercased()
-        return scheme == "http" || scheme == "https"
-    }
-}
-
 public enum PlaybackEngineKind: String, Sendable, CaseIterable {
     /// 系统内核：原生 HDR10 / 杜比视界 / 空间音频 / 画中画 / AirPlay。
     case avFoundation
@@ -259,8 +243,8 @@ public struct PlaybackSource: Sendable, Hashable {
     public var forwardBufferDuration: TimeInterval
     /// 原文件总码率（bps），供高码率流选择缓冲恢复门槛；未知时沿用内核默认值。
     public var bitrate: Int?
-    /// 同一地址可以独立读取两个进度；服务端转码或转封装不具备这个条件。
-    public var allowsSeekPreloading: Bool
+    /// 可保留同一网络文件的已读字节，供 KSPlayer 跳转复用。
+    public var allowsByteRangeCaching: Bool
 
     public init(
         url: URL,
@@ -272,7 +256,7 @@ public struct PlaybackSource: Sendable, Hashable {
         vrLayout: VRLayout? = nil,
         forwardBufferDuration: TimeInterval = 0,
         bitrate: Int? = nil,
-        allowsSeekPreloading: Bool = false
+        allowsByteRangeCaching: Bool = false
     ) {
         self.url = url
         self.title = title
@@ -283,6 +267,6 @@ public struct PlaybackSource: Sendable, Hashable {
         self.vrLayout = vrLayout
         self.forwardBufferDuration = forwardBufferDuration
         self.bitrate = bitrate
-        self.allowsSeekPreloading = allowsSeekPreloading
+        self.allowsByteRangeCaching = allowsByteRangeCaching
     }
 }

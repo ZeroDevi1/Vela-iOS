@@ -129,21 +129,6 @@ final class PlayerSurfaceHost: NSObject, @preconcurrency AVPictureInPictureContr
         case .avPlayer(let player):
             view.player = player
             self.player = player
-            #if os(iOS)
-            if let engine = controller.engine as? AVPlayerEngine {
-                engine.canReplacePresentationPlayer = { [weak self] in
-                    guard let self, let controller = self.controller else { return false }
-                    return self.view.window?.windowScene?.activationState == .foregroundActive &&
-                        self.view.player != nil && !controller.vrEnabled && !controller.isPictureInPictureActive &&
-                        !self.isStartingPictureInPicture && self.activePictureInPicture == nil
-                }
-                engine.replacePresentationPlayer = { [weak self] player in
-                    self?.player = player
-                    self?.view.player = player
-                    self?.subtitleSource?.setPlayer(player)
-                }
-            }
-            #endif
             guard AVPictureInPictureController.isPictureInPictureSupported() else { break }
             let pip = AVPictureInPictureController(playerLayer: view.activeLayer)
             pip?.delegate = self

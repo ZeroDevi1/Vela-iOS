@@ -10,27 +10,6 @@ import VelaCore
 @MainActor
 @Observable
 public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, MultichannelSpatializationConfigurable, ManifestSubtitleSelecting, PlaybackMediaInfoProviding {
-    @MainActor
-    private final class DeferredSeek {
-        let target: CMTime
-        var preparation: AVPlayerSeekPreparation?
-        var inPlaceBufferDuration: TimeInterval?
-        var reachedEnd = false
-        var wantsPlay: Bool
-        var seekFinished: Bool?
-        var prerollResult: Bool?
-
-        init(target: CMTime, wantsPlay: Bool) {
-            self.target = target
-            self.wantsPlay = wantsPlay
-        }
-
-        func discardPreparation() {
-            preparation?.cancel()
-            preparation = nil
-        }
-    }
-
     public let kind: PlaybackEngineKind = .avFoundation
     public private(set) var status: PlaybackStatus = .idle
     public private(set) var currentTime: TimeInterval = 0
@@ -53,12 +32,8 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
     /// 本条目起播位置，用于判断「已播放数秒」。
     @ObservationIgnored private var loadedAt: TimeInterval = 0
 
-    public private(set) var player = AVPlayer()
-    @ObservationIgnored var canReplacePresentationPlayer: (@MainActor () -> Bool)?
-    @ObservationIgnored var replacePresentationPlayer: (@MainActor (AVPlayer) -> Void)?
-    @ObservationIgnored private var deferredSeek: DeferredSeek?
-    @ObservationIgnored private var allowsSeekPreloading = false
-    @ObservationIgnored private var isNetworkSource = false
+    public let player = AVPlayer()
+    @ObservationIgnored private var seekRevision = UUID()
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var playerObservations: [NSKeyValueObservation] = []
     /// 随当前 AVPlayerItem 替换而重建。
@@ -70,14 +45,14 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
     public var surface: PlaybackSurface { .avPlayer(player) }
 
     public var preciseCurrentTime: TimeInterval {
-        if deferredSeek?.inPlaceBufferDuration != nil { return currentTime }
+        if pendingSeekPosition != nil { return currentTime }
         let seconds = player.currentTime().seconds
         return seconds.isFinite ? seconds : currentTime
     }
 
     /// 等待中的连续缓冲从当前条目实时读取，暂停推进时的进度回调不会更新 bufferedTime。
     public var isWaitingWithBufferedVideo: Bool {
-        guard player.timeControlStatus == .waitingToPlayAtSpecifiedRate, deferredSeek == nil,
+        guard player.timeControlStatus == .waitingToPlayAtSpecifiedRate, pendingSeekPosition == nil,
               !player.isExternalPlaybackActive,
               let item = player.currentItem, item.status == .readyToPlay, !item.isPlaybackBufferEmpty,
               item.tracks.contains(where: { $0.isEnabled && $0.assetTrack?.mediaType == .video }) else { return false }
@@ -106,9 +81,7 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
 
     public func load(_ source: PlaybackSource, asset preparedAsset: AVURLAsset?) {
         if timeObserver == nil { observePlayer() }
-        cancelDeferredSeek()
-        isNetworkSource = SeekBufferPolicy.isNetworkSource(source.url)
-        allowsSeekPreloading = source.allowsSeekPreloading && isNetworkSource
+        cancelSeek()
         status = .loading
         duration = 0
         bufferedTime = 0
@@ -143,228 +116,57 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
     }
 
     public func play() {
-        deferredSeek?.wantsPlay = true
-        if deferredSeek?.inPlaceBufferDuration != nil {
-            status = .buffering
-            return
-        }
-        if status == .ended {
+        if status == .ended, pendingSeekPosition == nil {
             player.seek(to: .zero)
         }
-        // 不用 playImmediately：它忽略缓冲是否足够，带宽不足时会频繁卡顿。
         player.defaultRate = preferredRate
         player.play()
     }
 
     public func pause() {
-        deferredSeek?.wantsPlay = false
         player.pause()
-        if deferredSeek?.inPlaceBufferDuration != nil { status = .paused }
     }
 
     public func seek(to seconds: TimeInterval) async {
-        guard seconds.isFinite, !Task.isCancelled else { return }
-        guard let item = player.currentItem else { return }
+        guard seconds.isFinite, !Task.isCancelled, let item = player.currentItem else { return }
         let target = duration > 0 ? min(max(0, seconds), duration) : max(0, seconds)
         let time = CMTime(seconds: target, preferredTimescale: 600)
         guard time.isNumeric else { return }
-        let wantsPlay = deferredSeek?.wantsPlay ?? (status != .ended && player.timeControlStatus != .paused)
-        cancelDeferredSeek()
-        let tolerance: CMTime = preciseSeeking ? .zero : .positiveInfinity
-        let preloadTolerance: CMTime = preciseSeeking ? .zero : CMTime(value: 1, timescale: 2)
-        let needed = seekBufferDuration(at: target, bufferLimit: item.preferredForwardBufferDuration)
-        let bufferedAhead = (Self.bufferEnd(in: item, at: time) ?? target) - target
-        let seekableRanges = item.seekableTimeRanges
-        let seekable = seekableRanges.contains { $0.timeRangeValue.containsTime(time) }
-            || (allowsSeekPreloading && seekableRanges.isEmpty)
-        let shouldBuffer = !forMusic && isNetworkSource && item.status == .readyToPlay && wantsPlay && needed > 0.1
-            && seekable && bufferedAhead + 0.1 < needed
-        item.cancelPendingSeeks()
-        let request = DeferredSeek(target: time, wantsPlay: wantsPlay)
-        deferredSeek = request
-        let deadline = ContinuousClock.now + SeekBufferPolicy.maximumWait
-        defer {
-            if deferredSeek === request { cancelDeferredSeek() }
-        }
+        let revision = UUID()
+        seekRevision = revision
+        pendingSeekPosition = target
 
-        if shouldBuffer { pendingSeekPosition = target }
-        if shouldBuffer, allowsSeekPreloading, canReplacePresentationPlayer?() == true, !player.isExternalPlaybackActive,
-           player.timeControlStatus == .playing {
-            await preloadBeforeSwitch(request, from: item, tolerance: preloadTolerance, deadline: deadline)
-        }
-        guard deferredSeek === request, !Task.isCancelled else { return }
-        request.discardPreparation()
-        let hasEnoughBuffer = (Self.bufferEnd(in: item, at: time) ?? target) - target + 0.1 >= needed
-        if shouldBuffer, !hasEnoughBuffer, request.wantsPlay, ContinuousClock.now < deadline {
-            await prepareInPlace(request, item: item, tolerance: preloadTolerance, deadline: deadline)
-        } else {
-            pendingSeekPosition = nil
-            let seekTolerance = !forMusic && (shouldBuffer || (isNetworkSource && bufferedAhead > 0)) ? preloadTolerance : tolerance
-            let finished = await seekImmediately(to: time, tolerance: seekTolerance)
-            if finished, deferredSeek === request, !Task.isCancelled, request.wantsPlay,
-               player.timeControlStatus == .paused { play() }
-        }
-    }
+        // 在原条目内跳转，保留系统仍持有的缓冲区间。
+        let tolerance: CMTime = preciseSeeking ? .zero : CMTime(value: 1, timescale: 2)
+        let finished = await player.seek(to: time, toleranceBefore: tolerance, toleranceAfter: tolerance)
+        guard seekRevision == revision else { return }
+        pendingSeekPosition = nil
+        guard finished else { return }
 
-    private func preloadBeforeSwitch(
-        _ request: DeferredSeek, from item: AVPlayerItem, tolerance: CMTime, deadline: ContinuousClock.Instant
-    ) async {
-        let target = request.target
-        while deferredSeek === request, !Task.isCancelled, !request.reachedEnd,
-              canReplacePresentationPlayer?() == true, !player.isExternalPlaybackActive {
-            let time = player.currentTime()
-            let reserve = (Self.bufferEnd(in: item, at: time) ?? time.seconds) - time.seconds
-            guard player.timeControlStatus == .paused ||
-                    (player.timeControlStatus == .playing && reserve >= 2 * Double(max(1, preferredRate))) else { return }
-            let needed = seekBufferDuration(at: target.seconds, bufferLimit: item.preferredForwardBufferDuration)
-            if let end = Self.bufferEnd(in: item, at: target), end - target.seconds + 0.1 >= needed { return }
-            let preparation = request.preparation ?? AVPlayerSeekPreparation(
-                from: item, target: target, tolerance: tolerance, rate: preferredRate, bufferDuration: needed
-            )
-            request.preparation = preparation
-            if preparation.item.preferredForwardBufferDuration != needed { preparation.item.preferredForwardBufferDuration = needed }
-            if preparation.prerollResult == false { return }
-            if preparation.prerollResult == true, !preparation.item.isPlaybackBufferEmpty {
-                let position = preparation.player.currentTime()
-                guard position.isNumeric, position.seconds < duration,
-                      abs(position.seconds - target.seconds) <= tolerance.seconds + 0.05 else { return }
-                let ahead = (Self.bufferEnd(in: preparation.item, at: position) ?? position.seconds) - position.seconds
-                let required = seekBufferDuration(at: position.seconds, bufferLimit: item.preferredForwardBufferDuration)
-                let ready = ahead > 0 && ahead + 0.1 >= required
-                if ready || ContinuousClock.now >= deadline {
-                    request.preparation = nil
-                    deferredSeek = nil
-                    pendingSeekPosition = nil
-                    promote(preparation, replacing: item, resume: request.wantsPlay, buffered: ready)
-                    return
-                }
-            }
-            guard ContinuousClock.now < deadline else { return }
-            try? await Task.sleep(for: .milliseconds(100))
-        }
-    }
-
-    private func prepareInPlace(
-        _ request: DeferredSeek, item: AVPlayerItem, tolerance: CMTime, deadline: ContinuousClock.Instant
-    ) async {
-        let player = self.player
-        request.inPlaceBufferDuration = item.preferredForwardBufferDuration
-        let needed = seekBufferDuration(at: request.target.seconds, bufferLimit: item.preferredForwardBufferDuration)
-        item.preferredForwardBufferDuration = needed
-        player.pause()
-        if request.wantsPlay { status = .buffering }
-
-        player.seek(to: request.target, toleranceBefore: tolerance, toleranceAfter: tolerance) { [weak request] finished in
-            Task { @MainActor in request?.seekFinished = finished }
-        }
-        while deferredSeek === request, request.seekFinished == nil, !Task.isCancelled, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(50))
-        }
-        guard deferredSeek === request else { return }
-        if request.seekFinished == nil, !Task.isCancelled {
-            // 预缓冲超时后让原跳转继续，由 AVPlayer 按正常缓冲策略恢复。
-            item.preferredForwardBufferDuration = request.inPlaceBufferDuration ?? 0
-            deferredSeek = nil
-            pendingSeekPosition = nil
-            currentTime = request.target.seconds
-            bufferedTime = currentTime
-            if request.wantsPlay { play() }
-            apply(timeControlStatus: player.timeControlStatus)
-            return
-        }
-        var buffered = false
-        if request.seekFinished == true, !Task.isCancelled, request.wantsPlay, player.status == .readyToPlay,
-           item.status == .readyToPlay, ContinuousClock.now < deadline {
-            player.preroll(atRate: preferredRate) { [weak request] ready in
-                Task { @MainActor in request?.prerollResult = ready }
-            }
-            while deferredSeek === request, !Task.isCancelled, request.wantsPlay,
-                  request.prerollResult != false, ContinuousClock.now < deadline {
-                let position = player.currentTime()
-                let ahead = (Self.bufferEnd(in: item, at: position) ?? position.seconds) - position.seconds
-                let required = seekBufferDuration(at: position.seconds, bufferLimit: request.inPlaceBufferDuration ?? 0)
-                if item.preferredForwardBufferDuration != required { item.preferredForwardBufferDuration = required }
-                if request.prerollResult == true, !item.isPlaybackBufferEmpty, ahead > 0, ahead + 0.1 >= required {
-                    buffered = true
-                    break
-                }
-                try? await Task.sleep(for: .milliseconds(100))
-            }
-        }
-        guard deferredSeek === request else { return }
-        cancelDeferredSeek()
         let position = player.currentTime()
-        if position.isNumeric {
-            currentTime = position.seconds
-            bufferedTime = Self.bufferEnd(in: item, at: position) ?? currentTime
-        }
-        if request.wantsPlay {
-            player.defaultRate = preferredRate
-            if buffered { player.playImmediately(atRate: preferredRate) } else { player.play() }
-        } else if status != .ended {
+        currentTime = position.isNumeric ? position.seconds : target
+        bufferedTime = Self.bufferEnd(in: item, at: position) ?? currentTime
+        if status == .ended, duration <= 0 || currentTime < duration - 0.5 {
             status = .paused
+        }
+        // 目标已有连续缓冲时可立即恢复；缓冲不足时沿用 AVPlayer 的等待策略。
+        if !forMusic, player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+           !player.isExternalPlaybackActive, !item.isPlaybackBufferEmpty,
+           bufferedTime - currentTime >= Double(preferredRate) {
+            player.playImmediately(atRate: preferredRate)
         }
         apply(timeControlStatus: player.timeControlStatus)
     }
 
-    private func seekBufferDuration(at position: TimeInterval, bufferLimit: TimeInterval) -> TimeInterval {
-        SeekBufferPolicy.targetDuration(at: position, duration: duration, rate: preferredRate, bufferLimit: bufferLimit)
-    }
-
-    func cancelUncommittedSeek() {
-        guard deferredSeek?.preparation != nil else { return }
-        cancelDeferredSeek()
-    }
-
-    private func cancelDeferredSeek() {
-        guard let request = deferredSeek else { return }
-        deferredSeek = nil
+    private func cancelSeek() {
+        seekRevision = UUID()
         pendingSeekPosition = nil
-        request.discardPreparation()
         player.currentItem?.cancelPendingSeeks()
-        if let duration = request.inPlaceBufferDuration {
-            player.cancelPendingPrerolls()
-            player.currentItem?.preferredForwardBufferDuration = duration
-        }
     }
 
     private static func bufferEnd(in item: AVPlayerItem, at time: CMTime) -> TimeInterval? {
         let end = item.loadedTimeRanges.lazy.map(\.timeRangeValue).first { $0.containsTime(time) }?.end.seconds
         return end.flatMap { $0.isFinite ? $0 : nil }
-    }
-
-    @discardableResult
-    private func seekImmediately(to time: CMTime, tolerance: CMTime) async -> Bool {
-        currentTime = time.seconds
-        // 结束后用户拖回某个位置：离开 ended 状态，否则下次 play() 会被当作「重新播放」而回到开头。
-        if status == .ended && (duration <= 0 || time.seconds < duration - 0.5) {
-            status = .paused
-        }
-        return await player.seek(to: time, toleranceBefore: tolerance, toleranceAfter: tolerance)
-    }
-
-    private func promote(_ preparation: AVPlayerSeekPreparation, replacing item: AVPlayerItem, resume: Bool, buffered: Bool) {
-        let previous = player
-        let prepared = preparation.player
-        prepared.isMuted = isMuted
-        prepared.volume = previous.volume
-        prepared.defaultRate = preferredRate
-        prepared.allowsExternalPlayback = previous.allowsExternalPlayback
-        preparation.item.preferredForwardBufferDuration = item.preferredForwardBufferDuration
-        previous.pause()
-        removePlayerObservers()
-        player = prepared
-        observeItem(preparation.item, isNewSource: false)
-        observePlayer()
-        let time = prepared.currentTime()
-        currentTime = time.seconds
-        bufferedTime = Self.bufferEnd(in: preparation.item, at: time) ?? currentTime
-        replacePresentationPlayer?(prepared)
-        if resume {
-            if buffered { prepared.playImmediately(atRate: preferredRate) } else { prepared.play() }
-        }
-        apply(timeControlStatus: prepared.timeControlStatus)
-        previous.replaceCurrentItem(with: nil)
     }
 
     public func currentFrameRate() -> Double? {
@@ -393,17 +195,15 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
               group.options.indices.contains(ordinal) else { return false }
         guard let current = player.currentItem, current.asset === item.asset else { return false }
         current.select(group.options[ordinal], in: group)
-        deferredSeek?.discardPreparation()
         return true
     }
 
     /// 字幕由应用绘制：码流自带的字幕轨（服务器 HLS 字幕组、MP4 内的文本轨）不让系统按辅助功能偏好自动选中，否则画面上会出现两份字幕。
     private func deselectAutomaticSubtitles(of item: AVPlayerItem) {
-        Task { [weak self] in
+        Task {
             guard let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
                   item.currentMediaSelection.selectedMediaOption(in: group) != nil else { return }
             item.select(nil, in: group)
-            if self?.player.currentItem === item { self?.deferredSeek?.discardPreparation() }
         }
     }
 
@@ -413,7 +213,6 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         guard let current = player.currentItem, current.asset === item.asset else { return false }
         guard let ordinal else {
             current.select(nil, in: group)
-            deferredSeek?.discardPreparation()
             return true
         }
         let options = group.options
@@ -421,7 +220,6 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         let option = byName?.count == 1 ? byName?.first : (options.indices.contains(ordinal) ? options[ordinal] : nil)
         guard let option else { return false }
         current.select(option, in: group)
-        deferredSeek?.discardPreparation()
         return true
     }
 
@@ -429,7 +227,8 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         guard let item = player.currentItem, item.status == .readyToPlay else { return nil }
         let player = player
         // 暂停时没有新帧送达输出：原地精确 seek 一次让内核重新解码当前帧。
-        return await VideoFrameGrabber.grab(from: item) {
+        return await VideoFrameGrabber.grab(from: item) { [weak self] in
+            guard let self, self.pendingSeekPosition == nil, player.currentItem === item else { return }
             await player.seek(to: player.currentTime(), toleranceBefore: .zero, toleranceAfter: .zero)
         }
     }
@@ -452,7 +251,7 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
     }
 
     public func stop() {
-        cancelDeferredSeek()
+        cancelSeek()
         player.pause()
         removePlayerObservers()
         itemObservations.removeAll()
@@ -481,7 +280,7 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
             MainActor.assumeIsolated {
                 guard let self, let player, self.player === player,
                       let item = player.currentItem, item.status == .readyToPlay,
-                      self.deferredSeek?.inPlaceBufferDuration == nil else { return }
+                      self.pendingSeekPosition == nil else { return }
                 let seconds = time.seconds
                 guard seconds.isFinite else { return }
                 if self.currentTime != seconds { self.currentTime = seconds }
@@ -508,7 +307,7 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         })
     }
 
-    private func observeItem(_ item: AVPlayerItem, isNewSource: Bool = true) {
+    private func observeItem(_ item: AVPlayerItem) {
         videoSize = item.presentationSize
         itemObservations = [item.observe(\.presentationSize, options: [.new]) { [weak self] item, _ in
             let size = item.presentationSize
@@ -525,13 +324,11 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
                 switch status {
                 case .readyToPlay:
                     self.duration = seconds.isFinite ? seconds : 0
-                    if isNewSource {
-                        self.logTracks(of: item)
-                        self.readMediaInfo(of: item)
-                        self.deselectAutomaticSubtitles(of: item)
-                    }
+                    self.logTracks(of: item)
+                    self.readMediaInfo(of: item)
+                    self.deselectAutomaticSubtitles(of: item)
                 case .failed:
-                    self.cancelDeferredSeek()
+                    self.cancelSeek()
                     let detail = self.forMusic ? "无法播放音频" : message ?? "无法播放"
                     self.status = .failed(detail)
                     Log.player.error("AVPlayerItem 失败：\(detail, privacy: .public)")
@@ -558,11 +355,8 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         ) { [weak self, weak item] _ in
             MainActor.assumeIsolated {
                 guard let self, let item, self.player.currentItem === item else { return }
-                if let seek = self.deferredSeek, self.pendingSeekPosition != nil {
-                    seek.reachedEnd = true
-                } else {
-                    self.status = .ended
-                }
+                if let target = self.pendingSeekPosition, target < self.duration - 0.5 { return }
+                self.status = .ended
             }
         }
     }
@@ -630,9 +424,7 @@ public final class AVPlayerEngine: PlaybackEngine, VideoDecodeDiagnosing, Multic
         case .playing: status = .playing
         case .waitingToPlayAtSpecifiedRate: status = .buffering
         case .paused:
-            if let seek = deferredSeek, seek.inPlaceBufferDuration != nil {
-                status = seek.wantsPlay ? .buffering : .paused
-            } else if status != .ended && status != .loading {
+            if status != .ended && status != .loading {
                 status = .paused
             }
         @unknown default: break

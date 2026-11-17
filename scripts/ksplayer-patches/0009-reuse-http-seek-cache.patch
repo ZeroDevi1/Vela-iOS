@@ -1,0 +1,321 @@
+Keep a bounded temporary cache of seekable HTTP data below the demuxer.
+
+diff --git a/Sources/KSPlayer/AVPlayer/KSOptions.swift b/Sources/KSPlayer/AVPlayer/KSOptions.swift
+index e4805f9..1c1b945 100644
+--- a/Sources/KSPlayer/AVPlayer/KSOptions.swift
++++ b/Sources/KSPlayer/AVPlayer/KSOptions.swift
+@@ -57,6 +57,10 @@ open class KSOptions {
+     // ffmpeg only cache http
+     // 这个开关不能用，因为ff_tempfile: Cannot open temporary file
+     public var cache = false
++    /// 已读 HTTP 字节的临时文件缓存上限，0 为关闭。
++    public var httpSeekCacheSize = 0
++    /// 跳转后恢复播放所需的缓冲秒数；nil 时用默认缓冲算法。
++    public var seekForwardBufferDuration: TimeInterval?
+     //  record stream
+     public var outputURL: URL?
+     public var avOptions = [String: Any]()
+@@ -198,6 +202,9 @@ open class KSOptions {
+             if (syncDecodeVideo && capacity.mediaType == .video) || (syncDecodeAudio && capacity.mediaType == .audio) {
+                 return true
+             }
++            if isSeek, let seekForwardBufferDuration {
++                return capacity.loadedTime >= seekForwardBufferDuration
++            }
+             if isFirst || isSeek {
+                 // 让纯音频能更快的打开
+                 if capacity.mediaType == .audio || isSecondOpen {
+diff --git a/Sources/KSPlayer/MEPlayer/CachedHTTPInput.swift b/Sources/KSPlayer/MEPlayer/CachedHTTPInput.swift
+new file mode 100644
+index 0000000..a249187
+--- /dev/null
++++ b/Sources/KSPlayer/MEPlayer/CachedHTTPInput.swift
+@@ -0,0 +1,175 @@
++import Darwin
++import FFmpegKit
++import Foundation
++import Libavformat
++import Libavutil
++
++/// Bounded byte cache below the demuxer. Seeks reset decoder queues but keep previously read pages.
++final class CachedHTTPInput {
++    private static let pageSize = 1_048_576
++
++    private struct Page {
++        let slot: Int
++        var validBytes: Range<Int>
++    }
++
++    // Updated on FFmpeg's read thread and sampled by the player UI.
++    final class NetworkCounter: @unchecked Sendable {
++        private let lock = NSLock()
++        private var bytes: Int64?
++
++        var value: Int64? {
++            get { lock.withLock { bytes } }
++            set { lock.withLock { bytes = newValue } }
++        }
++    }
++
++    private var upstream: UnsafeMutablePointer<AVIOContext>?
++    private let length: Int64
++    private let descriptor: Int32
++    private let networkCounter: NetworkCounter
++    private var upstreamOffset: Int64 = 0
++    private var position: Int64 = 0
++    private var pages: [Int64: Page] = [:]
++    private var slots: [Int64?]
++    private var nextSlot = 0
++    private(set) var context: UnsafeMutablePointer<AVIOContext>?
++
++    private init(
++        upstream: UnsafeMutablePointer<AVIOContext>, length: Int64, descriptor: Int32,
++        pageCount: Int, networkCounter: NetworkCounter
++    ) {
++        self.upstream = upstream
++        self.length = length
++        self.descriptor = descriptor
++        self.networkCounter = networkCounter
++        slots = Array(repeating: nil, count: pageCount)
++    }
++
++    static func open(
++        url: String, byteLimit: Int, interrupt: inout AVIOInterruptCB, options: inout OpaquePointer?,
++        networkCounter: NetworkCounter
++    ) -> CachedHTTPInput? {
++        let pageCount = byteLimit / pageSize
++        guard pageCount > 0 else { return nil }
++
++        // An unlinked temporary file releases its storage even if the app is terminated.
++        var path = FileManager.default.temporaryDirectory.appendingPathComponent("vela-video.XXXXXX").path.utf8CString
++        let descriptor = mkstemp(&path)
++        guard descriptor >= 0 else { return nil }
++        guard unlink(path) == 0 else {
++            Darwin.close(descriptor)
++            return nil
++        }
++
++        var upstream: UnsafeMutablePointer<AVIOContext>?
++        guard avio_open2(&upstream, url, AVIO_FLAG_READ, &interrupt, &options) >= 0,
++              let input = upstream, input.pointee.seekable > 0,
++              case let length = avio_size(input), length > 0 else {
++            avio_closep(&upstream)
++            Darwin.close(descriptor)
++            return nil
++        }
++
++        let cache = CachedHTTPInput(
++            upstream: input, length: length, descriptor: descriptor, pageCount: pageCount, networkCounter: networkCounter
++        )
++        let bufferSize: Int32 = 64 * 1024
++        guard let buffer = av_malloc(Int(bufferSize))?.assumingMemoryBound(to: UInt8.self) else { return nil }
++        cache.context = avio_alloc_context(buffer, bufferSize, 0, Unmanaged.passUnretained(cache).toOpaque(), { opaque, buffer, size in
++            guard let opaque, let buffer else { return -EINVAL }
++            let cache = Unmanaged<CachedHTTPInput>.fromOpaque(opaque).takeUnretainedValue()
++            return cache.read(into: buffer, size: size)
++        }, nil, { opaque, offset, whence in
++            guard let opaque else { return Int64(-EINVAL) }
++            let cache = Unmanaged<CachedHTTPInput>.fromOpaque(opaque).takeUnretainedValue()
++            return cache.seek(offset: offset, whence: whence)
++        })
++        guard cache.context != nil else {
++            av_free(buffer)
++            return nil
++        }
++        networkCounter.value = input.pointee.bytes_read
++        return cache
++    }
++
++    deinit {
++        if let context { av_free(context.pointee.buffer) }
++        avio_context_free(&context)
++        avio_closep(&upstream)
++        Darwin.close(descriptor)
++    }
++
++    private func seek(offset: Int64, whence: Int32) -> Int64 {
++        let origin: Int64
++        switch whence & ~AVSEEK_FORCE {
++        case AVSEEK_SIZE: return length
++        case SEEK_SET: origin = 0
++        case SEEK_CUR: origin = position
++        case SEEK_END: origin = length
++        default: return Int64(-EINVAL)
++        }
++        let (target, overflow) = origin.addingReportingOverflow(offset)
++        guard !overflow, target >= 0 else { return Int64(-EINVAL) }
++        // Only move the HTTP input on a cache miss.
++        position = target
++        return target
++    }
++
++    private func read(into buffer: UnsafeMutablePointer<UInt8>, size: Int32) -> Int32 {
++        guard position < length else { return AVError.eof.code }
++        let pageNumber = position / Int64(Self.pageSize)
++        let pageOffset = Int(position % Int64(Self.pageSize))
++        let page = pages[pageNumber]
++        var count = min(Int(size), Self.pageSize - pageOffset)
++        if let page, page.validBytes.contains(pageOffset) {
++            let diskOffset = off_t(page.slot * Self.pageSize + pageOffset)
++            let read = pread(descriptor, buffer, min(count, page.validBytes.upperBound - pageOffset), diskOffset)
++            if read > 0 {
++                position += Int64(read)
++                return Int32(read)
++            }
++        } else if let page, pageOffset < page.validBytes.lowerBound {
++            count = min(count, page.validBytes.lowerBound - pageOffset)
++        }
++
++        if upstreamOffset != position {
++            let offset = avio_seek(upstream, position, SEEK_SET)
++            guard offset == position else { return offset < 0 ? Int32(clamping: offset) : -EIO }
++            upstreamOffset = offset
++        }
++        let read = avio_read_partial(upstream, buffer, Int32(count))
++        networkCounter.value = upstream?.pointee.bytes_read
++        guard read > 0 else { return read == 0 ? AVError.eof.code : read }
++        position += Int64(read)
++        upstreamOffset += Int64(read)
++        store(buffer, pageNumber: pageNumber, range: pageOffset..<(pageOffset + Int(read)))
++        return read
++    }
++
++    private func store(_ buffer: UnsafePointer<UInt8>, pageNumber: Int64, range: Range<Int>) {
++        var page: Page
++        if let existing = pages[pageNumber] {
++            page = existing
++        } else {
++            if let evicted = slots[nextSlot] { pages[evicted] = nil }
++            slots[nextSlot] = pageNumber
++            page = Page(slot: nextSlot, validBytes: range)
++            nextSlot = (nextSlot + 1) % slots.count
++        }
++
++        let diskOffset = off_t(page.slot * Self.pageSize + range.lowerBound)
++        guard pwrite(descriptor, buffer, range.count, diskOffset) == range.count else {
++            // Playback can continue from the network if the temporary directory fills up.
++            pages[pageNumber] = nil
++            slots[page.slot] = nil
++            return
++        }
++        if range.lowerBound <= page.validBytes.upperBound, range.upperBound >= page.validBytes.lowerBound {
++            page.validBytes = min(range.lowerBound, page.validBytes.lowerBound)..<max(range.upperBound, page.validBytes.upperBound)
++        } else {
++            page.validBytes = range
++        }
++        pages[pageNumber] = page
++    }
++}
+diff --git a/Sources/KSPlayer/MEPlayer/KSMEPlayer.swift b/Sources/KSPlayer/MEPlayer/KSMEPlayer.swift
+index 7223864..53f938d 100644
+--- a/Sources/KSPlayer/MEPlayer/KSMEPlayer.swift
++++ b/Sources/KSPlayer/MEPlayer/KSMEPlayer.swift
+@@ -376,6 +376,7 @@ extension KSMEPlayer: MediaPlayerProtocol {
+     public func seek(time: TimeInterval, completion: @escaping ((Bool) -> Void)) {
+         let time = max(time, 0)
+         playbackState = .seeking
++        loadState = .loading
+         runOnMainThread { [weak self] in
+             self?.bufferingProgress = 0
+         }
+diff --git a/Sources/KSPlayer/MEPlayer/MEPlayerItem.swift b/Sources/KSPlayer/MEPlayer/MEPlayerItem.swift
+index 13b9eaa..a6da3d7 100644
+--- a/Sources/KSPlayer/MEPlayer/MEPlayerItem.swift
++++ b/Sources/KSPlayer/MEPlayer/MEPlayerItem.swift
+@@ -17,6 +17,8 @@ public final class MEPlayerItem: Sendable {
+     private let operationQueue = OperationQueue()
+     private let condition = NSCondition()
+     private var formatCtx: UnsafeMutablePointer<AVFormatContext>?
++    private var cachedHTTPInput: CachedHTTPInput?
++    private let cachedHTTPBytesRead = CachedHTTPInput.NetworkCounter()
+     private var outputFormatCtx: UnsafeMutablePointer<AVFormatContext>?
+     private var outputPacket: UnsafeMutablePointer<AVPacket>?
+     private var streamMapping = [Int: Int]()
+@@ -92,7 +94,8 @@ public final class MEPlayerItem: Sendable {
+         // metadata可能会实时变化。所以把它放在DynamicInfo里面
+         toDictionary(self?.formatCtx?.pointee.metadata)
+     } bytesRead: { [weak self] in
+-        self?.formatCtx?.pointee.pb?.pointee.bytes_read ?? 0
++        // The cache's AVIO counters also include reads served from disk.
++        self?.cachedHTTPBytesRead.value ?? self?.formatCtx?.pointee.pb?.pointee.bytes_read ?? 0
+     } audioBitrate: { [weak self] in
+         Int(8 * (self?.audioTrack?.bitrate ?? 0))
+     } videoBitrate: { [weak self] in
+@@ -170,7 +173,7 @@ public final class MEPlayerItem: Sendable {
+
+ extension MEPlayerItem {
+     private func openThread() {
+-        avformat_close_input(&self.formatCtx)
++        closeInput()
+         formatCtx = avformat_alloc_context()
+         guard let formatCtx else {
+             error = NSError(errorCode: .formatCreate)
+@@ -207,16 +210,26 @@ extension MEPlayerItem {
+         } else {
+             urlString = url.absoluteString
+         }
++        if formatCtx.pointee.pb == nil, options.httpSeekCacheSize > 0 {
++            var protocolOptions = options.formatContextOptions.avOptions
++            cachedHTTPInput = CachedHTTPInput.open(
++                url: urlString, byteLimit: options.httpSeekCacheSize, interrupt: &interruptCB,
++                options: &protocolOptions, networkCounter: cachedHTTPBytesRead
++            )
++            av_dict_free(&protocolOptions)
++            formatCtx.pointee.pb = cachedHTTPInput?.context
++        }
+         var result = avformat_open_input(&self.formatCtx, urlString, nil, &avOptions)
+         av_dict_free(&avOptions)
+         if result == AVError.eof.code {
++            closeInput()
+             state = .finished
+             delegate?.sourceDidFinished()
+             return
+         }
+         guard result == 0 else {
+             error = .init(errorCode: .formatOpenInput, avErrorCode: result)
+-            avformat_close_input(&self.formatCtx)
++            closeInput()
+             return
+         }
+         options.openTime = CACurrentMediaTime()
+@@ -233,7 +246,7 @@ extension MEPlayerItem {
+         result = avformat_find_stream_info(formatCtx, nil)
+         guard result == 0 else {
+             error = .init(errorCode: .formatFindStreamInfo, avErrorCode: result)
+-            avformat_close_input(&self.formatCtx)
++            closeInput()
+             return
+         }
+         // FIXME: hack, ffplay maybe should not use avio_feof() to test for the end
+@@ -276,6 +289,12 @@ extension MEPlayerItem {
+         }
+     }
+
++    private func closeInput() {
++        avformat_close_input(&formatCtx)
++        cachedHTTPInput = nil
++        cachedHTTPBytesRead.value = nil
++    }
++
+     func startRecord(url: URL) {
+         stopRecord()
+         let filename = url.isFileURL ? url.path : url.absoluteString
+@@ -672,7 +691,8 @@ extension MEPlayerItem: MediaPlayback {
+             self.allPlayerItemTracks.forEach { $0.shutdown() }
+             KSLog("清空formatCtx")
+             // 自定义的协议才会av_class为空
+-            if let formatCtx = self.formatCtx, (formatCtx.pointee.flags & AVFMT_FLAG_CUSTOM_IO) != 0, let opaque = formatCtx.pointee.pb.pointee.opaque {
++            if self.cachedHTTPInput == nil, let formatCtx = self.formatCtx,
++               (formatCtx.pointee.flags & AVFMT_FLAG_CUSTOM_IO) != 0, let opaque = formatCtx.pointee.pb?.pointee.opaque {
+                 let value = Unmanaged<AbstractAVIOContext>.fromOpaque(opaque).takeRetainedValue()
+                 value.close()
+             }
+@@ -680,7 +700,7 @@ extension MEPlayerItem: MediaPlayback {
+ //            self.formatCtx?.pointee.pb = nil
+             self.formatCtx?.pointee.interrupt_callback.opaque = nil
+             self.formatCtx?.pointee.interrupt_callback.callback = nil
+-            avformat_close_input(&self.formatCtx)
++            self.closeInput()
+             avformat_close_input(&self.outputFormatCtx)
+             self.duration = 0
+             self.closeOperation = nil

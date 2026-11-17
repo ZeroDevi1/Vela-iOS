@@ -39,9 +39,8 @@ final class SubtitlePictureInPictureSource: NSObject {
         setPlayer(player)
     }
 
-    /// 换码流或接管跳转预热的播放器时，将输出挂到实际播放的条目。
-    func setPlayer(_ player: AVPlayer) {
-        itemObservation = nil
+    /// 换码流时，将输出挂到新的播放条目。
+    private func setPlayer(_ player: AVPlayer) {
         itemObservation = player.observe(\.currentItem, options: [.initial, .new]) { [weak self] player, _ in
             let item = player.currentItem
             MainActor.assumeIsolated { self?.pump.attach(to: item) }

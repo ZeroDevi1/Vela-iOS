@@ -489,7 +489,6 @@ public final class PlayerController {
     /// 开始拖动：同时显示控制层，预览帧与时间指示都挂在控制层上。
     public func beginScrub() {
         scrubOrigin = engine.pendingSeekPosition ?? engine.currentTime
-        (engine as? AVPlayerEngine)?.cancelUncommittedSeek()
         scrubTime = scrubOrigin
         controlsVisible = true
         hideTask?.cancel()
